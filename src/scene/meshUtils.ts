@@ -37,6 +37,22 @@ export function triangulate(mesh: Mesh): number[] {
   return indices
 }
 
+/** Drop any vertex not referenced by at least one face, and reindex faces to match. */
+export function pruneOrphanVertices(mesh: Mesh): Mesh {
+  const used = new Set<number>()
+  for (const face of mesh.faces) for (const i of face) used.add(i)
+  if (used.size === mesh.vertices.length) return mesh // nothing to prune
+
+  const oldToNew = new Map<number, number>()
+  const vertices = mesh.vertices.filter((_, i) => used.has(i))
+  let next = 0
+  for (let i = 0; i < mesh.vertices.length; i++) {
+    if (used.has(i)) oldToNew.set(i, next++)
+  }
+  const faces = mesh.faces.map((f) => f.map((i) => oldToNew.get(i)!))
+  return { vertices, faces }
+}
+
 export function getBounds(mesh: Mesh) {
   let minX = Infinity
   let minY = Infinity

@@ -29,7 +29,11 @@ export function deleteVertices(mesh: Mesh, vertexIndices: number[]): Mesh {
   return removeFacesAndOrphanVertices(mesh, facesToRemove)
 }
 
-/** Delete edges: removes any face that uses a selected edge (vertices themselves are kept). */
+/**
+ * Delete edges: removes any face that uses a selected edge. Vertices that end up touching
+ * no remaining face are pruned by the caller (store.ts wraps this with pruneOrphanVertices) —
+ * vertices still used by some other, unaffected face are of course left alone.
+ */
 export function deleteEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
   const selected = new Set(edgeKeys)
   const facesToRemove = new Set<number>()
@@ -43,13 +47,14 @@ export function deleteEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
       }
     }
   })
-  // dropping faces only (not orphaning their vertices) keeps the edge-delete semantics
-  // distinct from vertex-delete: the vertices stay, just disconnected from any face.
-  const keptFaces = mesh.faces.filter((_, fi) => !facesToRemove.has(fi))
-  return { vertices: mesh.vertices.map((v) => ({ ...v })), faces: keptFaces }
+  const faces = mesh.faces.filter((_, fi) => !facesToRemove.has(fi))
+  return { vertices: mesh.vertices.map((v) => ({ ...v })), faces }
 }
 
-/** Delete faces: removes only the selected faces (vertices/edges remain, even if now unused). */
+/**
+ * Delete faces: removes only the selected faces. Vertices that end up touching no remaining
+ * face are pruned by the caller (store.ts wraps this with pruneOrphanVertices).
+ */
 export function deleteFaces(mesh: Mesh, faceIndices: number[]): Mesh {
   const selected = new Set(faceIndices)
   const faces = mesh.faces.filter((_, fi) => !selected.has(fi))

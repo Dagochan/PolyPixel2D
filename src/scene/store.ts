@@ -6,7 +6,7 @@ import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
-import { edgeKey, getEdges } from './meshUtils'
+import { edgeKey, getEdges, pruneOrphanVertices } from './meshUtils'
 
 export type ActiveTool = 'select' | 'loopcut'
 
@@ -168,7 +168,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const obj: SceneObject = {
       id: genId('obj'),
       name,
-      mesh,
+      mesh: pruneOrphanVertices(mesh), // a malformed OBJ could list vertices no face uses
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
@@ -272,10 +272,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const path = findFullLoop(obj.mesh, edgeA, edgeB)
     if (!path) return
     const result = applyLoopCutToMesh(obj.mesh, path, ts)
+    const mesh = pruneOrphanVertices(result.mesh)
 
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh: result.mesh } : o)),
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -302,12 +303,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       return
     }
     const result = extrudeEdges(obj.mesh, edgeKeys)
+    // extrude never orphans a vertex by construction, so this is a no-op safety net
+    const mesh = pruneOrphanVertices(result.mesh)
 
     get().beginChange()
     set((st) => ({
-      objects: st.objects.map((o) =>
-        o.id === objectId ? { ...o, mesh: result.mesh } : o,
-      ),
+      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
       editElementType: 'vertex',
       selectedVertices: new Set(result.newVertexIndices),
       selectedEdges: new Set(),
@@ -328,10 +329,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       mesh = deleteVertices(obj.mesh, Array.from(s.selectedVertices))
     } else if (s.editElementType === 'edge') {
       if (s.selectedEdges.size === 0) return
-      mesh = deleteEdges(obj.mesh, Array.from(s.selectedEdges))
+      mesh = pruneOrphanVertices(deleteEdges(obj.mesh, Array.from(s.selectedEdges)))
     } else {
       if (s.selectedFaces.size === 0) return
-      mesh = deleteFaces(obj.mesh, Array.from(s.selectedFaces))
+      mesh = pruneOrphanVertices(deleteFaces(obj.mesh, Array.from(s.selectedFaces)))
     }
 
     get().beginChange()
