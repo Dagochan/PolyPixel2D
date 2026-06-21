@@ -5,6 +5,7 @@ import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
+import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { edgeKey, getEdges } from './meshUtils'
 
 export type ActiveTool = 'select' | 'loopcut'
@@ -60,6 +61,12 @@ interface SceneState {
   extrudeSelection: () => void
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
   deleteSelection: () => void
+  /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
+  selectAll: () => void
+  /** Merge the current vertex selection (2+) into one vertex, positioned per `mode`. */
+  mergeSelectedVertices: (mode: MergeMode) => void
+  /** Create one new face directly from the selected vertices, in selection (click) order. */
+  fillSelectedFace: () => void
 }
 
 function nextColor(objects: SceneObject[]) {
@@ -347,6 +354,65 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
+    }))
+  },
+
+  selectAll: () => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+    if (!obj) return
+    if (s.editElementType === 'vertex') {
+      set({ selectedVertices: new Set(obj.mesh.vertices.map((_, i) => i)) })
+    } else if (s.editElementType === 'edge') {
+      set({ selectedEdges: new Set(getEdges(obj.mesh).map(([a, b]) => edgeKey(a, b))) })
+    } else {
+      set({ selectedFaces: new Set(obj.mesh.faces.map((_, i) => i)) })
+    }
+  },
+
+  mergeSelectedVertices: (mode) => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+    if (s.editElementType !== 'vertex' || s.selectedVertices.size < 2) return
+
+    // JS Sets preserve insertion order, so this is the actual selection order (click order).
+    const orderedIndices = Array.from(s.selectedVertices)
+    const { mesh, survivorIndex } = mergeVerticesInMesh(obj.mesh, orderedIndices, mode)
+
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      selectedVertices: survivorIndex >= 0 ? new Set([survivorIndex]) : new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  fillSelectedFace: () => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+    if (s.editElementType !== 'vertex' || s.selectedVertices.size < 3) return
+
+    // JS Sets preserve insertion order — use the click order as the new face's winding,
+    // same as Blender's F: select the hole's boundary in order, then fill.
+    const orderedIndices = Array.from(s.selectedVertices)
+    const newFaceIndex = obj.mesh.faces.length
+
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh: { ...o.mesh, faces: [...o.mesh.faces, orderedIndices] } } : o,
+      ),
+      editElementType: 'face',
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set([newFaceIndex]),
     }))
   },
 }))

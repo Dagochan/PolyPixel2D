@@ -34,6 +34,15 @@ type DragMode =
   | { kind: 'rotate-object'; objectId: string; startRotation: number; startAngle: number; center: { x: number; y: number } }
   | { kind: 'move-vertices'; objectId: string; indices: number[]; lastWorld: { x: number; y: number } }
   | { kind: 'move-pivot'; objectId: string }
+  | {
+      kind: 'box-select'
+      objectId: string
+      additive: boolean
+      startClientX: number
+      startClientY: number
+      endClientX: number
+      endClientY: number
+    }
 
 interface LoopCutHover {
   edgeA: number
@@ -51,6 +60,7 @@ export default function Viewport() {
   const dragRef = useRef<DragMode>({ kind: 'none' })
   const loopCutHoverRef = useRef<LoopCutHover | null>(null)
   const loopCutCountRef = useRef(1)
+  const selectionBoxRef = useRef<HTMLDivElement>(null)
 
   function loopCutTs(): number[] {
     const count = loopCutCountRef.current
@@ -727,9 +737,18 @@ export default function Viewport() {
           lastWorld: world,
         }
         return
-      } else if (!e.shiftKey) {
-        useSceneStore.getState().setSelectedVertices(new Set())
       }
+      if (!e.shiftKey) useSceneStore.getState().setSelectedVertices(new Set())
+      dragRef.current = {
+        kind: 'box-select',
+        objectId: selectedObj.id,
+        additive: e.shiftKey,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        endClientX: e.clientX,
+        endClientY: e.clientY,
+      }
+      return
     }
 
     if (mode === 'edit' && selectedObj && editElementType === 'edge') {
@@ -765,9 +784,18 @@ export default function Viewport() {
           lastWorld: world,
         }
         return
-      } else if (!e.shiftKey) {
-        useSceneStore.getState().setSelectedEdges(new Set())
       }
+      if (!e.shiftKey) useSceneStore.getState().setSelectedEdges(new Set())
+      dragRef.current = {
+        kind: 'box-select',
+        objectId: selectedObj.id,
+        additive: e.shiftKey,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        endClientX: e.clientX,
+        endClientY: e.clientY,
+      }
+      return
     }
 
     if (mode === 'edit' && selectedObj && editElementType === 'face') {
@@ -795,9 +823,18 @@ export default function Viewport() {
           lastWorld: world,
         }
         return
-      } else if (!e.shiftKey) {
-        useSceneStore.getState().setSelectedFaces(new Set())
       }
+      if (!e.shiftKey) useSceneStore.getState().setSelectedFaces(new Set())
+      dragRef.current = {
+        kind: 'box-select',
+        objectId: selectedObj.id,
+        additive: e.shiftKey,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        endClientX: e.clientX,
+        endClientY: e.clientY,
+      }
+      return
     }
 
     // object picking via raycast (object mode only)
@@ -931,11 +968,82 @@ export default function Viewport() {
       store.setPivot(drag.objectId, localUnderMouse)
       return
     }
+
+    if (drag.kind === 'box-select') {
+      dragRef.current = { ...drag, endClientX: e.clientX, endClientY: e.clientY }
+      updateSelectionBoxOverlay(dragRef.current as typeof drag)
+      return
+    }
+  }
+
+  function updateSelectionBoxOverlay(drag: Extract<DragMode, { kind: 'box-select' }>) {
+    const box = selectionBoxRef.current
+    if (!box) return
+    const x1 = Math.min(drag.startClientX, drag.endClientX)
+    const y1 = Math.min(drag.startClientY, drag.endClientY)
+    const x2 = Math.max(drag.startClientX, drag.endClientX)
+    const y2 = Math.max(drag.startClientY, drag.endClientY)
+    const containerRect = containerRef.current!.getBoundingClientRect()
+    box.style.display = 'block'
+    box.style.left = `${x1 - containerRect.left}px`
+    box.style.top = `${y1 - containerRect.top}px`
+    box.style.width = `${x2 - x1}px`
+    box.style.height = `${y2 - y1}px`
   }
 
   function handlePointerUp(_e: PointerEvent) {
+    const drag = dragRef.current
+    if (drag.kind === 'box-select') {
+      const box = selectionBoxRef.current
+      if (box) box.style.display = 'none'
+
+      const movedPx = Math.hypot(drag.endClientX - drag.startClientX, drag.endClientY - drag.startClientY)
+      if (movedPx > 4) {
+        const store = useSceneStore.getState()
+        const obj = store.objects.find((o) => o.id === drag.objectId)
+        if (obj) {
+          const rect = containerRef.current!.getBoundingClientRect()
+          const wa = screenToWorld(drag.startClientX, drag.startClientY, rect, viewRef.current)
+          const wb = screenToWorld(drag.endClientX, drag.endClientY, rect, viewRef.current)
+          const minX = Math.min(wa.x, wb.x)
+          const maxX = Math.max(wa.x, wb.x)
+          const minY = Math.min(wa.y, wb.y)
+          const maxY = Math.max(wa.y, wb.y)
+          const inside = (p: { x: number; y: number }) =>
+            p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+
+          if (store.editElementType === 'vertex') {
+            const next = drag.additive ? new Set(store.selectedVertices) : new Set<number>()
+            obj.mesh.vertices.forEach((v, i) => {
+              if (inside(applyTransform(v, obj.transform))) next.add(i)
+            })
+            store.setSelectedVertices(next)
+          } else if (store.editElementType === 'edge') {
+            const next = drag.additive ? new Set(store.selectedEdges) : new Set<string>()
+            for (const [a, b] of getEdges(obj.mesh)) {
+              const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
+              const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+              if (inside(pa) && inside(pb)) next.add(edgeKey(a, b))
+            }
+            store.setSelectedEdges(next)
+          } else {
+            const next = drag.additive ? new Set(store.selectedFaces) : new Set<number>()
+            obj.mesh.faces.forEach((face, fi) => {
+              if (face.every((i) => inside(applyTransform(obj.mesh.vertices[i], obj.transform)))) {
+                next.add(fi)
+              }
+            })
+            store.setSelectedFaces(next)
+          }
+        }
+      }
+    }
     dragRef.current = { kind: 'none' }
   }
 
-  return <div ref={containerRef} className="viewport" />
+  return (
+    <div ref={containerRef} className="viewport">
+      <div ref={selectionBoxRef} className="selection-box" style={{ display: 'none' }} />
+    </div>
+  )
 }

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Viewport from './viewport/Viewport'
 import Outliner from './panels/Outliner'
 import Properties from './panels/Properties'
@@ -6,10 +6,42 @@ import Toolbar from './panels/Toolbar'
 import { useSceneStore } from './scene/store'
 
 export default function App() {
+  const [awaitingMerge, setAwaitingMerge] = useState(false)
+  const awaitingMergeRef = useRef(false)
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+
+      // M arms a modal "merge vertices" prompt; the very next 1/2/3 picks the mode
+      // (first/last/center) — anything else (including Escape) cancels it.
+      if (awaitingMergeRef.current) {
+        awaitingMergeRef.current = false
+        setAwaitingMerge(false)
+        if (e.key === '1' || e.key === '2' || e.key === '3') {
+          e.preventDefault()
+          const mode = e.key === '1' ? 'first' : e.key === '2' ? 'last' : 'center'
+          useSceneStore.getState().mergeSelectedVertices(mode)
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          return
+        }
+        // fall through: let any other key behave normally
+      }
+
+      if (e.key.toLowerCase() === 'm') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || store.editElementType !== 'vertex' || store.selectedVertices.size < 2) {
+          return
+        }
+        e.preventDefault()
+        awaitingMergeRef.current = true
+        setAwaitingMerge(true)
+        return
+      }
 
       const meta = e.ctrlKey || e.metaKey
       if (meta && e.key.toLowerCase() === 'z') {
@@ -24,6 +56,14 @@ export default function App() {
         if (store.mode !== 'edit' || !store.selectedObjectId) return
         e.preventDefault()
         store.setActiveTool(store.activeTool === 'loopcut' ? 'select' : 'loopcut')
+        return
+      }
+
+      if (meta && e.key.toLowerCase() === 'a') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        e.preventDefault()
+        store.selectAll()
         return
       }
 
@@ -60,6 +100,16 @@ export default function App() {
         if (store.mode !== 'edit') return
         e.preventDefault()
         store.extrudeSelection()
+        return
+      }
+
+      if (e.key.toLowerCase() === 'f') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || store.editElementType !== 'vertex' || store.selectedVertices.size < 3) {
+          return
+        }
+        e.preventDefault()
+        store.fillSelectedFace()
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -75,6 +125,9 @@ export default function App() {
           <Outliner />
           <Properties />
         </div>
+        {awaitingMerge && (
+          <div className="merge-hint">マージ: 1=最初の頂点　2=最後の頂点　3=中間位置　(Escでキャンセル)</div>
+        )}
       </div>
     </div>
   )
