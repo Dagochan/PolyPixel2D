@@ -5,6 +5,7 @@ import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scen
 import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { SceneObject } from '../scene/types'
+import { findFullLoop, type LoopPath } from '../scene/loopPath'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -35,9 +36,10 @@ type DragMode =
   | { kind: 'move-pivot'; objectId: string }
 
 interface LoopCutHover {
-  axis: 'row' | 'col'
-  index: number
+  edgeA: number
+  edgeB: number
   t: number
+  path: LoopPath
 }
 
 export default function Viewport() {
@@ -113,6 +115,10 @@ export default function Viewport() {
         useSceneStore.getState().cancelChange()
       }
       dragRef.current = { kind: 'none' }
+      if (useSceneStore.getState().activeTool === 'loopcut') {
+        useSceneStore.getState().setActiveTool('select')
+        loopCutHoverRef.current = null
+      }
     }
 
     // Chrome/Edge trigger native middle-click auto-scroll directly off `mousedown`,
@@ -153,13 +159,7 @@ export default function Viewport() {
     // (the two-finger-tap gesture conflicts with an active single-finger drag), so Escape
     // is the reliable cancel path — this is also how Blender itself supports cancellation.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        cancelActiveDrag()
-        if (useSceneStore.getState().activeTool === 'loopcut') {
-          useSceneStore.getState().setActiveTool('select')
-          loopCutHoverRef.current = null
-        }
-      }
+      if (e.key === 'Escape') cancelActiveDrag()
     }
     window.addEventListener('keydown', onKeyDown)
     container.addEventListener('pointerdown', onPointerDown)
@@ -314,40 +314,27 @@ export default function Viewport() {
       if (obj) addGizmo(scene, obj)
     }
 
-    // loop-cut preview (one polyline per pending parallel cut)
+    // loop-cut preview (one polyline per pending parallel cut, running the length of the loop)
     const { activeTool } = useSceneStore.getState()
     if (mode === 'edit' && activeTool === 'loopcut' && loopCutHoverRef.current) {
       const obj = objects.find((o) => o.id === selectedObjectId)
-      if (obj?.grid) {
+      if (obj) {
         const hover = loopCutHoverRef.current
-        for (const t of loopCutTs()) addLoopCutPreview(scene, obj, { ...hover, t })
+        for (const t of loopCutTs()) addLoopCutPreview(scene, obj, hover.path, t)
       }
     }
   }
 
-  function addLoopCutPreview(scene: THREE.Scene, obj: SceneObject, hover: LoopCutHover) {
-    if (!obj.grid) return
-    const { cols, rows } = obj.grid
+  function addLoopCutPreview(scene: THREE.Scene, obj: SceneObject, path: LoopPath, t: number) {
     const { mesh, transform } = obj
     const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
       x: a.x + (b.x - a.x) * t,
       y: a.y + (b.y - a.y) * t,
     })
 
-    const points: { x: number; y: number }[] = []
-    if (hover.axis === 'row') {
-      for (let i = 0; i < cols; i++) {
-        const a = mesh.vertices[hover.index * cols + i]
-        const b = mesh.vertices[(hover.index + 1) * cols + i]
-        points.push(applyTransform(lerp(a, b, hover.t), transform))
-      }
-    } else {
-      for (let j = 0; j < rows; j++) {
-        const a = mesh.vertices[j * cols + hover.index]
-        const b = mesh.vertices[j * cols + hover.index + 1]
-        points.push(applyTransform(lerp(a, b, hover.t), transform))
-      }
-    }
+    const points = path.cuts.map(([a, b]) =>
+      applyTransform(lerp(mesh.vertices[a], mesh.vertices[b], t), transform),
+    )
 
     const positions: number[] = []
     for (let i = 0; i < points.length - 1; i++) {
@@ -586,46 +573,38 @@ export default function Viewport() {
     return { dist: Math.hypot(Px - cx, Py - cy), t }
   }
 
-  /** Find the nearest grid edge (in world space) to the cursor and record which loop it belongs to. */
+  /** Find the nearest mesh edge to the cursor and trace the quad loop running through it. */
   function updateLoopCutHover(e: PointerEvent) {
     const store = useSceneStore.getState()
     const obj = store.objects.find((o) => o.id === store.selectedObjectId)
-    if (store.mode !== 'edit' || store.activeTool !== 'loopcut' || !obj?.grid) {
+    if (store.mode !== 'edit' || store.activeTool !== 'loopcut' || !obj) {
       loopCutHoverRef.current = null
       return
     }
-    const { cols, rows } = obj.grid
     const world = getWorldPos(e)
-    let best: LoopCutHover | null = null
+    let bestA = -1
+    let bestB = -1
+    let bestT = 0
     let bestDist = Infinity
+    for (const [a, b] of getEdges(obj.mesh)) {
+      const va = applyTransform(obj.mesh.vertices[a], obj.transform)
+      const vb = applyTransform(obj.mesh.vertices[b], obj.transform)
+      const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestA = a
+        bestB = b
+        bestT = t
+      }
+    }
 
-    // horizontal edges (within a row) -> hovering one previews a new COLUMN
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols - 1; i++) {
-        const va = applyTransform(obj.mesh.vertices[j * cols + i], obj.transform)
-        const vb = applyTransform(obj.mesh.vertices[j * cols + i + 1], obj.transform)
-        const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
-        if (dist < bestDist) {
-          bestDist = dist
-          best = { axis: 'col', index: i, t }
-        }
-      }
-    }
-    // vertical edges (within a column) -> hovering one previews a new ROW
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < rows - 1; j++) {
-        const va = applyTransform(obj.mesh.vertices[j * cols + i], obj.transform)
-        const vb = applyTransform(obj.mesh.vertices[(j + 1) * cols + i], obj.transform)
-        const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
-        if (dist < bestDist) {
-          bestDist = dist
-          best = { axis: 'row', index: j, t }
-        }
-      }
-    }
     const prev = loopCutHoverRef.current
-    const next = bestDist < 40 ? best : null
-    if (!next || !prev || next.axis !== prev.axis || next.index !== prev.index) {
+    let next: LoopCutHover | null = null
+    if (bestDist < 40) {
+      const path = findFullLoop(obj.mesh, bestA, bestB)
+      if (path) next = { edgeA: bestA, edgeB: bestB, t: bestT, path }
+    }
+    if (!next || !prev || next.edgeA !== prev.edgeA || next.edgeB !== prev.edgeB) {
       loopCutCountRef.current = 1
     }
     loopCutHoverRef.current = next
@@ -648,7 +627,7 @@ export default function Viewport() {
     if (store0.mode === 'edit' && store0.activeTool === 'loopcut') {
       const hover = loopCutHoverRef.current
       if (hover && store0.selectedObjectId) {
-        store0.applyLoopCut(store0.selectedObjectId, hover.axis, hover.index, loopCutTs())
+        store0.applyLoopCut(store0.selectedObjectId, hover.edgeA, hover.edgeB, loopCutTs())
         store0.setActiveTool('select')
         loopCutHoverRef.current = null
         loopCutCountRef.current = 1
@@ -734,7 +713,9 @@ export default function Viewport() {
       if (hitIndex >= 0 && bestDist < threshold) {
         const store = useSceneStore.getState()
         const already = store.selectedVertices.has(hitIndex)
-        const next = e.shiftKey ? new Set(store.selectedVertices) : new Set<number>()
+        // clicking an already-selected vertex (no shift) keeps the whole multi-selection so it
+        // can be dragged as a group; shift toggles membership; clicking a new one resets to it alone
+        const next = e.shiftKey || already ? new Set(store.selectedVertices) : new Set<number>()
         if (e.shiftKey && already) next.delete(hitIndex)
         else next.add(hitIndex)
         store.setSelectedVertices(next)

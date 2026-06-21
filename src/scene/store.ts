@@ -1,7 +1,11 @@
 import { create } from 'zustand'
 import type { AppMode, EditElementType, Mesh, SceneObject, Transform, Vec2 } from './types'
 import { createCircleMesh, createRectMesh } from './primitives'
-import { insertLoopCutColumns, insertLoopCutRows } from './loopCut'
+import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
+import { findFullLoop } from './loopPath'
+import { extrudeEdges } from './extrude'
+import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
+import { edgeKey, getEdges } from './meshUtils'
 
 export type ActiveTool = 'select' | 'loopcut'
 
@@ -50,7 +54,12 @@ interface SceneState {
   setSelectedFaces: (indices: Set<number>) => void
   moveVertices: (objectId: string, indices: number[], dx: number, dy: number) => void
   setActiveTool: (tool: ActiveTool) => void
-  applyLoopCut: (objectId: string, axis: 'row' | 'col', index: number, ts: number[]) => void
+  /** Cut the quad strip running through the edge (edgeA, edgeB), at each t in `ts`. No-op if neither side is a quad. */
+  applyLoopCut: (objectId: string, edgeA: number, edgeB: number, ts: number[]) => void
+  /** Extrude the current edge/face selection on the selected object (no-op otherwise). */
+  extrudeSelection: () => void
+  /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
+  deleteSelection: () => void
 }
 
 function nextColor(objects: SceneObject[]) {
@@ -127,7 +136,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       zOrder: objects.length,
       visible: true,
       color: nextColor(objects),
-      grid: { cols: segX + 1, rows: segY + 1 },
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -158,7 +166,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       zOrder: objects.length,
       visible: true,
       color: nextColor(objects),
-      // no `grid`: arbitrary imported topology doesn't support loop cuts
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -252,17 +259,91 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   setActiveTool: (activeTool) => set({ activeTool }),
 
-  applyLoopCut: (objectId, axis, index, ts) => {
+  applyLoopCut: (objectId, edgeA, edgeB, ts) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const path = findFullLoop(obj.mesh, edgeA, edgeB)
+    if (!path) return
+    const result = applyLoopCutToMesh(obj.mesh, path, ts)
+
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => {
-        if (o.id !== objectId || !o.grid) return o
-        const result =
-          axis === 'row'
-            ? insertLoopCutRows(o.mesh, o.grid, index, ts)
-            : insertLoopCutColumns(o.mesh, o.grid, index, ts)
-        return { ...o, mesh: result.mesh, grid: result.grid }
-      }),
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh: result.mesh } : o)),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  extrudeSelection: () => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+
+    let edgeKeys: string[]
+    if (s.editElementType === 'edge' && s.selectedEdges.size > 0) {
+      edgeKeys = Array.from(s.selectedEdges)
+    } else if (s.editElementType === 'vertex' && s.selectedVertices.size >= 2) {
+      // extrude whichever existing mesh edges connect two selected vertices
+      edgeKeys = getEdges(obj.mesh)
+        .filter(([a, b]) => s.selectedVertices.has(a) && s.selectedVertices.has(b))
+        .map(([a, b]) => edgeKey(a, b))
+      if (edgeKeys.length === 0) return
+    } else {
+      return
+    }
+    const result = extrudeEdges(obj.mesh, edgeKeys)
+
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh: result.mesh } : o,
+      ),
+      editElementType: 'vertex',
+      selectedVertices: new Set(result.newVertexIndices),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  deleteSelection: () => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+
+    let mesh: Mesh
+    if (s.editElementType === 'vertex') {
+      if (s.selectedVertices.size === 0) return
+      mesh = deleteVertices(obj.mesh, Array.from(s.selectedVertices))
+    } else if (s.editElementType === 'edge') {
+      if (s.selectedEdges.size === 0) return
+      mesh = deleteEdges(obj.mesh, Array.from(s.selectedEdges))
+    } else {
+      if (s.selectedFaces.size === 0) return
+      mesh = deleteFaces(obj.mesh, Array.from(s.selectedFaces))
+    }
+
+    get().beginChange()
+    // an object with no faces renders nothing and (without a vertex/face-building tool)
+    // can't be made useful again, so remove it outright rather than leaving an empty husk
+    if (mesh.faces.length === 0) {
+      set((st) => ({
+        objects: st.objects.filter((o) => o.id !== objectId),
+        selectedObjectId: null,
+        mode: 'object',
+        selectedVertices: new Set(),
+        selectedEdges: new Set(),
+        selectedFaces: new Set(),
+      }))
+      return
+    }
+
+    set((st) => ({
+      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),

@@ -18,12 +18,6 @@ export interface Transform {
   pivot: Vec2 // in local (mesh) space; defaults to the origin
 }
 
-/** Row-major (idx = j*cols+i) grid topology info, present only for grid-based primitives (e.g. rect). */
-export interface GridInfo {
-  cols: number
-  rows: number
-}
-
 export interface SceneObject {
   id: string
   name: string
@@ -32,7 +26,6 @@ export interface SceneObject {
   zOrder: number
   visible: boolean
   color: string
-  grid?: GridInfo
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

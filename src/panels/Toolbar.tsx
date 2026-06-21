@@ -17,6 +17,9 @@ export default function Toolbar() {
   const activeTool = useSceneStore((s) => s.activeTool)
   const setActiveTool = useSceneStore((s) => s.setActiveTool)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
+  const selectedEdgesCount = useSceneStore((s) => s.selectedEdges.size)
+  const selectedVerticesCount = useSceneStore((s) => s.selectedVertices.size)
+  const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
 
   const [segX, setSegX] = useState(1)
   const [segY, setSegY] = useState(1)
@@ -122,11 +125,22 @@ export default function Toolbar() {
           </button>
           <button
             className={activeTool === 'loopcut' ? 'active' : ''}
-            disabled={!selectedObj?.grid}
-            title={selectedObj?.grid ? 'ループカット' : 'グリッド構造を持つオブジェクト（矩形）のみ対応'}
+            disabled={!selectedObj}
+            title="ループカット（四角面が連なっている部分にカーソルを合わせてください）"
             onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
           >
             ループカット
+          </button>
+          <button
+            disabled={
+              (editElementType === 'edge' && selectedEdgesCount === 0) ||
+              (editElementType === 'vertex' && selectedVerticesCount < 2) ||
+              editElementType === 'face'
+            }
+            title="選択した辺（または頂点間の既存の辺）を押し出します"
+            onClick={() => extrudeSelection()}
+          >
+            押し出し
           </button>
         </div>
       )}

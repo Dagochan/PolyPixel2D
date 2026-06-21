@@ -19,6 +19,14 @@ export default function App() {
         return
       }
 
+      if (meta && e.key.toLowerCase() === 'r') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        e.preventDefault()
+        store.setActiveTool(store.activeTool === 'loopcut' ? 'select' : 'loopcut')
+        return
+      }
+
       if (e.key === 'Tab') {
         e.preventDefault()
         const store = useSceneStore.getState()
@@ -32,7 +40,26 @@ export default function App() {
         if (store.mode === 'object' && store.selectedObjectId) {
           e.preventDefault()
           store.removeObject(store.selectedObjectId)
+        } else if (store.mode === 'edit') {
+          e.preventDefault()
+          store.deleteSelection()
         }
+        return
+      }
+
+      if (e.key === '1' || e.key === '2' || e.key === '3') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit') return
+        e.preventDefault()
+        store.setEditElementType(e.key === '1' ? 'vertex' : e.key === '2' ? 'edge' : 'face')
+        return
+      }
+
+      if (e.key.toLowerCase() === 'e') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit') return
+        e.preventDefault()
+        store.extrudeSelection()
       }
     }
     window.addEventListener('keydown', onKeyDown)
