@@ -1038,6 +1038,38 @@ export default function Viewport() {
         }
       }
     }
+
+    if (drag.kind === 'move-vertices') {
+      const store = useSceneStore.getState()
+      if (store.editElementType === 'vertex') {
+        const obj = store.objects.find((o) => o.id === drag.objectId)
+        if (obj) {
+          // snap-merge: dragging a vertex onto a topologically adjacent one welds them.
+          // Vertices that aren't connected by an edge are intentionally never considered,
+          // however close they end up — this is a weld, not a generic "merge by distance".
+          const movedSet = new Set(drag.indices)
+          let best: { keep: number; merge: number } | null = null
+          let bestDist = Infinity
+          for (const [a, b] of getEdges(obj.mesh)) {
+            const aMoved = movedSet.has(a)
+            const bMoved = movedSet.has(b)
+            if (aMoved === bMoved) continue // skip if both or neither moved
+            const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
+            const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+            const d = pxDistSq(pa.x, pa.y, pb.x, pb.y)
+            if (d < bestDist) {
+              bestDist = d
+              best = aMoved ? { keep: b, merge: a } : { keep: a, merge: b }
+            }
+          }
+          const SNAP_MERGE_RADIUS_PX = 5
+          if (best && bestDist < SNAP_MERGE_RADIUS_PX ** 2) {
+            store.mergeVertexPair(drag.objectId, best.keep, best.merge)
+          }
+        }
+      }
+    }
+
     dragRef.current = { kind: 'none' }
   }
 

@@ -67,6 +67,8 @@ interface SceneState {
   mergeSelectedVertices: (mode: MergeMode) => void
   /** Create one new face directly from the selected vertices, in selection (click) order. */
   fillSelectedFace: () => void
+  /** Merge `mergeIndex` into `keepIndex` (keepIndex's position wins). Used for drag-to-weld onto an adjacent vertex. */
+  mergeVertexPair: (objectId: string, keepIndex: number, mergeIndex: number) => void
 }
 
 function nextColor(objects: SceneObject[]) {
@@ -414,6 +416,20 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set([newFaceIndex]),
+    }))
+  },
+
+  mergeVertexPair: (objectId, keepIndex, mergeIndex) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    // no beginChange here: this is called right after a vertex drag, which already opened
+    // its own undo step — folding the snap-merge into the same step feels like one action
+    const { mesh, survivorIndex } = mergeVerticesInMesh(obj.mesh, [keepIndex, mergeIndex], 'first')
+    set((st) => ({
+      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      selectedVertices: survivorIndex >= 0 ? new Set([survivorIndex]) : new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
     }))
   },
 }))

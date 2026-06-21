@@ -112,8 +112,18 @@ export default function App() {
         store.fillSelectedFace()
       }
     }
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 2 || !awaitingMergeRef.current) return
+      e.preventDefault()
+      awaitingMergeRef.current = false
+      setAwaitingMerge(false)
+    }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('mousedown', onMouseDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('mousedown', onMouseDown)
+    }
   }, [])
 
   return (
@@ -126,7 +136,7 @@ export default function App() {
           <Properties />
         </div>
         {awaitingMerge && (
-          <div className="merge-hint">マージ: 1=最初の頂点　2=最後の頂点　3=中間位置　(Escでキャンセル)</div>
+          <div className="merge-hint">マージ: 1=最初の頂点　2=最後の頂点　3=中間位置　(Escまたは右クリックでキャンセル)</div>
         )}
       </div>
     </div>
