@@ -36,6 +36,8 @@ function round(v: number) {
   return Math.round(v * 1000) / 1000
 }
 
+const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
+
 /** Draw the mesh's UV wireframe (UV 0,0 = bottom-left, image 0,0 = top-left) and trigger a PNG download. */
 function exportUvMap(obj: SceneObject, resolution: number) {
   const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms)
@@ -186,16 +188,13 @@ export default function Properties() {
           <div className="prop-row">
             <label className="prop-field">
               <span>解像度</span>
-              <input
-                type="number"
-                step={1}
-                min={16}
-                value={uvResolution}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10)
-                  if (!Number.isNaN(v)) setUvResolution(v)
-                }}
-              />
+              <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
+                {UV_RESOLUTIONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
             </label>
             <button onClick={() => exportUvMap(obj, uvResolution)}>UVマップを書き出し</button>
           </div>

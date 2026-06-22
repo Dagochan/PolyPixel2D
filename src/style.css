@@ -278,7 +278,8 @@ body {
   min-width: 0;
 }
 
-.prop-field input {
+.prop-field input,
+.prop-field select {
   width: 100%;
   background: #1e1f22;
   color: #ddd;
@@ -288,7 +289,8 @@ body {
   font-size: 12px;
 }
 
-.prop-field input:focus {
+.prop-field input:focus,
+.prop-field select:focus {
   outline: 1px solid #4ea1ff;
 }
 
