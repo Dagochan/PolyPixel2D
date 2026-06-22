@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import { parseObjToMesh } from '../scene/objImport'
+import { ObjectModeIcon, EditModeIcon, VertexIcon, EdgeIcon, FaceIcon } from './icons'
 
 export default function Toolbar() {
   const mode = useSceneStore((s) => s.mode)
@@ -94,12 +95,20 @@ export default function Toolbar() {
         </label>
       </div>
 
-      <div className="toolbar-group">
-        <button className={mode === 'object' ? 'active' : ''} onClick={() => setMode('object')}>
-          オブジェクトモード
+      <div className="toolbar-group mode-group">
+        <button
+          className={mode === 'object' ? 'active' : ''}
+          title="オブジェクトモード"
+          onClick={() => setMode('object')}
+        >
+          <ObjectModeIcon />
         </button>
-        <button className={mode === 'edit' ? 'active' : ''} onClick={() => setMode('edit')}>
-          編集モード
+        <button
+          className={mode === 'edit' ? 'active' : ''}
+          title="編集モード"
+          onClick={() => setMode('edit')}
+        >
+          <EditModeIcon />
         </button>
       </div>
 
@@ -107,21 +116,24 @@ export default function Toolbar() {
         <div className="toolbar-group">
           <button
             className={editElementType === 'vertex' ? 'active' : ''}
+            title="頂点"
             onClick={() => setEditElementType('vertex')}
           >
-            頂点
+            <VertexIcon />
           </button>
           <button
             className={editElementType === 'edge' ? 'active' : ''}
+            title="辺"
             onClick={() => setEditElementType('edge')}
           >
-            辺
+            <EdgeIcon />
           </button>
           <button
             className={editElementType === 'face' ? 'active' : ''}
+            title="面"
             onClick={() => setEditElementType('face')}
           >
-            面
+            <FaceIcon />
           </button>
           <button
             className={activeTool === 'loopcut' ? 'active' : ''}
@@ -130,6 +142,14 @@ export default function Toolbar() {
             onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
           >
             ループカット
+          </button>
+          <button
+            className={activeTool === 'knife' ? 'active' : ''}
+            disabled={!selectedObj}
+            title="ナイフ（辺/頂点をクリックして連結。Enter/ダブルクリックで確定、Esc/右クリックでパスをキャンセル）"
+            onClick={() => setActiveTool(activeTool === 'knife' ? 'select' : 'knife')}
+          >
+            ナイフ
           </button>
           <button
             disabled={

@@ -36,11 +36,23 @@ body {
   padding: 4px 10px;
   cursor: pointer;
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toolbar button svg {
+  display: block;
 }
 
 .toolbar button.active {
   background: #4ea1ff;
   color: #111;
+}
+
+.mode-group button.active {
+  background: #e5484d;
+  color: #fff;
 }
 
 .toolbar button:hover { filter: brightness(1.15); }

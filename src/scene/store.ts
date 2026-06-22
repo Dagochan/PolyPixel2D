@@ -6,9 +6,10 @@ import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
-import { edgeKey, getEdges, pruneOrphanVertices } from './meshUtils'
+import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices } from './meshUtils'
 
-export type ActiveTool = 'select' | 'loopcut'
+export type ActiveTool = 'select' | 'loopcut' | 'knife'
 
 let nextId = 1
 function genId(prefix: string) {
@@ -28,6 +29,8 @@ interface SceneState {
   history: SceneObject[][]
   future: SceneObject[][]
   activeTool: ActiveTool
+  /** Edit-mode pivot, in local mesh space. `null` means "use the object's own pivot". */
+  editPivot: Vec2 | null
 
   beginChange: () => void
   undo: () => void
@@ -54,9 +57,15 @@ interface SceneState {
   setSelectedEdges: (keys: Set<string>) => void
   setSelectedFaces: (indices: Set<number>) => void
   moveVertices: (objectId: string, indices: number[], dx: number, dy: number) => void
+  /** Overwrite the absolute local-space position of each given vertex index. */
+  setVertexPositions: (objectId: string, indices: number[], positions: Vec2[]) => void
+  /** Set the edit-mode pivot to the centroid of the vertices touched by the current selection. */
+  setEditPivotFromSelection: () => void
   setActiveTool: (tool: ActiveTool) => void
   /** Cut the quad strip running through the edge (edgeA, edgeB), at each t in `ts`. No-op if neither side is a quad. */
   applyLoopCut: (objectId: string, edgeA: number, edgeB: number, ts: number[]) => void
+  /** Cut a polyline of vertex/edge-snapped points across one or more connected faces. */
+  applyKnifeCut: (objectId: string, path: KnifeCutPoint[]) => void
   /** Extrude the current edge/face selection on the selected object (no-op otherwise). */
   extrudeSelection: () => void
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
@@ -69,6 +78,25 @@ interface SceneState {
   fillSelectedFace: () => void
   /** Merge `mergeIndex` into `keepIndex` (keepIndex's position wins). Used for drag-to-weld onto an adjacent vertex. */
   mergeVertexPair: (objectId: string, keepIndex: number, mergeIndex: number) => void
+}
+
+/** The vertex indices touched by the current selection, given which element type is active. */
+export function selectedVertexIndices(
+  s: Pick<SceneState, 'editElementType' | 'selectedVertices' | 'selectedEdges' | 'selectedFaces'>,
+  mesh: Mesh,
+): number[] {
+  if (s.editElementType === 'vertex') return Array.from(s.selectedVertices)
+  const set = new Set<number>()
+  if (s.editElementType === 'edge') {
+    s.selectedEdges.forEach((key) => {
+      const [a, b] = parseEdgeKey(key)
+      set.add(a)
+      set.add(b)
+    })
+  } else {
+    s.selectedFaces.forEach((fi) => mesh.faces[fi]?.forEach((v) => set.add(v)))
+  }
+  return Array.from(set)
 }
 
 function nextColor(objects: SceneObject[]) {
@@ -96,6 +124,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   history: [],
   future: [],
   activeTool: 'select',
+  editPivot: null,
 
   beginChange: () =>
     set((s) => ({
@@ -179,7 +208,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
 
-  selectObject: (id) => set({ selectedObjectId: id, selectedVertices: new Set() }),
+  selectObject: (id) => set({ selectedObjectId: id, selectedVertices: new Set(), editPivot: null }),
 
   removeObject: (id) => {
     get().beginChange()
@@ -248,7 +277,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   setMode: (mode) =>
-    set({ mode, selectedVertices: new Set(), selectedEdges: new Set(), selectedFaces: new Set() }),
+    set({
+      mode,
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+      editPivot: null,
+    }),
   setEditElementType: (editElementType) =>
     set({ editElementType, selectedVertices: new Set(), selectedEdges: new Set(), selectedFaces: new Set() }),
   setSelectedVertices: (selectedVertices) => set({ selectedVertices }),
@@ -266,6 +301,31 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  setVertexPositions: (objectId, indices, positions) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== objectId) return o
+        const overrides = new Map(indices.map((idx, k) => [idx, positions[k]]))
+        const vertices = o.mesh.vertices.map((v, i) => overrides.get(i) ?? v)
+        return { ...o, mesh: { ...o.mesh, vertices } }
+      }),
+    })),
+
+  setEditPivotFromSelection: () => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+    if (!obj) return
+    const indices = selectedVertexIndices(s, obj.mesh)
+    if (indices.length === 0) return
+    let sx = 0
+    let sy = 0
+    for (const i of indices) {
+      sx += obj.mesh.vertices[i].x
+      sy += obj.mesh.vertices[i].y
+    }
+    set({ editPivot: { x: sx / indices.length, y: sy / indices.length } })
+  },
+
   setActiveTool: (activeTool) => set({ activeTool }),
 
   applyLoopCut: (objectId, edgeA, edgeB, ts) => {
@@ -274,6 +334,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const path = findFullLoop(obj.mesh, edgeA, edgeB)
     if (!path) return
     const result = applyLoopCutToMesh(obj.mesh, path, ts)
+    const mesh = pruneOrphanVertices(result.mesh)
+
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  applyKnifeCut: (objectId, path) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj || path.length < 2) return
+    const result = applyKnifeCutToMesh(obj.mesh, path)
     const mesh = pruneOrphanVertices(result.mesh)
 
     get().beginChange()

@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { useSceneStore } from '../scene/store'
+import { useSceneStore, selectedVertexIndices } from '../scene/store'
 import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scene/meshUtils'
 import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
-import type { SceneObject } from '../scene/types'
+import type { SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
+import type { KnifeCutPoint } from '../scene/knifeCut'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -51,6 +52,26 @@ interface LoopCutHover {
   path: LoopPath
 }
 
+/** Blender-style modal transform: started by R/S, follows the mouse with no button held,
+ *  confirmed by click/Enter, cancelled by Esc/right-click. */
+type ElementModal =
+  | {
+      kind: 'rotate'
+      objectId: string
+      indices: number[]
+      startPositions: Vec2[]
+      pivot: Vec2 // local mesh space
+      startAngle: number
+    }
+  | {
+      kind: 'scale'
+      objectId: string
+      indices: number[]
+      startPositions: Vec2[]
+      pivot: Vec2 // local mesh space
+      startDist: number
+    }
+
 export default function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
@@ -60,7 +81,117 @@ export default function Viewport() {
   const dragRef = useRef<DragMode>({ kind: 'none' })
   const loopCutHoverRef = useRef<LoopCutHover | null>(null)
   const loopCutCountRef = useRef(1)
+  const knifePathRef = useRef<KnifeCutPoint[]>([])
+  const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
+  const elementModalRef = useRef<ElementModal | null>(null)
+  const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
   const selectionBoxRef = useRef<HTMLDivElement>(null)
+
+  function knifePointsEqual(a: KnifeCutPoint, b: KnifeCutPoint): boolean {
+    if (a.type === 'vertex' && b.type === 'vertex') return a.index === b.index
+    if (a.type === 'edge' && b.type === 'edge') {
+      return a.a === b.a && a.b === b.b && Math.abs(a.t - b.t) < 1e-6
+    }
+    return false
+  }
+
+  function knifePointLocal(obj: SceneObject, p: KnifeCutPoint) {
+    if (p.type === 'vertex') return obj.mesh.vertices[p.index]
+    const va = obj.mesh.vertices[p.a]
+    const vb = obj.mesh.vertices[p.b]
+    return { x: va.x + (vb.x - va.x) * p.t, y: va.y + (vb.y - va.y) * p.t }
+  }
+
+  function finalizeKnife() {
+    const store = useSceneStore.getState()
+    const objectId = store.selectedObjectId
+    const path = [...knifePathRef.current]
+    const hover = knifeHoverRef.current
+    if (hover && (path.length === 0 || !knifePointsEqual(path[path.length - 1], hover))) {
+      path.push(hover)
+    }
+    knifePathRef.current = []
+    knifeHoverRef.current = null
+    if (objectId && path.length >= 2) {
+      store.applyKnifeCut(objectId, path)
+      store.setActiveTool('select')
+    }
+  }
+
+  function currentPointerWorld() {
+    const rect = containerRef.current!.getBoundingClientRect()
+    return screenToWorld(lastPointerRef.current.clientX, lastPointerRef.current.clientY, rect, viewRef.current)
+  }
+
+  /** R/S: start a Blender-style modal transform on the current edit-mode selection. */
+  function startElementModal(kind: 'rotate' | 'scale') {
+    const store = useSceneStore.getState()
+    if (store.mode !== 'edit' || !store.selectedObjectId) return
+    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+    if (!obj) return
+    const indices = selectedVertexIndices(store, obj.mesh)
+    if (indices.length === 0) return
+
+    const pivot = store.editPivot ?? obj.transform.pivot
+    const startPositions = indices.map((i) => ({ ...obj.mesh.vertices[i] }))
+    const local = inverseTransform(currentPointerWorld(), obj.transform)
+    store.beginChange()
+    if (kind === 'rotate') {
+      elementModalRef.current = {
+        kind: 'rotate',
+        objectId: obj.id,
+        indices,
+        startPositions,
+        pivot,
+        startAngle: Math.atan2(local.y - pivot.y, local.x - pivot.x),
+      }
+    } else {
+      elementModalRef.current = {
+        kind: 'scale',
+        objectId: obj.id,
+        indices,
+        startPositions,
+        pivot,
+        startDist: Math.max(1e-6, Math.hypot(local.x - pivot.x, local.y - pivot.y)),
+      }
+    }
+  }
+
+  /** Recompute and write the live vertex positions for the active R/S modal, given the cursor. */
+  function updateElementModal(ctrlKey: boolean) {
+    const modal = elementModalRef.current
+    if (!modal) return
+    const store = useSceneStore.getState()
+    const obj = store.objects.find((o) => o.id === modal.objectId)
+    if (!obj) return
+    const local = inverseTransform(currentPointerWorld(), obj.transform)
+
+    if (modal.kind === 'rotate') {
+      const currentAngle = Math.atan2(local.y - modal.pivot.y, local.x - modal.pivot.x)
+      let delta = currentAngle - modal.startAngle
+      if (ctrlKey) {
+        const step = (5 * Math.PI) / 180
+        delta = Math.round(delta / step) * step
+      }
+      const cos = Math.cos(delta)
+      const sin = Math.sin(delta)
+      const positions = modal.startPositions.map((p) => {
+        const dx = p.x - modal.pivot.x
+        const dy = p.y - modal.pivot.y
+        return { x: modal.pivot.x + dx * cos - dy * sin, y: modal.pivot.y + dx * sin + dy * cos }
+      })
+      store.setVertexPositions(modal.objectId, modal.indices, positions)
+    } else {
+      const dist = Math.hypot(local.x - modal.pivot.x, local.y - modal.pivot.y)
+      let scale = dist / modal.startDist
+      if (ctrlKey) scale = Math.round(scale * 20) / 20 // 5% snap
+      const positions = modal.startPositions.map((p) => ({
+        x: modal.pivot.x + (p.x - modal.pivot.x) * scale,
+        y: modal.pivot.y + (p.y - modal.pivot.y) * scale,
+      }))
+      store.setVertexPositions(modal.objectId, modal.indices, positions)
+    }
+  }
 
   function loopCutTs(): number[] {
     const count = loopCutCountRef.current
@@ -129,6 +260,14 @@ export default function Viewport() {
         useSceneStore.getState().setActiveTool('select')
         loopCutHoverRef.current = null
       }
+      if (useSceneStore.getState().activeTool === 'knife') {
+        // discard the in-progress path only — stay in knife mode (press K again to exit)
+        knifePathRef.current = []
+      }
+      if (elementModalRef.current) {
+        useSceneStore.getState().cancelChange()
+        elementModalRef.current = null
+      }
     }
 
     // Chrome/Edge trigger native middle-click auto-scroll directly off `mousedown`,
@@ -158,7 +297,13 @@ export default function Viewport() {
       handlePointerDown(e)
     }
     const onPointerMove = (e: PointerEvent) => {
+      lastPointerRef.current = { clientX: e.clientX, clientY: e.clientY }
+      if (elementModalRef.current) {
+        updateElementModal(e.ctrlKey)
+        return
+      }
       updateLoopCutHover(e)
+      updateKnifeHover(e)
       handlePointerMove(e)
     }
     const onPointerUp = (e: PointerEvent) => {
@@ -169,10 +314,25 @@ export default function Viewport() {
     // (the two-finger-tap gesture conflicts with an active single-finger drag), so Escape
     // is the reliable cancel path — this is also how Blender itself supports cancellation.
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+
       if (e.key === 'Escape') cancelActiveDrag()
+      if (e.key === 'Enter') {
+        if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
+        if (elementModalRef.current) elementModalRef.current = null
+      }
+      if (!elementModalRef.current && !e.ctrlKey && !e.metaKey) {
+        if (e.key.toLowerCase() === 'r') startElementModal('rotate')
+        if (e.key.toLowerCase() === 's') startElementModal('scale')
+      }
+    }
+    const onDblClick = () => {
+      if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
     }
     window.addEventListener('keydown', onKeyDown)
     container.addEventListener('pointerdown', onPointerDown)
+    container.addEventListener('dblclick', onDblClick)
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
 
@@ -184,6 +344,7 @@ export default function Viewport() {
       container.removeEventListener('auxclick', onAuxClick)
       container.removeEventListener('contextmenu', onContextMenu)
       container.removeEventListener('pointerdown', onPointerDown)
+      container.removeEventListener('dblclick', onDblClick)
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('keydown', onKeyDown)
@@ -193,8 +354,21 @@ export default function Viewport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /** scene.clear() only detaches children — it doesn't free their GPU buffers, so every
+   *  geometry/material created last frame must be disposed explicitly or it leaks. */
+  function disposeSceneContents(scene: THREE.Scene) {
+    scene.traverse((obj) => {
+      const mesh = obj as THREE.Mesh | THREE.LineSegments
+      mesh.geometry?.dispose()
+      const material = (obj as THREE.Mesh).material
+      if (Array.isArray(material)) material.forEach((m) => m.dispose())
+      else material?.dispose()
+    })
+  }
+
   function rebuildScene() {
     const scene = sceneRef.current
+    disposeSceneContents(scene)
     scene.clear()
     scene.add(new THREE.AmbientLight(0xffffff, 1))
     addGrid(scene)
@@ -324,6 +498,23 @@ export default function Viewport() {
       if (obj) addGizmo(scene, obj)
     }
 
+    // edit-mode pivot marker (small, always-on) + live R/S modal preview
+    if (mode === 'edit' && selectedObjectId) {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) {
+        const state = useSceneStore.getState()
+        const indices = selectedVertexIndices(state, obj.mesh)
+        if (indices.length > 0) {
+          const pivot = state.editPivot ?? obj.transform.pivot
+          addEditPivotMarker(scene, obj, pivot)
+        }
+        const modal = elementModalRef.current
+        if (modal && modal.objectId === obj.id) {
+          addElementModalPreview(scene, obj, modal)
+        }
+      }
+    }
+
     // loop-cut preview (one polyline per pending parallel cut, running the length of the loop)
     const { activeTool } = useSceneStore.getState()
     if (mode === 'edit' && activeTool === 'loopcut' && loopCutHoverRef.current) {
@@ -333,6 +524,40 @@ export default function Viewport() {
         for (const t of loopCutTs()) addLoopCutPreview(scene, obj, hover.path, t)
       }
     }
+
+    // knife preview: confirmed points + a live segment out to the cursor
+    if (mode === 'edit' && activeTool === 'knife') {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) addKnifePreview(scene, obj)
+    }
+  }
+
+  function addKnifePreview(scene: THREE.Scene, obj: SceneObject) {
+    const points = [...knifePathRef.current]
+    if (knifeHoverRef.current) points.push(knifeHoverRef.current)
+    if (points.length === 0) return
+
+    const worldPts = points.map((p) => applyTransform(knifePointLocal(obj, p), obj.transform))
+
+    const positions: number[] = []
+    for (let i = 0; i < worldPts.length - 1; i++) {
+      positions.push(worldPts[i].x, worldPts[i].y, 0.7, worldPts[i + 1].x, worldPts[i + 1].y, 0.7)
+    }
+    if (positions.length > 0) {
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+      scene.add(new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff5577, depthTest: false })))
+    }
+
+    const pxToWorld = 1 / viewRef.current.zoom
+    worldPts.forEach((p, i) => {
+      const isHoverTip = i === worldPts.length - 1 && knifeHoverRef.current
+      const dotGeom = new THREE.CircleGeometry((isHoverTip ? 4 : 3) * pxToWorld, 12)
+      const color = isHoverTip ? 0xff5577 : 0xffffff
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color, depthTest: false }))
+      dot.position.set(p.x, p.y, 0.71)
+      scene.add(dot)
+    })
   }
 
   function addLoopCutPreview(scene: THREE.Scene, obj: SceneObject, path: LoopPath, t: number) {
@@ -433,6 +658,50 @@ export default function Viewport() {
       { key: 'tr', ...applyTransform({ x: lb.maxX, y: lb.maxY }, obj.transform) },
     ]
     return { localBounds: lb, center, ringRadius, arrowLength, axisX, axisY, corners }
+  }
+
+  /** Small always-on marker at the edit-mode pivot (set via P) — deliberately not a full
+   *  gizmo, just enough to know where rotate/scale will anchor when R/S is pressed. */
+  function addEditPivotMarker(scene: THREE.Scene, obj: SceneObject, pivot: Vec2) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const center = applyTransform(pivot, obj.transform)
+    const ringGeom = new THREE.RingGeometry(6 * pxToWorld - 0.8 * pxToWorld, 6 * pxToWorld + 0.8 * pxToWorld, 24)
+    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false }))
+    ring.position.set(center.x, center.y, 0.65)
+    scene.add(ring)
+  }
+
+  /** Live feedback while an R/S modal transform is in progress: a radial line from the pivot
+   *  out to the cursor (and, for rotate, a faint full ring as an angle reference). */
+  function addElementModalPreview(scene: THREE.Scene, obj: SceneObject, modal: ElementModal) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const center = applyTransform(modal.pivot, obj.transform)
+    const world = screenToWorld(
+      lastPointerRef.current.clientX,
+      lastPointerRef.current.clientY,
+      containerRef.current!.getBoundingClientRect(),
+      viewRef.current,
+    )
+
+    if (modal.kind === 'rotate') {
+      const ringRadius = RING_RADIUS_PX * pxToWorld
+      const ringGeom = new THREE.RingGeometry(ringRadius - 1 * pxToWorld, ringRadius + 1 * pxToWorld, 48)
+      const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, opacity: 0.5, transparent: true }))
+      ring.position.set(center.x, center.y, 0.55)
+      scene.add(ring)
+    }
+
+    const lineGeom = new THREE.BufferGeometry()
+    lineGeom.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([center.x, center.y, 0.7, world.x, world.y, 0.7], 3),
+    )
+    scene.add(new THREE.LineSegments(lineGeom, new THREE.LineBasicMaterial({ color: 0xe5484d, depthTest: false })))
+
+    const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 16)
+    const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false }))
+    dot.position.set(center.x, center.y, 0.71)
+    scene.add(dot)
   }
 
   function addGizmo(scene: THREE.Scene, obj: SceneObject) {
@@ -612,12 +881,66 @@ export default function Viewport() {
     let next: LoopCutHover | null = null
     if (bestDist < 40) {
       const path = findFullLoop(obj.mesh, bestA, bestB)
-      if (path) next = { edgeA: bestA, edgeB: bestB, t: bestT, path }
+      if (path) {
+        // path.cuts[0] is oriented to the *face's* natural winding, which may be reversed
+        // relative to (bestA, bestB) — recompute t against that same orientation so the
+        // preview always advances the same way the cursor does, regardless of which way
+        // getEdges happened to sort this particular edge's vertex indices.
+        const [ca, cb] = path.cuts[0]
+        const va2 = applyTransform(obj.mesh.vertices[ca], obj.transform)
+        const vb2 = applyTransform(obj.mesh.vertices[cb], obj.transform)
+        const { t } = pxDistToSegmentWithT(world.x, world.y, va2.x, va2.y, vb2.x, vb2.y)
+        next = { edgeA: bestA, edgeB: bestB, t, path }
+      }
     }
     if (!next || !prev || next.edgeA !== prev.edgeA || next.edgeB !== prev.edgeB) {
       loopCutCountRef.current = 1
     }
     loopCutHoverRef.current = next
+  }
+
+  /** Find the nearest existing vertex, falling back to the nearest point on an existing edge. */
+  function updateKnifeHover(e: PointerEvent) {
+    const store = useSceneStore.getState()
+    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+    if (store.mode !== 'edit' || store.activeTool !== 'knife' || !obj) {
+      knifeHoverRef.current = null
+      return
+    }
+    const world = getWorldPos(e)
+    const zoom = viewRef.current.zoom
+
+    let bestVertex = -1
+    let bestVertexDist = Infinity
+    obj.mesh.vertices.forEach((v, i) => {
+      const p = applyTransform(v, obj.transform)
+      const dist = Math.hypot((world.x - p.x) * zoom, (world.y - p.y) * zoom)
+      if (dist < bestVertexDist) {
+        bestVertexDist = dist
+        bestVertex = i
+      }
+    })
+    if (bestVertexDist < VERTEX_HIT_RADIUS) {
+      knifeHoverRef.current = { type: 'vertex', index: bestVertex }
+      return
+    }
+
+    let bestA = -1
+    let bestB = -1
+    let bestT = 0
+    let bestDist = Infinity
+    for (const [a, b] of getEdges(obj.mesh)) {
+      const va = applyTransform(obj.mesh.vertices[a], obj.transform)
+      const vb = applyTransform(obj.mesh.vertices[b], obj.transform)
+      const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestA = a
+        bestB = b
+        bestT = t
+      }
+    }
+    knifeHoverRef.current = bestDist < 20 ? { type: 'edge', a: bestA, b: bestB, t: bestT } : null
   }
 
   function handlePointerDown(e: PointerEvent) {
@@ -633,7 +956,23 @@ export default function Viewport() {
     }
     if (e.button !== 0) return
 
+    // a left-click while an R/S modal transform is running confirms it (Blender-style)
+    if (elementModalRef.current) {
+      elementModalRef.current = null
+      return
+    }
+
     const store0 = useSceneStore.getState()
+    if (store0.mode === 'edit' && store0.activeTool === 'knife') {
+      const hover = knifeHoverRef.current
+      if (hover) {
+        const path = knifePathRef.current
+        if (path.length === 0 || !knifePointsEqual(path[path.length - 1], hover)) {
+          knifePathRef.current = [...path, hover]
+        }
+      }
+      return
+    }
     if (store0.mode === 'edit' && store0.activeTool === 'loopcut') {
       const hover = loopCutHoverRef.current
       if (hover && store0.selectedObjectId) {
@@ -968,6 +1307,7 @@ export default function Viewport() {
       store.setPivot(drag.objectId, localUnderMouse)
       return
     }
+
 
     if (drag.kind === 'box-select') {
       dragRef.current = { ...drag, endClientX: e.clientX, endClientY: e.clientY }

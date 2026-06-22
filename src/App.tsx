@@ -59,6 +59,22 @@ export default function App() {
         return
       }
 
+      if (!meta && e.key.toLowerCase() === 'p') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit') return
+        e.preventDefault()
+        store.setEditPivotFromSelection()
+        return
+      }
+
+      if (!meta && e.key.toLowerCase() === 'k') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        e.preventDefault()
+        store.setActiveTool(store.activeTool === 'knife' ? 'select' : 'knife')
+        return
+      }
+
       if (meta && e.key.toLowerCase() === 'a') {
         const store = useSceneStore.getState()
         if (store.mode !== 'edit' || !store.selectedObjectId) return
