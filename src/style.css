@@ -90,13 +90,13 @@ body {
   position: fixed;
   inset: 0;
   background: #000000aa;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 100;
 }
 
 .uv-modal {
+  position: absolute;
+  left: 50%;
+  top: 50%;
   background: #2a2b2e;
   border: 1px solid #111;
   border-radius: 8px;
@@ -112,6 +112,8 @@ body {
   justify-content: space-between;
   font-size: 13px;
   color: #ddd;
+  cursor: grab;
+  touch-action: none;
 }
 
 .merge-hint {

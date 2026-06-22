@@ -58,6 +58,7 @@ interface SceneState {
   toggleVisibility: (id: string) => void
   renameObject: (id: string, name: string) => void
   setMaterialColor: (id: string, color: string) => void
+  setMaterialTexture: (id: string, textureUrl: string | undefined) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
   setTransform: (id: string, transform: Partial<Transform>) => void
@@ -261,6 +262,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? { ...o, material: { ...o.material, color } } : o)),
     })),
+
+  setMaterialTexture: (id, textureUrl) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, material: { ...o.material, textureUrl } } : o)),
+    }))
+  },
 
   setUvIslandTransform: (id, islandIndex, transform) =>
     set((s) => ({

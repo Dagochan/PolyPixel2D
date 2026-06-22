@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import { computeUVs } from '../scene/uv'
 import { getEdges } from '../scene/meshUtils'
@@ -66,8 +66,34 @@ export default function Properties() {
   const setTransform = useSceneStore((s) => s.setTransform)
   const setPivot = useSceneStore((s) => s.setPivot)
   const setMaterialColor = useSceneStore((s) => s.setMaterialColor)
+  const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
+  const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 })
+  const modalDragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number } | null>(
+    null,
+  )
+  const textureInputRef = useRef<HTMLInputElement>(null)
+
+  const handleModalHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    modalDragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: modalOffset.x, startOffsetY: modalOffset.y }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const handleModalHeaderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = modalDragRef.current
+    if (!d) return
+    setModalOffset({ x: d.startOffsetX + (e.clientX - d.startX), y: d.startOffsetY + (e.clientY - d.startY) })
+  }
+  const handleModalHeaderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    modalDragRef.current = null
+    e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  const handleTextureFile = (objId: string, file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => setMaterialTexture(objId, reader.result as string)
+    reader.readAsDataURL(file)
+  }
 
   return (
     <div className="panel properties">
@@ -120,7 +146,7 @@ export default function Properties() {
           <div className="prop-section">マテリアル</div>
           <div className="prop-row">
             <label className="prop-field">
-              <span>色</span>
+              <span>色{obj.material.textureUrl ? '（テクスチャに乗算）' : ''}</span>
               <input
                 type="color"
                 value={obj.material.color}
@@ -128,10 +154,34 @@ export default function Properties() {
               />
             </label>
           </div>
+          <div className="prop-row">
+            <input
+              ref={textureInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) handleTextureFile(obj.id, file)
+                e.target.value = ''
+              }}
+            />
+            <button onClick={() => textureInputRef.current?.click()}>テクスチャを設定</button>
+            {obj.material.textureUrl && (
+              <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
+            )}
+          </div>
 
           <div className="prop-section">UV</div>
           <div className="prop-row">
-            <button onClick={() => setUvEditorOpen(true)}>UVを編集...</button>
+            <button
+              onClick={() => {
+                setModalOffset({ x: 0, y: 0 })
+                setUvEditorOpen(true)
+              }}
+            >
+              UVを編集...
+            </button>
           </div>
           <div className="prop-row">
             <label className="prop-field">
@@ -160,10 +210,21 @@ export default function Properties() {
 
       {uvEditorOpen && obj && (
         <div className="uv-modal-backdrop" onClick={() => setUvEditorOpen(false)}>
-          <div className="uv-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="uv-modal-header">
+          <div
+            className="uv-modal"
+            style={{ transform: `translate(-50%, -50%) translate(${modalOffset.x}px, ${modalOffset.y}px)` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className="uv-modal-header"
+              onPointerDown={handleModalHeaderPointerDown}
+              onPointerMove={handleModalHeaderPointerMove}
+              onPointerUp={handleModalHeaderPointerUp}
+            >
               <span>UVエディタ — {obj.name}</span>
-              <button onClick={() => setUvEditorOpen(false)}>閉じる</button>
+              <button onPointerDown={(e) => e.stopPropagation()} onClick={() => setUvEditorOpen(false)}>
+                閉じる
+              </button>
             </div>
             <UvEditor obj={obj} size={560} />
             <div className="uv-hint">ドラッグで移動、右上の角を引いて拡大縮小</div>

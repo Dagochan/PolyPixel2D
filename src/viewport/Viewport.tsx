@@ -7,6 +7,7 @@ import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } fro
 import type { SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
+import { computeUVs } from '../scene/uv'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -86,6 +87,8 @@ export default function Viewport() {
   const elementModalRef = useRef<ElementModal | null>(null)
   const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
   const placePreviewRef = useRef<Vec2 | null>(null)
+  const textureCacheRef = useRef(new Map<string, THREE.Texture>())
+  const textureLoaderRef = useRef(new THREE.TextureLoader())
   const selectionBoxRef = useRef<HTMLDivElement>(null)
 
   function knifePointsEqual(a: KnifeCutPoint, b: KnifeCutPoint): boolean {
@@ -358,6 +361,8 @@ export default function Viewport() {
       window.removeEventListener('keydown', onKeyDown)
       container.removeChild(renderer.domElement)
       renderer.dispose()
+      for (const tex of textureCacheRef.current.values()) tex.dispose()
+      textureCacheRef.current.clear()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -398,8 +403,22 @@ export default function Viewport() {
       const positions = obj.mesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+      const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms).flatMap((uv) => [uv.x, uv.y])
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
       geom.setIndex(triangulate(obj.mesh))
-      const mat = new THREE.MeshBasicMaterial({ color: obj.material.color, side: THREE.DoubleSide })
+
+      let texture: THREE.Texture | undefined
+      if (obj.material.textureUrl) {
+        texture = textureCacheRef.current.get(obj.material.textureUrl)
+        if (!texture) {
+          texture = textureLoaderRef.current.load(obj.material.textureUrl)
+          texture.colorSpace = THREE.SRGBColorSpace
+          textureCacheRef.current.set(obj.material.textureUrl, texture)
+        }
+      }
+      // material.color always multiplies the texture (if any) — the Properties panel labels
+      // this explicitly so a colored default doesn't unexpectedly tint an imported texture
+      const mat = new THREE.MeshBasicMaterial({ color: obj.material.color, map: texture, side: THREE.DoubleSide })
       const mesh = new THREE.Mesh(geom, mat)
       mesh.position.set(obj.transform.x, obj.transform.y, 0)
       mesh.rotation.z = obj.transform.rotation
