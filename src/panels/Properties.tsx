@@ -40,7 +40,8 @@ const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
 
 /** Draw the mesh's UV wireframe (UV 0,0 = bottom-left, image 0,0 = top-left) and trigger a PNG download. */
 function exportUvMap(obj: SceneObject, resolution: number) {
-  const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms)
+  const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
+  const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams)
   const canvas = document.createElement('canvas')
   canvas.width = resolution
   canvas.height = resolution
@@ -71,6 +72,7 @@ export default function Properties() {
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
+  const [matchTexelDensity, setMatchTexelDensity] = useState(false)
   const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 })
   const modalDragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number } | null>(
     null,
@@ -225,8 +227,16 @@ export default function Properties() {
                 閉じる
               </button>
             </div>
-            <UvEditor obj={obj} size={560} />
-            <div className="uv-hint">ドラッグで移動、右上の角を引いて拡大縮小</div>
+            <UvEditor obj={obj} size={560} matchTexelDensity={matchTexelDensity} />
+            <label className="uv-hint uv-density-toggle">
+              <input
+                type="checkbox"
+                checked={matchTexelDensity}
+                onChange={(e) => setMatchTexelDensity(e.target.checked)}
+              />
+              テクセル密度を一致させる（1つの島をスケールすると他も比率を保って追従）
+            </label>
+            <div className="uv-hint">ドラッグで移動、右上の角を引いて拡大縮小、左下の鍵アイコンで密度一致の対象から除外</div>
           </div>
         </div>
       )}

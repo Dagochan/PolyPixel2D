@@ -262,6 +262,14 @@ body {
   justify-content: flex-start;
 }
 
+.uv-density-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: #aaa;
+}
+
 .uv-editor-canvas {
   border-radius: 3px;
   cursor: grab;

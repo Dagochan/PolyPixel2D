@@ -28,6 +28,7 @@ export default function Toolbar() {
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
   const selectedEdgesCount = useSceneStore((s) => s.selectedEdges.size)
   const selectedVerticesCount = useSceneStore((s) => s.selectedVertices.size)
+  const toggleSeamOnSelection = useSceneStore((s) => s.toggleSeamOnSelection)
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
 
   const [segX, setSegX] = useState(1)
@@ -301,6 +302,13 @@ export default function Toolbar() {
             onClick={() => extrudeSelection()}
           >
             押し出し
+          </button>
+          <button
+            disabled={editElementType !== 'edge' || selectedEdgesCount === 0}
+            title="選択した辺をUVシームとしてマーク/解除（トポロジーは繋がったままUVだけ分割できます）"
+            onClick={() => toggleSeamOnSelection()}
+          >
+            シーム
           </button>
         </div>
       )}

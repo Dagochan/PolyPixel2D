@@ -116,6 +116,9 @@ interface SceneState {
   deleteSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
+  /** Toggle UV seam on the current edge selection: marks all as seams unless they all already
+   *  are, in which case it clears them. No-op outside edge mode or with nothing selected. */
+  toggleSeamOnSelection: () => void
   /** Merge the current vertex selection (2+) into one vertex, positioned per `mode`. */
   mergeSelectedVertices: (mode: MergeMode) => void
   /** Create one new face directly from the selected vertices, in selection (click) order. */
@@ -327,16 +330,25 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
-  setUvIslandTransform: (id, islandIndex, transform) =>
+  setUvIslandTransform: (id, islandIndex, transform) => {
+    // never let a bad numeric computation (NaN/Infinity) get written — it would otherwise
+    // persist forever, since reads merge stored values in rather than always trusting a fresh default
+    const clean = Object.fromEntries(
+      Object.entries(transform).filter(
+        ([, v]) => typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)),
+      ),
+    )
+    if (Object.keys(clean).length === 0) return
     set((s) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id) return o
         const next = [...(o.uvIslandTransforms ?? [])]
-        while (next.length <= islandIndex) next.push({ offsetX: 0, offsetY: 0, scale: 1 })
-        next[islandIndex] = { ...next[islandIndex], ...transform }
+        while (next.length <= islandIndex) next.push({ offsetX: 0, offsetY: 0, scale: 1, rotation: 0 })
+        next[islandIndex] = { ...next[islandIndex], ...clean }
         return { ...o, uvIslandTransforms: next }
       }),
-    })),
+    }))
+  },
 
   setTransform: (id, transform) =>
     set((s) => ({
@@ -553,6 +565,23 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     } else {
       set({ selectedFaces: new Set(obj.mesh.faces.map((_, i) => i)) })
     }
+  },
+
+  toggleSeamOnSelection: () => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId || s.editElementType !== 'edge' || s.selectedEdges.size === 0) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const current = new Set(obj.seamEdges ?? [])
+    const allAlreadySeams = Array.from(s.selectedEdges).every((k) => current.has(k))
+    for (const k of s.selectedEdges) {
+      if (allAlreadySeams) current.delete(k)
+      else current.add(k)
+    }
+    set({
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, seamEdges: Array.from(current) } : o)),
+    })
   },
 
   mergeSelectedVertices: (mode) => {

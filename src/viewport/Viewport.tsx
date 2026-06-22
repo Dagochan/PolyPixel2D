@@ -415,7 +415,8 @@ export default function Viewport() {
       const positions = obj.mesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-      const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms).flatMap((uv) => [uv.x, uv.y])
+      const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
+      const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams).flatMap((uv) => [uv.x, uv.y])
       geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
       geom.setIndex(triangulate(obj.mesh))
 
@@ -462,6 +463,20 @@ export default function Viewport() {
 
       // edit-mode overlays
       if (mode === 'edit' && isSelected) {
+        if (obj.seamEdges && obj.seamEdges.length > 0) {
+          const seamPositions: number[] = []
+          for (const key of obj.seamEdges) {
+            const [a, b] = parseEdgeKey(key)
+            const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
+            const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+            seamPositions.push(pa.x, pa.y, 0.022, pb.x, pb.y, 0.022)
+          }
+          const seamGeom = new THREE.BufferGeometry()
+          seamGeom.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3))
+          const seamMat = new THREE.LineBasicMaterial({ color: 0xff3355, depthTest: false })
+          group.add(new THREE.LineSegments(seamGeom, seamMat))
+        }
+
         if (editElementType === 'vertex') {
           obj.mesh.vertices.forEach((v, i) => {
             const p = applyTransform(v, obj.transform)

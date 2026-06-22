@@ -39,6 +39,11 @@ export interface UvIslandTransform {
   offsetX: number
   offsetY: number
   scale: number
+  /** Radians, about the island's own base-UV bounding-box center. */
+  rotation: number
+  /** Opt this island out of "match texel density" propagation — it neither pushes its density
+   *  onto other islands nor gets pulled to theirs, e.g. for a deliberately denser face. */
+  excludeFromDensityMatch?: boolean
 }
 
 export interface SceneObject {
@@ -50,6 +55,9 @@ export interface SceneObject {
   visible: boolean
   material: Material
   uvIslandTransforms?: UvIslandTransform[]
+  /** Edge keys ("a_b", a<b) marked as UV seams — cuts a UV island here even if the mesh
+   *  itself stays connected (e.g. splitting a one-skin character's limbs from its torso). */
+  seamEdges?: string[]
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'
