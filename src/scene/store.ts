@@ -1,5 +1,14 @@
 import { create } from 'zustand'
-import type { AppMode, EditElementType, Mesh, SceneObject, Transform, UvIslandTransform, Vec2 } from './types'
+import type {
+  AppMode,
+  EditElementType,
+  Mesh,
+  ReferenceImage,
+  SceneObject,
+  Transform,
+  UvIslandTransform,
+  Vec2,
+} from './types'
 import { createCircleMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFullLoop } from './loopPath'
@@ -11,6 +20,8 @@ import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland
 
 export type ActiveTool = 'select' | 'loopcut' | 'knife' | 'place-rect' | 'place-circle'
 
+export type { ReferenceImage }
+
 /** Parameters for a primitive about to be placed as an island inside the edited mesh (see `setPendingPrimitive`). */
 export type PendingPrimitive =
   | { kind: 'rect'; width: number; height: number; segX: number; segY: number }
@@ -19,6 +30,15 @@ export type PendingPrimitive =
 let nextId = 1
 function genId(prefix: string) {
   return `${prefix}_${nextId++}`
+}
+
+/** After loading a project, make sure new ids can't collide with the ones it brought in. */
+function bumpNextIdPast(objects: SceneObject[]) {
+  for (const o of objects) {
+    const suffix = o.id.split('_').pop()
+    const n = suffix ? parseInt(suffix, 10) : NaN
+    if (!Number.isNaN(n) && n >= nextId) nextId = n + 1
+  }
 }
 
 const DEFAULT_MATERIAL_COLOR = '#91AA9B'
@@ -38,6 +58,10 @@ interface SceneState {
   editPivot: Vec2 | null
   /** Dimensions for the primitive currently being placed (activeTool === 'place-rect'/'place-circle'). */
   pendingPrimitive: PendingPrimitive | null
+  /** Trace-over reference image shown behind everything; `null` if none loaded. */
+  referenceImage: ReferenceImage | null
+  /** Global opacity (0..1) applied to every object's material, so you can see a reference image through them. */
+  meshOpacity: number
 
   beginChange: () => void
   undo: () => void
@@ -53,6 +77,11 @@ interface SceneState {
   addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
   addCircleIsland: (objectId: string, at: Vec2, radius: number, segments: number) => void
   setPendingPrimitive: (p: PendingPrimitive | null) => void
+  setReferenceImage: (url: string | null) => void
+  setReferenceImageTransform: (transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'opacity'>>) => void
+  setMeshOpacity: (opacity: number) => void
+  /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
+  loadProject: (project: { objects: SceneObject[]; referenceImage: ReferenceImage | null; meshOpacity: number }) => void
   selectObject: (id: string | null) => void
   removeObject: (id: string) => void
   toggleVisibility: (id: string) => void
@@ -137,6 +166,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   activeTool: 'select',
   editPivot: null,
   pendingPrimitive: null,
+  referenceImage: null,
+  meshOpacity: 1,
 
   beginChange: () =>
     set((s) => ({
@@ -237,6 +268,32 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   setPendingPrimitive: (pendingPrimitive) => set({ pendingPrimitive }),
+
+  setReferenceImage: (url) =>
+    set({ referenceImage: url ? { url, x: 0, y: 0, scale: 1, opacity: 1 } : null }),
+
+  setReferenceImageTransform: (transform) =>
+    set((s) => (s.referenceImage ? { referenceImage: { ...s.referenceImage, ...transform } } : {})),
+
+  setMeshOpacity: (opacity) => set({ meshOpacity: Math.max(0, Math.min(1, opacity)) }),
+
+  loadProject: (project) => {
+    bumpNextIdPast(project.objects)
+    set({
+      objects: project.objects,
+      referenceImage: project.referenceImage,
+      meshOpacity: project.meshOpacity,
+      selectedObjectId: null,
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+      mode: 'object',
+      editPivot: null,
+      activeTool: 'select',
+      history: [],
+      future: [],
+    })
+  },
 
   selectObject: (id) => set({ selectedObjectId: id, selectedVertices: new Set(), editPivot: null }),
 

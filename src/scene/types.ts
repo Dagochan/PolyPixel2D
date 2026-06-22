@@ -20,8 +20,17 @@ export interface Transform {
 
 export interface Material {
   color: string
-  /** Reserved for future texture support — not yet read by the renderer. */
+  /** Data URL of an imported texture image, multiplied by `color`. */
   textureUrl?: string
+}
+
+/** Scene-wide trace-over reference image (not tied to any object). */
+export interface ReferenceImage {
+  url: string
+  x: number
+  y: number
+  scale: number
+  opacity: number
 }
 
 /** Manual adjustment on top of an island's auto-normalized (0..1) base UV. Indexed by island

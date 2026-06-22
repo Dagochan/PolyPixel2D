@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { useSceneStore, selectedVertexIndices, type PendingPrimitive } from '../scene/store'
+import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
 import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scene/meshUtils'
 import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
@@ -384,10 +384,22 @@ export default function Viewport() {
     disposeSceneContents(scene)
     scene.clear()
     scene.add(new THREE.AmbientLight(0xffffff, 1))
+
+    const {
+      objects,
+      selectedObjectId,
+      mode,
+      editElementType,
+      selectedVertices,
+      selectedEdges,
+      selectedFaces,
+      referenceImage,
+      meshOpacity,
+    } = useSceneStore.getState()
+
+    if (referenceImage) addReferenceImage(scene, referenceImage)
     addGrid(scene)
 
-    const { objects, selectedObjectId, mode, editElementType, selectedVertices, selectedEdges, selectedFaces } =
-      useSceneStore.getState()
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
 
     sorted.forEach((obj, depthIndex) => {
@@ -418,7 +430,13 @@ export default function Viewport() {
       }
       // material.color always multiplies the texture (if any) — the Properties panel labels
       // this explicitly so a colored default doesn't unexpectedly tint an imported texture
-      const mat = new THREE.MeshBasicMaterial({ color: obj.material.color, map: texture, side: THREE.DoubleSide })
+      const mat = new THREE.MeshBasicMaterial({
+        color: obj.material.color,
+        map: texture,
+        side: THREE.DoubleSide,
+        transparent: meshOpacity < 1,
+        opacity: meshOpacity,
+      })
       const mesh = new THREE.Mesh(geom, mat)
       mesh.position.set(obj.transform.x, obj.transform.y, 0)
       mesh.rotation.z = obj.transform.rotation
@@ -667,6 +685,31 @@ export default function Viewport() {
       dot.position.set(p.x, p.y, 0.7)
       scene.add(dot)
     }
+  }
+
+  /** Trace-over reference image, drawn behind the grid and every object. */
+  function addReferenceImage(scene: THREE.Scene, ref: ReferenceImage) {
+    let texture = textureCacheRef.current.get(ref.url)
+    if (!texture) {
+      texture = textureLoaderRef.current.load(ref.url)
+      texture.colorSpace = THREE.SRGBColorSpace
+      textureCacheRef.current.set(ref.url, texture)
+    }
+    const image = texture.image as HTMLImageElement | undefined
+    if (!image?.width) return // not loaded yet — skip this frame, retry next
+
+    const width = image.width * ref.scale
+    const height = image.height * ref.scale
+    const geom = new THREE.PlaneGeometry(width, height)
+    const mat = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: ref.opacity < 1,
+      opacity: ref.opacity,
+      depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(geom, mat)
+    mesh.position.set(ref.x, ref.y, -50)
+    scene.add(mesh)
   }
 
   function addGrid(scene: THREE.Scene) {
