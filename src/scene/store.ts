@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AppMode, EditElementType, Mesh, SceneObject, Transform, Vec2 } from './types'
+import type { AppMode, EditElementType, Mesh, SceneObject, Transform, UvIslandTransform, Vec2 } from './types'
 import { createCircleMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFullLoop } from './loopPath'
@@ -7,16 +7,21 @@ import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
-import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices } from './meshUtils'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland } from './meshUtils'
 
-export type ActiveTool = 'select' | 'loopcut' | 'knife'
+export type ActiveTool = 'select' | 'loopcut' | 'knife' | 'place-rect' | 'place-circle'
+
+/** Parameters for a primitive about to be placed as an island inside the edited mesh (see `setPendingPrimitive`). */
+export type PendingPrimitive =
+  | { kind: 'rect'; width: number; height: number; segX: number; segY: number }
+  | { kind: 'circle'; radius: number; segments: number }
 
 let nextId = 1
 function genId(prefix: string) {
   return `${prefix}_${nextId++}`
 }
 
-const DEFAULT_COLORS = ['#7aa2f7', '#f7768e', '#9ece6a', '#e0af68', '#bb9af7', '#7dcfff']
+const DEFAULT_MATERIAL_COLOR = '#91AA9B'
 
 interface SceneState {
   objects: SceneObject[]
@@ -31,6 +36,8 @@ interface SceneState {
   activeTool: ActiveTool
   /** Edit-mode pivot, in local mesh space. `null` means "use the object's own pivot". */
   editPivot: Vec2 | null
+  /** Dimensions for the primitive currently being placed (activeTool === 'place-rect'/'place-circle'). */
+  pendingPrimitive: PendingPrimitive | null
 
   beginChange: () => void
   undo: () => void
@@ -41,11 +48,18 @@ interface SceneState {
   addRect: (width: number, height: number, segX: number, segY: number) => void
   addCircle: (radius: number, segments: number) => void
   addImportedMesh: (mesh: Mesh, name: string) => void
+  /** Merge a rect/circle into the given object's mesh as a new disconnected island, instead of
+   *  creating a separate object — used when adding a primitive while already in edit mode. */
+  addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
+  addCircleIsland: (objectId: string, at: Vec2, radius: number, segments: number) => void
+  setPendingPrimitive: (p: PendingPrimitive | null) => void
   selectObject: (id: string | null) => void
   removeObject: (id: string) => void
   toggleVisibility: (id: string) => void
   renameObject: (id: string, name: string) => void
-  setColor: (id: string, color: string) => void
+  setMaterialColor: (id: string, color: string) => void
+  /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
+  setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
   setTransform: (id: string, transform: Partial<Transform>) => void
   /** Move the pivot (in local mesh space) while keeping the mesh visually in place. */
   setPivot: (id: string, localPivot: Vec2) => void
@@ -99,10 +113,6 @@ export function selectedVertexIndices(
   return Array.from(set)
 }
 
-function nextColor(objects: SceneObject[]) {
-  return DEFAULT_COLORS[objects.length % DEFAULT_COLORS.length]
-}
-
 function cloneObjects(objects: SceneObject[]): SceneObject[] {
   return objects.map((o) => ({
     ...o,
@@ -125,6 +135,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   future: [],
   activeTool: 'select',
   editPivot: null,
+  pendingPrimitive: null,
 
   beginChange: () =>
     set((s) => ({
@@ -173,7 +184,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
-      color: nextColor(objects),
+      material: { color: DEFAULT_MATERIAL_COLOR },
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -188,7 +199,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
-      color: nextColor(objects),
+      material: { color: DEFAULT_MATERIAL_COLOR },
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -203,10 +214,28 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
-      color: nextColor(objects),
+      material: { color: DEFAULT_MATERIAL_COLOR },
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
+
+  addRectIsland: (objectId, at, width, height, segX, segY) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const mesh = mergeMeshAsIsland(obj.mesh, createRectMesh(width, height, segX, segY), at)
+    get().beginChange()
+    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)) }))
+  },
+
+  addCircleIsland: (objectId, at, radius, segments) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const mesh = mergeMeshAsIsland(obj.mesh, createCircleMesh(radius, segments), at)
+    get().beginChange()
+    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)) }))
+  },
+
+  setPendingPrimitive: (pendingPrimitive) => set({ pendingPrimitive }),
 
   selectObject: (id) => set({ selectedObjectId: id, selectedVertices: new Set(), editPivot: null }),
 
@@ -228,8 +257,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   renameObject: (id, name) =>
     set((s) => ({ objects: s.objects.map((o) => (o.id === id ? { ...o, name } : o)) })),
 
-  setColor: (id, color) =>
-    set((s) => ({ objects: s.objects.map((o) => (o.id === id ? { ...o, color } : o)) })),
+  setMaterialColor: (id, color) =>
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, material: { ...o.material, color } } : o)),
+    })),
+
+  setUvIslandTransform: (id, islandIndex, transform) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const next = [...(o.uvIslandTransforms ?? [])]
+        while (next.length <= islandIndex) next.push({ offsetX: 0, offsetY: 0, scale: 1 })
+        next[islandIndex] = { ...next[islandIndex], ...transform }
+        return { ...o, uvIslandTransforms: next }
+      }),
+    })),
 
   setTransform: (id, transform) =>
     set((s) => ({

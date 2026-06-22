@@ -18,6 +18,20 @@ export interface Transform {
   pivot: Vec2 // in local (mesh) space; defaults to the origin
 }
 
+export interface Material {
+  color: string
+  /** Reserved for future texture support — not yet read by the renderer. */
+  textureUrl?: string
+}
+
+/** Manual adjustment on top of an island's auto-normalized (0..1) base UV. Indexed by island
+ *  order from `findIslands` — only meaningful as long as the mesh's islands haven't changed. */
+export interface UvIslandTransform {
+  offsetX: number
+  offsetY: number
+  scale: number
+}
+
 export interface SceneObject {
   id: string
   name: string
@@ -25,7 +39,8 @@ export interface SceneObject {
   transform: Transform
   zOrder: number
   visible: boolean
-  color: string
+  material: Material
+  uvIslandTransforms?: UvIslandTransform[]
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

@@ -7,7 +7,6 @@ export default function Outliner() {
   const toggleVisibility = useSceneStore((s) => s.toggleVisibility)
   const removeObject = useSceneStore((s) => s.removeObject)
   const renameObject = useSceneStore((s) => s.renameObject)
-  const setColor = useSceneStore((s) => s.setColor)
   const reorder = useSceneStore((s) => s.reorder)
 
   const sorted = [...objects].sort((a, b) => b.zOrder - a.zOrder)
@@ -30,14 +29,6 @@ export default function Outliner() {
             }}
             onClick={() => selectObject(obj.id)}
           >
-            <input
-              type="color"
-              className="swatch"
-              value={obj.color}
-              title="色を変更"
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setColor(obj.id, e.target.value)}
-            />
             <input
               className="layer-name"
               value={obj.name}

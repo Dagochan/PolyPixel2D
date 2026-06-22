@@ -11,6 +11,7 @@ export default function Toolbar() {
   const addRect = useSceneStore((s) => s.addRect)
   const addCircle = useSceneStore((s) => s.addCircle)
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
+  const setPendingPrimitive = useSceneStore((s) => s.setPendingPrimitive)
   const undo = useSceneStore((s) => s.undo)
   const redo = useSceneStore((s) => s.redo)
   const canUndo = useSceneStore((s) => s.history.length > 0)
@@ -67,7 +68,17 @@ export default function Toolbar() {
       </div>
 
       <div className="toolbar-group">
-        <button title="矩形を追加" onClick={() => addRect(100, 100, segX, segY)}>
+        <button
+          title={mode === 'edit' && selectedObj ? '矩形を島として追加（クリックで配置位置を確定）' : '矩形を追加'}
+          onClick={() => {
+            if (mode === 'edit' && selectedObj) {
+              setPendingPrimitive({ kind: 'rect', width: 100, height: 100, segX, segY })
+              setActiveTool('place-rect')
+            } else {
+              addRect(100, 100, segX, segY)
+            }
+          }}
+        >
           ▭ 矩形
         </button>
         <label className="seg-input">
@@ -81,7 +92,17 @@ export default function Toolbar() {
       </div>
 
       <div className="toolbar-group">
-        <button title="円を追加" onClick={() => addCircle(60, circleSegs)}>
+        <button
+          title={mode === 'edit' && selectedObj ? '円を島として追加（クリックで配置位置を確定）' : '円を追加'}
+          onClick={() => {
+            if (mode === 'edit' && selectedObj) {
+              setPendingPrimitive({ kind: 'circle', radius: 60, segments: circleSegs })
+              setActiveTool('place-circle')
+            } else {
+              addCircle(60, circleSegs)
+            }
+          }}
+        >
           ◯ 円
         </button>
         <label className="seg-input">

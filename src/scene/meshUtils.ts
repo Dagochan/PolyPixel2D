@@ -53,6 +53,17 @@ export function pruneOrphanVertices(mesh: Mesh): Mesh {
   return { vertices, faces }
 }
 
+/** Merge `addition` into `base` as a disconnected island, offset by `at` (local mesh space). */
+export function mergeMeshAsIsland(base: Mesh, addition: Mesh, at: { x: number; y: number }): Mesh {
+  const offset = base.vertices.length
+  const vertices = [
+    ...base.vertices,
+    ...addition.vertices.map((v) => ({ x: v.x + at.x, y: v.y + at.y })),
+  ]
+  const faces = [...base.faces, ...addition.faces.map((f) => f.map((i) => i + offset))]
+  return { vertices, faces }
+}
+
 export function getBounds(mesh: Mesh) {
   let minX = Infinity
   let minY = Infinity

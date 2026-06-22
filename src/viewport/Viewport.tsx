@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import { useSceneStore, selectedVertexIndices } from '../scene/store'
+import { useSceneStore, selectedVertexIndices, type PendingPrimitive } from '../scene/store'
 import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scene/meshUtils'
 import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
@@ -85,6 +85,7 @@ export default function Viewport() {
   const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
   const elementModalRef = useRef<ElementModal | null>(null)
   const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
+  const placePreviewRef = useRef<Vec2 | null>(null)
   const selectionBoxRef = useRef<HTMLDivElement>(null)
 
   function knifePointsEqual(a: KnifeCutPoint, b: KnifeCutPoint): boolean {
@@ -268,6 +269,12 @@ export default function Viewport() {
         useSceneStore.getState().cancelChange()
         elementModalRef.current = null
       }
+      const activeTool = useSceneStore.getState().activeTool
+      if (activeTool === 'place-rect' || activeTool === 'place-circle') {
+        useSceneStore.getState().setActiveTool('select')
+        useSceneStore.getState().setPendingPrimitive(null)
+        placePreviewRef.current = null
+      }
     }
 
     // Chrome/Edge trigger native middle-click auto-scroll directly off `mousedown`,
@@ -304,6 +311,7 @@ export default function Viewport() {
       }
       updateLoopCutHover(e)
       updateKnifeHover(e)
+      updatePlacePreview(e)
       handlePointerMove(e)
     }
     const onPointerUp = (e: PointerEvent) => {
@@ -391,7 +399,7 @@ export default function Viewport() {
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
       geom.setIndex(triangulate(obj.mesh))
-      const mat = new THREE.MeshBasicMaterial({ color: obj.color, side: THREE.DoubleSide })
+      const mat = new THREE.MeshBasicMaterial({ color: obj.material.color, side: THREE.DoubleSide })
       const mesh = new THREE.Mesh(geom, mat)
       mesh.position.set(obj.transform.x, obj.transform.y, 0)
       mesh.rotation.z = obj.transform.rotation
@@ -530,6 +538,60 @@ export default function Viewport() {
       const obj = objects.find((o) => o.id === selectedObjectId)
       if (obj) addKnifePreview(scene, obj)
     }
+
+    // ghost outline for a primitive about to be placed as an island
+    if (mode === 'edit' && (activeTool === 'place-rect' || activeTool === 'place-circle')) {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      const pending = useSceneStore.getState().pendingPrimitive
+      const at = placePreviewRef.current
+      if (obj && pending && at) addPlacePreview(scene, obj, pending, at)
+    }
+  }
+
+  function addPlacePreview(scene: THREE.Scene, obj: SceneObject, pending: PendingPrimitive, at: Vec2) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const positions: number[] = []
+    if (pending.kind === 'rect') {
+      const hw = pending.width / 2
+      const hh = pending.height / 2
+      const corners = [
+        { x: at.x - hw, y: at.y - hh },
+        { x: at.x + hw, y: at.y - hh },
+        { x: at.x + hw, y: at.y + hh },
+        { x: at.x - hw, y: at.y + hh },
+      ].map((p) => applyTransform(p, obj.transform))
+      for (let i = 0; i < corners.length; i++) {
+        const a = corners[i]
+        const b = corners[(i + 1) % corners.length]
+        positions.push(a.x, a.y, 0.7, b.x, b.y, 0.7)
+      }
+    } else {
+      const segments = 32
+      const pts: { x: number; y: number }[] = []
+      for (let i = 0; i < segments; i++) {
+        const angle = (i / segments) * Math.PI * 2
+        pts.push(applyTransform({ x: at.x + Math.cos(angle) * pending.radius, y: at.y + Math.sin(angle) * pending.radius }, obj.transform))
+      }
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i]
+        const b = pts[(i + 1) % pts.length]
+        positions.push(a.x, a.y, 0.7, b.x, b.y, 0.7)
+      }
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    const mat = new THREE.LineDashedMaterial({ color: 0x4ea1ff, dashSize: 6 * pxToWorld, gapSize: 4 * pxToWorld, depthTest: false })
+    const outline = new THREE.LineSegments(geom, mat)
+    outline.computeLineDistances()
+    scene.add(outline)
+
+    const center = applyTransform(at, obj.transform)
+    const dot = new THREE.Mesh(
+      new THREE.CircleGeometry(3 * pxToWorld, 12),
+      new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false }),
+    )
+    dot.position.set(center.x, center.y, 0.71)
+    scene.add(dot)
   }
 
   function addKnifePreview(scene: THREE.Scene, obj: SceneObject) {
@@ -943,6 +1005,19 @@ export default function Viewport() {
     knifeHoverRef.current = bestDist < 20 ? { type: 'edge', a: bestA, b: bestB, t: bestT } : null
   }
 
+  /** While adding a primitive as an island (activeTool === 'place-rect'/'place-circle'),
+   *  track where it would land (in the edited object's local space) under the cursor. */
+  function updatePlacePreview(e: PointerEvent) {
+    const store = useSceneStore.getState()
+    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+    const placing = store.activeTool === 'place-rect' || store.activeTool === 'place-circle'
+    if (store.mode !== 'edit' || !obj || !placing) {
+      placePreviewRef.current = null
+      return
+    }
+    placePreviewRef.current = inverseTransform(getWorldPos(e), obj.transform)
+  }
+
   function handlePointerDown(e: PointerEvent) {
     if (e.button === 1 || e.altKey) {
       e.preventDefault() // stop native middle-click auto-scroll from hijacking pointer events
@@ -960,6 +1035,28 @@ export default function Viewport() {
     if (elementModalRef.current) {
       elementModalRef.current = null
       return
+    }
+
+    // a left-click while placing a primitive island confirms it at the previewed position
+    {
+      const s = useSceneStore.getState()
+      if (s.mode === 'edit' && (s.activeTool === 'place-rect' || s.activeTool === 'place-circle')) {
+        const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+        const at = placePreviewRef.current
+        if (obj && at && s.pendingPrimitive) {
+          if (s.pendingPrimitive.kind === 'rect') {
+            const p = s.pendingPrimitive
+            s.addRectIsland(obj.id, at, p.width, p.height, p.segX, p.segY)
+          } else {
+            const p = s.pendingPrimitive
+            s.addCircleIsland(obj.id, at, p.radius, p.segments)
+          }
+        }
+        s.setActiveTool('select')
+        s.setPendingPrimitive(null)
+        placePreviewRef.current = null
+        return
+      }
     }
 
     const store0 = useSceneStore.getState()
