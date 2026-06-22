@@ -55,6 +55,11 @@ body {
   color: #fff;
 }
 
+.tool-group button.active {
+  background: #4ec96a;
+  color: #111;
+}
+
 .toolbar button:hover { filter: brightness(1.15); }
 
 .toolbar button:disabled {

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import {
   findIslands,
@@ -14,6 +14,21 @@ import type { SceneObject, Vec2 } from '../scene/types'
 const ISLAND_COLORS = ['#7aa2f7', '#f7768e', '#9ece6a', '#e0af68', '#bb9af7', '#7dcfff']
 const HANDLE_SIZE_PX = 8
 const ROTATE_HANDLE_DIST_PX = 18
+const LOCK_ICON_SIZE_PX = 24
+
+function svgImage(svg: string): HTMLImageElement {
+  const img = new Image()
+  img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+  return img
+}
+
+// "included in density match" (Texel Standardize) vs "excluded, kept independent" (Texel Single)
+const MATCHED_ICON = svgImage(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16,2L22,2L22,8L21,8L21,3L16,3L16,2ZM8,22L2,22L2,16L3,16L3,21L8,21L8,22Z" fill="#dddddd"/><path d="M6,15L15,15L15,6L16,6L16,16L6,16L6,15Z" fill="#dddddd"/><g transform="matrix(1,0,0,1,2,2)"><path d="M6,15L15,15L15,6L16,6L16,16L6,16L6,15Z" fill="#dddddd"/></g><g transform="matrix(1,0,0,1,4,4)"><path d="M6,15L15,15L15,6L16,6L16,16L6,16L6,15Z" fill="#dddddd"/></g><g transform="matrix(1.111111,0,0,1.111111,-1.555556,-1.555556)"><path d="M5,6.8L5,5L6.8,5L6.8,6.8L5,6.8ZM8.6,5L14,5L14,14L5,14L5,8.6L6.8,8.6L6.8,10.4L8.6,10.4L8.6,8.6L10.4,8.6L10.4,6.8L8.6,6.8L8.6,5ZM8.6,6.8L8.6,8.6L6.8,8.6L6.8,6.8L8.6,6.8Z" fill="#dddddd"/></g></svg>',
+)
+const EXCLUDED_ICON = svgImage(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16,2L22,2L22,8L21,8L21,3L16,3L16,2ZM8,22L2,22L2,16L3,16L3,21L8,21L8,22Z" fill="#f7a35c"/><g transform="matrix(1.111111,0,0,1.111111,1.444444,1.444444)"><path d="M5,6.8L5,5L6.8,5L6.8,6.8L5,6.8ZM8.6,5L14,5L14,14L5,14L5,8.6L6.8,8.6L6.8,10.4L8.6,10.4L8.6,8.6L10.4,8.6L10.4,6.8L8.6,6.8L8.6,5ZM8.6,6.8L8.6,8.6L6.8,8.6L6.8,6.8L8.6,6.8Z" fill="#f7a35c"/></g></svg>',
+)
 
 type DragState =
   | {
@@ -53,6 +68,17 @@ export default function UvEditor({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
+  const [redrawTick, forceRedraw] = useState(0)
+
+  useEffect(() => {
+    const onLoad = () => forceRedraw((n) => n + 1)
+    MATCHED_ICON.addEventListener('load', onLoad)
+    EXCLUDED_ICON.addEventListener('load', onLoad)
+    return () => {
+      MATCHED_ICON.removeEventListener('load', onLoad)
+      EXCLUDED_ICON.removeEventListener('load', onLoad)
+    }
+  }, [])
   const setUvIslandTransform = useSceneStore((s) => s.setUvIslandTransform)
   const beginChange = useSceneStore((s) => s.beginChange)
 
@@ -64,6 +90,7 @@ export default function UvEditor({
   const baseCenters = bases.map((base) => islandBaseCenter(base.values()))
   const footprints = islands.map((island) => islandFootprint(obj.mesh, island))
   const handleHitUv = HANDLE_SIZE_PX / size
+  const lockHitUv = LOCK_ICON_SIZE_PX / size
   const rotateHandleDistUv = ROTATE_HANDLE_DIST_PX / size
 
   function transformedCenter(i: number): Vec2 {
@@ -156,13 +183,19 @@ export default function UvEditor({
 
       // density-match lock toggle, bottom-left corner of the bbox
       const lockPx = toCanvasPoint(lockHandlePos(i))
-      ctx.font = `${HANDLE_SIZE_PX + 6}px sans-serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(t.excludeFromDensityMatch ? '🔒' : '🔓', lockPx.x, lockPx.y)
+      const icon = t.excludeFromDensityMatch ? EXCLUDED_ICON : MATCHED_ICON
+      if (icon.complete && icon.naturalWidth > 0) {
+        ctx.drawImage(
+          icon,
+          lockPx.x - LOCK_ICON_SIZE_PX / 2,
+          lockPx.y - LOCK_ICON_SIZE_PX / 2,
+          LOCK_ICON_SIZE_PX,
+          LOCK_ICON_SIZE_PX,
+        )
+      }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [obj.mesh, obj.uvIslandTransforms, size])
+  }, [obj.mesh, obj.uvIslandTransforms, size, redrawTick])
 
   function uvFromEvent(e: React.PointerEvent): Vec2 {
     const rect = canvasRef.current!.getBoundingClientRect()
@@ -178,7 +211,7 @@ export default function UvEditor({
     // density-match lock toggle — a plain click, not a drag
     for (let i = islands.length - 1; i >= 0; i--) {
       const h = lockHandlePos(i)
-      if (Math.hypot(uv.x - h.x, uv.y - h.y) < handleHitUv * 1.5) {
+      if (Math.hypot(uv.x - h.x, uv.y - h.y) < lockHitUv * 0.75) {
         beginChange()
         setUvIslandTransform(obj.id, i, { excludeFromDensityMatch: !transforms[i].excludeFromDensityMatch })
         return

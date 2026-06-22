@@ -2,7 +2,17 @@ import { useRef, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import { parseObjToMesh } from '../scene/objImport'
 import { parseProjectFile, serializeProject, PROJECT_VERSION, PROJECT_EXTENSION } from '../scene/project'
-import { ObjectModeIcon, EditModeIcon, VertexIcon, EdgeIcon, FaceIcon } from './icons'
+import {
+  ObjectModeIcon,
+  EditModeIcon,
+  VertexIcon,
+  EdgeIcon,
+  FaceIcon,
+  LoopCutIcon,
+  KnifeIcon,
+  ExtrudeIcon,
+  SeamIcon,
+} from './icons'
 
 export default function Toolbar() {
   const mode = useSceneStore((s) => s.mode)
@@ -276,13 +286,18 @@ export default function Toolbar() {
           >
             <FaceIcon />
           </button>
+        </div>
+      )}
+
+      {mode === 'edit' && (
+        <div className="toolbar-group tool-group">
           <button
             className={activeTool === 'loopcut' ? 'active' : ''}
             disabled={!selectedObj}
             title="ループカット（四角面が連なっている部分にカーソルを合わせてください）"
             onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
           >
-            ループカット
+            <LoopCutIcon />
           </button>
           <button
             className={activeTool === 'knife' ? 'active' : ''}
@@ -290,7 +305,7 @@ export default function Toolbar() {
             title="ナイフ（辺/頂点をクリックして連結。Enter/ダブルクリックで確定、Esc/右クリックでパスをキャンセル）"
             onClick={() => setActiveTool(activeTool === 'knife' ? 'select' : 'knife')}
           >
-            ナイフ
+            <KnifeIcon />
           </button>
           <button
             disabled={
@@ -301,14 +316,14 @@ export default function Toolbar() {
             title="選択した辺（または頂点間の既存の辺）を押し出します"
             onClick={() => extrudeSelection()}
           >
-            押し出し
+            <ExtrudeIcon />
           </button>
           <button
             disabled={editElementType !== 'edge' || selectedEdgesCount === 0}
             title="選択した辺をUVシームとしてマーク/解除（トポロジーは繋がったままUVだけ分割できます）"
             onClick={() => toggleSeamOnSelection()}
           >
-            シーム
+            <SeamIcon />
           </button>
         </div>
       )}
