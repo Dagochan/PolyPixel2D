@@ -1,13 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import Viewport from './viewport/Viewport'
 import Outliner from './panels/Outliner'
 import Properties from './panels/Properties'
 import Toolbar from './panels/Toolbar'
 import { useSceneStore } from './scene/store'
 
+const SIDEBAR_MIN_WIDTH = 180
+const SIDEBAR_MAX_WIDTH = 560
+const OUTLINER_MIN_HEIGHT = 80
+const PROPERTIES_MIN_HEIGHT = 80
+
 export default function App() {
   const [awaitingMerge, setAwaitingMerge] = useState(false)
   const awaitingMergeRef = useRef(false)
+  const [sidebarWidth, setSidebarWidth] = useState(240)
+  const [propertiesHeight, setPropertiesHeight] = useState(260)
+  const resizingRef = useRef(false)
+  const sidebarRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -111,14 +120,6 @@ export default function App() {
         return
       }
 
-      if (e.key.toLowerCase() === 'e') {
-        const store = useSceneStore.getState()
-        if (store.mode !== 'edit') return
-        e.preventDefault()
-        store.extrudeSelection()
-        return
-      }
-
       if (e.key.toLowerCase() === 'f') {
         const store = useSceneStore.getState()
         if (store.mode !== 'edit' || store.editElementType !== 'vertex' || store.selectedVertices.size < 3) {
@@ -142,14 +143,56 @@ export default function App() {
     }
   }, [])
 
+  const startSidebarResize = (e: ReactPointerEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    const onMove = (ev: PointerEvent) => {
+      if (!resizingRef.current) return
+      // the sidebar sits to the right of the viewport, so dragging left grows it
+      const next = window.innerWidth - ev.clientX
+      setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  const startPropertiesResize = (e: ReactPointerEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    const onMove = (ev: PointerEvent) => {
+      if (!resizingRef.current) return
+      const sidebarRect = sidebarRef.current?.getBoundingClientRect()
+      if (!sidebarRect) return
+      // properties sits below the outliner and is sized from the bottom up,
+      // so dragging up (smaller clientY) grows it
+      const next = sidebarRect.bottom - ev.clientY
+      const maxHeight = sidebarRect.height - OUTLINER_MIN_HEIGHT
+      setPropertiesHeight(Math.min(maxHeight, Math.max(PROPERTIES_MIN_HEIGHT, next)))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   return (
     <div className="app">
       <Toolbar />
       <div className="main-area">
         <Viewport />
-        <div className="sidebar">
+        <div className="sidebar-resizer" onPointerDown={startSidebarResize} />
+        <div className="sidebar" ref={sidebarRef} style={{ width: sidebarWidth }}>
           <Outliner />
-          <Properties />
+          <div className="properties-resizer" onPointerDown={startPropertiesResize} />
+          <Properties style={{ height: propertiesHeight }} />
         </div>
         {awaitingMerge && (
           <div className="merge-hint">マージ: 1=最初の頂点　2=最後の頂点　3=中間位置　(Escまたは右クリックでキャンセル)</div>

@@ -1,7 +1,9 @@
 import type { Mesh, Vec2 } from './types'
-import { parseEdgeKey } from './meshUtils'
+import { parseEdgeKey, edgeKey } from './meshUtils'
 
-const DEFAULT_DISTANCE = 30
+// 0: the duplicated vertices land exactly on top of the originals, since extrude is
+// immediately followed by a Blender-style grab modal that the user drags out themselves.
+const DEFAULT_DISTANCE = 0
 
 /**
  * `edgeKeys` only carry an unordered (canonical a<b) pair, but the new wall face's winding
@@ -56,7 +58,7 @@ export function extrudeEdges(
   mesh: Mesh,
   edgeKeys: string[],
   distance = DEFAULT_DISTANCE,
-): { mesh: Mesh; newVertexIndices: number[] } {
+): { mesh: Mesh; newVertexIndices: number[]; newEdgeKeys: string[] } {
   const centroid = meshCentroid(mesh)
   const edges = edgeKeys.map(parseEdgeKey).map(([a, b]) => getDirectedEdge(mesh, a, b))
   const usedVerts = new Set<number>()
@@ -92,13 +94,17 @@ export function extrudeEdges(
   const vertexMap = duplicateVertices(vertices, usedVerts, dir, distance)
 
   const faces = mesh.faces.map((f) => [...f])
+  const newEdgeKeys: string[] = []
   for (const [a, b] of edges) {
     const na = vertexMap.get(a)!
     const nb = vertexMap.get(b)!
     // (a,b) has the original mesh's interior on its left; the new wall sits on the right,
     // so its own CCW winding (consistent with the rest of the mesh) is b -> a -> na -> nb.
     faces.push([b, a, na, nb])
+    // the new edge "facing" the original (a,b) — the one a caller in edge-select mode wants
+    // selected afterwards, mirroring how vertex-select mode keeps the new vertices selected
+    newEdgeKeys.push(edgeKey(na, nb))
   }
 
-  return { mesh: { vertices, faces }, newVertexIndices: Array.from(vertexMap.values()) }
+  return { mesh: { vertices, faces }, newVertexIndices: Array.from(vertexMap.values()), newEdgeKeys }
 }

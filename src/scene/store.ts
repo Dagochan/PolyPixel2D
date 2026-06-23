@@ -88,6 +88,9 @@ interface SceneState {
   renameObject: (id: string, name: string) => void
   setMaterialColor: (id: string, color: string) => void
   setMaterialTexture: (id: string, textureUrl: string | undefined) => void
+  /** Catmull-Clark subdivision level for the rendered fill mesh (0 = off). Clamped to 0-3. */
+  setSdsLevels: (id: string, levels: number) => void
+  setSdsShowWireframe: (id: string, show: boolean) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
   setTransform: (id: string, transform: Partial<Transform>) => void
@@ -100,7 +103,6 @@ interface SceneState {
   setSelectedVertices: (indices: Set<number>) => void
   setSelectedEdges: (keys: Set<string>) => void
   setSelectedFaces: (indices: Set<number>) => void
-  moveVertices: (objectId: string, indices: number[], dx: number, dy: number) => void
   /** Overwrite the absolute local-space position of each given vertex index. */
   setVertexPositions: (objectId: string, indices: number[], positions: Vec2[]) => void
   /** Set the edit-mode pivot to the centroid of the vertices touched by the current selection. */
@@ -110,8 +112,8 @@ interface SceneState {
   applyLoopCut: (objectId: string, edgeA: number, edgeB: number, ts: number[]) => void
   /** Cut a polyline of vertex/edge-snapped points across one or more connected faces. */
   applyKnifeCut: (objectId: string, path: KnifeCutPoint[]) => void
-  /** Extrude the current edge/face selection on the selected object (no-op otherwise). */
-  extrudeSelection: () => void
+  /** Extrude the current edge/face selection on the selected object. No-op (returns false) otherwise. */
+  extrudeSelection: () => boolean
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
   deleteSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
@@ -125,6 +127,10 @@ interface SceneState {
   fillSelectedFace: () => void
   /** Merge `mergeIndex` into `keepIndex` (keepIndex's position wins). Used for drag-to-weld onto an adjacent vertex. */
   mergeVertexPair: (objectId: string, keepIndex: number, mergeIndex: number) => void
+  /** Set the SDS crease weight (0-1) on every currently selected edge (edge mode) or vertex
+   *  (vertex mode). Weight 0 removes the entry entirely. No-op outside those modes, in face
+   *  mode, or with nothing selected. */
+  setCreaseWeight: (weight: number) => void
 }
 
 /** The vertex indices touched by the current selection, given which element type is active. */
@@ -144,6 +150,38 @@ export function selectedVertexIndices(
     s.selectedFaces.forEach((fi) => mesh.faces[fi]?.forEach((v) => set.add(v)))
   }
   return Array.from(set)
+}
+
+/** The crease weight shared by every selected edge/vertex, or 'mixed' if they differ. 0 if
+ *  nothing is selected, or outside edge/vertex mode (a selection of 1 is never 'mixed'). */
+export function creaseValueForSelection(
+  obj: SceneObject | undefined,
+  editElementType: EditElementType,
+  selectedEdges: Set<string>,
+  selectedVertices: Set<number>,
+): number | 'mixed' {
+  if (!obj) return 0
+  if (editElementType === 'edge') {
+    const map = obj.creaseEdges ?? {}
+    let result: number | null = null
+    for (const k of selectedEdges) {
+      const w = map[k] ?? 0
+      if (result === null) result = w
+      else if (w !== result) return 'mixed'
+    }
+    return result ?? 0
+  }
+  if (editElementType === 'vertex') {
+    const map = obj.creaseVertices ?? {}
+    let result: number | null = null
+    for (const vi of selectedVertices) {
+      const w = map[vi] ?? 0
+      if (result === null) result = w
+      else if (w !== result) return 'mixed'
+    }
+    return result ?? 0
+  }
+  return 0
 }
 
 function cloneObjects(objects: SceneObject[]): SceneObject[] {
@@ -330,6 +368,18 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
+  setSdsLevels: (id, levels) => {
+    const clamped = Math.max(0, Math.min(3, Math.round(levels)))
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, sdsLevels: clamped } : o)),
+    }))
+  },
+
+  setSdsShowWireframe: (id, show) =>
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, sdsShowWireframe: show } : o)),
+    })),
+
   setUvIslandTransform: (id, islandIndex, transform) => {
     // never let a bad numeric computation (NaN/Infinity) get written — it would otherwise
     // persist forever, since reads merge stored values in rather than always trusting a fresh default
@@ -409,17 +459,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setSelectedEdges: (selectedEdges) => set({ selectedEdges }),
   setSelectedFaces: (selectedFaces) => set({ selectedFaces }),
 
-  moveVertices: (objectId, indices, dx, dy) =>
-    set((s) => ({
-      objects: s.objects.map((o) => {
-        if (o.id !== objectId) return o
-        const vertices = o.mesh.vertices.map((v, i) =>
-          indices.includes(i) ? { x: v.x + dx, y: v.y + dy } : v,
-        )
-        return { ...o, mesh: { ...o.mesh, vertices } }
-      }),
-    })),
-
   setVertexPositions: (objectId, indices, positions) =>
     set((s) => ({
       objects: s.objects.map((o) => {
@@ -482,9 +521,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   extrudeSelection: () => {
     const s = get()
     const objectId = s.selectedObjectId
-    if (!objectId) return
+    if (!objectId) return false
     const obj = s.objects.find((o) => o.id === objectId)
-    if (!obj) return
+    if (!obj) return false
 
     let edgeKeys: string[]
     if (s.editElementType === 'edge' && s.selectedEdges.size > 0) {
@@ -494,10 +533,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       edgeKeys = getEdges(obj.mesh)
         .filter(([a, b]) => s.selectedVertices.has(a) && s.selectedVertices.has(b))
         .map(([a, b]) => edgeKey(a, b))
-      if (edgeKeys.length === 0) return
+      if (edgeKeys.length === 0) return false
     } else {
-      return
+      return false
     }
+    const wasEdgeMode = s.editElementType === 'edge'
     const result = extrudeEdges(obj.mesh, edgeKeys)
     // extrude never orphans a vertex by construction, so this is a no-op safety net
     const mesh = pruneOrphanVertices(result.mesh)
@@ -505,11 +545,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     get().beginChange()
     set((st) => ({
       objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
-      editElementType: 'vertex',
-      selectedVertices: new Set(result.newVertexIndices),
-      selectedEdges: new Set(),
+      // stay in whichever mode the extrude was triggered from, selecting the new geometry
+      // (new edges in edge mode, new vertices in vertex mode) so a follow-up G/R/S/E acts on it
+      editElementType: wasEdgeMode ? 'edge' : 'vertex',
+      selectedVertices: wasEdgeMode ? new Set<number>() : new Set(result.newVertexIndices),
+      selectedEdges: wasEdgeMode ? new Set(result.newEdgeKeys) : new Set<string>(),
       selectedFaces: new Set(),
     }))
+    return true
   },
 
   deleteSelection: () => {
@@ -582,6 +625,39 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set({
       objects: s.objects.map((o) => (o.id === objectId ? { ...o, seamEdges: Array.from(current) } : o)),
     })
+  },
+
+  setCreaseWeight: (weight) => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    if (s.editElementType === 'edge') {
+      if (s.selectedEdges.size === 0) return
+      set({
+        objects: s.objects.map((o) => {
+          if (o.id !== objectId) return o
+          const map = { ...(o.creaseEdges ?? {}) }
+          for (const k of s.selectedEdges) {
+            if (weight > 0) map[k] = weight
+            else delete map[k]
+          }
+          return { ...o, creaseEdges: map }
+        }),
+      })
+    } else if (s.editElementType === 'vertex') {
+      if (s.selectedVertices.size === 0) return
+      set({
+        objects: s.objects.map((o) => {
+          if (o.id !== objectId) return o
+          const map = { ...(o.creaseVertices ?? {}) }
+          for (const vi of s.selectedVertices) {
+            if (weight > 0) map[vi] = weight
+            else delete map[vi]
+          }
+          return { ...o, creaseVertices: map }
+        }),
+      })
+    }
   },
 
   mergeSelectedVertices: (mode) => {

@@ -8,6 +8,7 @@ import type { SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeUVs } from '../scene/uv'
+import { subdivideMeshWithUVs } from '../scene/subdivision'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -34,7 +35,6 @@ type DragMode =
       meshCornerRel: { x: number; y: number } // relative to pivot
     }
   | { kind: 'rotate-object'; objectId: string; startRotation: number; startAngle: number; center: { x: number; y: number } }
-  | { kind: 'move-vertices'; objectId: string; indices: number[]; lastWorld: { x: number; y: number } }
   | { kind: 'move-pivot'; objectId: string }
   | {
       kind: 'box-select'
@@ -71,6 +71,14 @@ type ElementModal =
       startPositions: Vec2[]
       pivot: Vec2 // local mesh space
       startDist: number
+    }
+  | {
+      kind: 'move'
+      objectId: string
+      indices: number[]
+      startPositions: Vec2[]
+      startWorld: Vec2
+      axisLock: 'x' | 'y' | null // world-space axis lock, toggled by pressing X/Y again
     }
 
 export default function Viewport() {
@@ -127,8 +135,11 @@ export default function Viewport() {
     return screenToWorld(lastPointerRef.current.clientX, lastPointerRef.current.clientY, rect, viewRef.current)
   }
 
-  /** R/S: start a Blender-style modal transform on the current edit-mode selection. */
-  function startElementModal(kind: 'rotate' | 'scale') {
+  /** G/R/S: start a Blender-style modal transform on the current edit-mode selection.
+   *  `skipBeginChange` is for the post-extrude grab: extrude already opened its own undo
+   *  step, so reusing it (rather than opening a second one) makes "E, drag, click" a single
+   *  undo — and makes Escape right after E correctly cancel the whole extrude, not just the move. */
+  function startElementModal(kind: 'rotate' | 'scale' | 'move', skipBeginChange = false) {
     const store = useSceneStore.getState()
     if (store.mode !== 'edit' || !store.selectedObjectId) return
     const obj = store.objects.find((o) => o.id === store.selectedObjectId)
@@ -139,7 +150,7 @@ export default function Viewport() {
     const pivot = store.editPivot ?? obj.transform.pivot
     const startPositions = indices.map((i) => ({ ...obj.mesh.vertices[i] }))
     const local = inverseTransform(currentPointerWorld(), obj.transform)
-    store.beginChange()
+    if (!skipBeginChange) store.beginChange()
     if (kind === 'rotate') {
       elementModalRef.current = {
         kind: 'rotate',
@@ -149,7 +160,7 @@ export default function Viewport() {
         pivot,
         startAngle: Math.atan2(local.y - pivot.y, local.x - pivot.x),
       }
-    } else {
+    } else if (kind === 'scale') {
       elementModalRef.current = {
         kind: 'scale',
         objectId: obj.id,
@@ -158,7 +169,49 @@ export default function Viewport() {
         pivot,
         startDist: Math.max(1e-6, Math.hypot(local.x - pivot.x, local.y - pivot.y)),
       }
+    } else {
+      elementModalRef.current = {
+        kind: 'move',
+        objectId: obj.id,
+        indices,
+        startPositions,
+        startWorld: currentPointerWorld(),
+        axisLock: null,
+      }
     }
+  }
+
+  /** Confirm the active modal transform (click/Enter). A vertex move also snap-merges onto
+   *  a topologically adjacent vertex it ended up on top of, mirroring the old drag-to-merge behavior. */
+  function confirmElementModal() {
+    const modal = elementModalRef.current
+    if (!modal) return
+    if (modal.kind === 'move') {
+      const store = useSceneStore.getState()
+      const obj = store.objects.find((o) => o.id === modal.objectId)
+      if (obj) {
+        const movedSet = new Set(modal.indices)
+        let best: { keep: number; merge: number } | null = null
+        let bestDist = Infinity
+        for (const [a, b] of getEdges(obj.mesh)) {
+          const aMoved = movedSet.has(a)
+          const bMoved = movedSet.has(b)
+          if (aMoved === bMoved) continue
+          const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
+          const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+          const d = pxDistSq(pa.x, pa.y, pb.x, pb.y)
+          if (d < bestDist) {
+            bestDist = d
+            best = aMoved ? { keep: b, merge: a } : { keep: a, merge: b }
+          }
+        }
+        const SNAP_MERGE_RADIUS_PX = 5
+        if (best && bestDist < SNAP_MERGE_RADIUS_PX ** 2) {
+          store.mergeVertexPair(modal.objectId, best.keep, best.merge)
+        }
+      }
+    }
+    elementModalRef.current = null
   }
 
   /** Recompute and write the live vertex positions for the active R/S modal, given the cursor. */
@@ -168,6 +221,23 @@ export default function Viewport() {
     const store = useSceneStore.getState()
     const obj = store.objects.find((o) => o.id === modal.objectId)
     if (!obj) return
+
+    if (modal.kind === 'move') {
+      const world = currentPointerWorld()
+      let dx = world.x - modal.startWorld.x
+      let dy = world.y - modal.startWorld.y
+      if (modal.axisLock === 'x') dy = 0
+      if (modal.axisLock === 'y') dx = 0
+      // world-space delta -> local mesh space, undoing the object's rotation/scale
+      const cos = Math.cos(-obj.transform.rotation)
+      const sin = Math.sin(-obj.transform.rotation)
+      const localDx = (dx * cos - dy * sin) / obj.transform.scaleX
+      const localDy = (dx * sin + dy * cos) / obj.transform.scaleY
+      const positions = modal.startPositions.map((p) => ({ x: p.x + localDx, y: p.y + localDy }))
+      store.setVertexPositions(modal.objectId, modal.indices, positions)
+      return
+    }
+
     const local = inverseTransform(currentPointerWorld(), obj.transform)
 
     if (modal.kind === 'rotate') {
@@ -185,7 +255,7 @@ export default function Viewport() {
         return { x: modal.pivot.x + dx * cos - dy * sin, y: modal.pivot.y + dx * sin + dy * cos }
       })
       store.setVertexPositions(modal.objectId, modal.indices, positions)
-    } else {
+    } else if (modal.kind === 'scale') {
       const dist = Math.hypot(local.x - modal.pivot.x, local.y - modal.pivot.y)
       let scale = dist / modal.startDist
       if (ctrlKey) scale = Math.round(scale * 20) / 20 // 5% snap
@@ -303,6 +373,7 @@ export default function Viewport() {
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.button === 2) return
+      lastPointerRef.current = { clientX: e.clientX, clientY: e.clientY }
       container.setPointerCapture(e.pointerId)
       handlePointerDown(e)
     }
@@ -331,11 +402,28 @@ export default function Viewport() {
       if (e.key === 'Escape') cancelActiveDrag()
       if (e.key === 'Enter') {
         if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
-        if (elementModalRef.current) elementModalRef.current = null
+        if (elementModalRef.current) confirmElementModal()
+      }
+      // while grabbing (G), X/Y constrains the move to that world axis; pressing the same
+      // key again releases the constraint (Blender-style)
+      const moveModal = elementModalRef.current
+      if (moveModal && moveModal.kind === 'move' && !e.ctrlKey && !e.metaKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'x') moveModal.axisLock = moveModal.axisLock === 'x' ? null : 'x'
+        if (k === 'y') moveModal.axisLock = moveModal.axisLock === 'y' ? null : 'y'
       }
       if (!elementModalRef.current && !e.ctrlKey && !e.metaKey) {
+        if (e.key.toLowerCase() === 'g') startElementModal('move')
         if (e.key.toLowerCase() === 'r') startElementModal('rotate')
         if (e.key.toLowerCase() === 's') startElementModal('scale')
+        if (e.key.toLowerCase() === 'e') {
+          const store = useSceneStore.getState()
+          if (store.mode === 'edit' && store.extrudeSelection()) {
+            // Blender-style: extrude lands the new geometry on top of the original and
+            // immediately drops into a grab modal so the user drags out the extrusion themselves
+            startElementModal('move', true)
+          }
+        }
       }
     }
     const onDblClick = () => {
@@ -412,13 +500,22 @@ export default function Viewport() {
       // objects can have an arbitrary pivot — so bake the pivot offset into the geometry itself
       // (matches applyTransform: world = R*scale*(v - pivot) + position).
       const { pivot } = obj.transform
-      const positions = obj.mesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+      const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
+      const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams)
+      // SDS only smooths the rendered fill mesh — the editable control cage and its UVs
+      // (used everywhere else: picking, the UV editor, export) are untouched.
+      const { mesh: displayMesh, uvs: displayUvs } = subdivideMeshWithUVs(
+        obj.mesh,
+        baseUvs,
+        obj.sdsLevels ?? 0,
+        obj.creaseEdges,
+        obj.creaseVertices,
+      )
+      const positions = displayMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-      const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-      const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams).flatMap((uv) => [uv.x, uv.y])
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
-      geom.setIndex(triangulate(obj.mesh))
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(displayUvs.flatMap((uv) => [uv.x, uv.y]), 2))
+      geom.setIndex(triangulate(displayMesh))
 
       let texture: THREE.Texture | undefined
       if (obj.material.textureUrl) {
@@ -444,11 +541,14 @@ export default function Viewport() {
       mesh.scale.set(obj.transform.scaleX, obj.transform.scaleY, 1)
       group.add(mesh)
 
-      // wireframe edges
+      // wireframe edges — normally the editable control cage, but optionally the subdivided
+      // display mesh instead (so SDS's actual generated geometry can be inspected)
+      const showSdsWireframe = (obj.sdsLevels ?? 0) > 0 && obj.sdsShowWireframe
+      const wireMesh = showSdsWireframe ? displayMesh : obj.mesh
       const edgePositions: number[] = []
-      for (const [a, b] of getEdges(obj.mesh)) {
-        const va = obj.mesh.vertices[a]
-        const vb = obj.mesh.vertices[b]
+      for (const [a, b] of getEdges(wireMesh)) {
+        const va = wireMesh.vertices[a]
+        const vb = wireMesh.vertices[b]
         edgePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
       }
       const edgeGeom = new THREE.BufferGeometry()
@@ -460,6 +560,34 @@ export default function Viewport() {
       edgeLines.scale.copy(mesh.scale)
       edgeLines.position.z = 0.01
       group.add(edgeLines)
+
+      // when showing the SDS wireframe, also sketch the control cage underneath it — dashed
+      // and faint, just enough to relate the dense subdivided grid back to the edited shape
+      if (showSdsWireframe) {
+        const pxToWorld = 1 / viewRef.current.zoom
+        const cagePositions: number[] = []
+        for (const [a, b] of getEdges(obj.mesh)) {
+          const va = obj.mesh.vertices[a]
+          const vb = obj.mesh.vertices[b]
+          cagePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
+        }
+        const cageGeom = new THREE.BufferGeometry()
+        cageGeom.setAttribute('position', new THREE.Float32BufferAttribute(cagePositions, 3))
+        const cageMat = new THREE.LineDashedMaterial({
+          color: isSelected ? 0xffffff : 0x000000,
+          opacity: 0.3,
+          transparent: true,
+          dashSize: 5 * pxToWorld,
+          gapSize: 4 * pxToWorld,
+        })
+        const cageLines = new THREE.LineSegments(cageGeom, cageMat)
+        cageLines.computeLineDistances()
+        cageLines.position.copy(mesh.position)
+        cageLines.rotation.copy(mesh.rotation)
+        cageLines.scale.copy(mesh.scale)
+        cageLines.position.z = 0.011
+        group.add(cageLines)
+      }
 
       // edit-mode overlays
       if (mode === 'edit' && isSelected) {
@@ -478,13 +606,33 @@ export default function Viewport() {
         }
 
         if (editElementType === 'vertex') {
+          // world-space centroid, just so a creased vertex's triangle marker can point outward
+          // (away from the shape) rather than in an arbitrary fixed direction
+          let centroidX = 0
+          let centroidY = 0
+          obj.mesh.vertices.forEach((v) => {
+            const wp = applyTransform(v, obj.transform)
+            centroidX += wp.x
+            centroidY += wp.y
+          })
+          centroidX /= obj.mesh.vertices.length
+          centroidY /= obj.mesh.vertices.length
+
           obj.mesh.vertices.forEach((v, i) => {
             const p = applyTransform(v, obj.transform)
-            const dotGeom = new THREE.CircleGeometry(4 / viewRef.current.zoom, 12)
             const selected = selectedVertices.has(i)
-            const dotMat = new THREE.MeshBasicMaterial({ color: selected ? 0xffcc00 : 0xffffff, depthTest: false })
+            const creaseWeight = obj.creaseVertices?.[i] ?? 0
+            // any creased vertex (selected or not) renders as a triangle instead of a dot — shape
+            // alone is enough to read, so its color otherwise follows the normal selection rule
+            const color: THREE.ColorRepresentation = selected ? 0xffcc00 : 0xffffff
+            const dotGeom =
+              creaseWeight > 0
+                ? new THREE.CircleGeometry(4.5 / viewRef.current.zoom, 3)
+                : new THREE.CircleGeometry(4 / viewRef.current.zoom, 12)
+            const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false })
             const dot = new THREE.Mesh(dotGeom, dotMat)
             dot.position.set(p.x, p.y, 0.02)
+            if (creaseWeight > 0) dot.rotation.z = Math.atan2(p.y - centroidY, p.x - centroidX)
             group.add(dot)
           })
         }
@@ -570,7 +718,11 @@ export default function Viewport() {
         }
         const modal = elementModalRef.current
         if (modal && modal.objectId === obj.id) {
-          addElementModalPreview(scene, obj, modal)
+          if (modal.kind === 'move') {
+            if (modal.axisLock) addMoveAxisLine(scene, obj, modal)
+          } else {
+            addElementModalPreview(scene, obj, modal)
+          }
         }
       }
     }
@@ -810,9 +962,76 @@ export default function Viewport() {
     scene.add(ring)
   }
 
+  /** Dashed line rendered as a chain of quads (LineDashedMaterial linewidth is ignored by WebGL,
+   *  so thickness needs actual geometry). x1,y1 -> x2,y2 in world space. */
+  function addDashedThickLine(
+    scene: THREE.Scene,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: number,
+    pxToWorld: number,
+  ) {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-6) return
+    const ux = dx / len
+    const uy = dy / len
+    const halfWidth = 1 * pxToWorld // 2px total, matching the grid line width
+    const dash = 7 * pxToWorld
+    const gap = 5 * pxToWorld
+    const step = dash + gap
+    const count = Math.ceil(len / step)
+    const positions: number[] = []
+    const indices: number[] = []
+    let vi = 0
+    for (let i = 0; i < count; i++) {
+      const start = i * step
+      if (start >= len) break
+      const end = Math.min(start + dash, len)
+      const sx = x1 + ux * start
+      const sy = y1 + uy * start
+      const ex = x1 + ux * end
+      const ey = y1 + uy * end
+      const nx = -uy * halfWidth
+      const ny = ux * halfWidth
+      positions.push(sx + nx, sy + ny, 0.7, sx - nx, sy - ny, 0.7, ex - nx, ey - ny, 0.7, ex + nx, ey + ny, 0.7)
+      indices.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3)
+      vi += 4
+    }
+    if (positions.length === 0) return
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geom.setIndex(indices)
+    scene.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, depthTest: false })))
+  }
+
+  /** Live feedback while a G move is axis-locked (X/Y): a dashed world-space line through the
+   *  moving selection's centroid, spanning the visible viewport, colored like Blender's axis
+   *  colors (X=red, Y=green). */
+  function addMoveAxisLine(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'move' }>) {
+    if (!modal.axisLock) return
+    const pts = modal.indices.map((i) => applyTransform(obj.mesh.vertices[i], obj.transform))
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
+    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
+    const pxToWorld = 1 / viewRef.current.zoom
+    const rect = containerRef.current!.getBoundingClientRect()
+    const margin = 50 * pxToWorld
+    const color = modal.axisLock === 'x' ? 0xe5484d : 0x4dca5a
+    if (modal.axisLock === 'x') {
+      const halfW = rect.width / 2 / viewRef.current.zoom + margin
+      addDashedThickLine(scene, viewRef.current.panX - halfW, cy, viewRef.current.panX + halfW, cy, color, pxToWorld)
+    } else {
+      const halfH = rect.height / 2 / viewRef.current.zoom + margin
+      addDashedThickLine(scene, cx, viewRef.current.panY - halfH, cx, viewRef.current.panY + halfH, color, pxToWorld)
+    }
+  }
+
   /** Live feedback while an R/S modal transform is in progress: a radial line from the pivot
    *  out to the cursor (and, for rotate, a faint full ring as an angle reference). */
-  function addElementModalPreview(scene: THREE.Scene, obj: SceneObject, modal: ElementModal) {
+  function addElementModalPreview(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'rotate' | 'scale' }>) {
     const pxToWorld = 1 / viewRef.current.zoom
     const center = applyTransform(modal.pivot, obj.transform)
     const world = screenToWorld(
@@ -1108,9 +1327,9 @@ export default function Viewport() {
     }
     if (e.button !== 0) return
 
-    // a left-click while an R/S modal transform is running confirms it (Blender-style)
+    // a left-click while a G/R/S modal transform is running confirms it (Blender-style)
     if (elementModalRef.current) {
-      elementModalRef.current = null
+      confirmElementModal()
       return
     }
 
@@ -1242,13 +1461,7 @@ export default function Viewport() {
         if (e.shiftKey && already) next.delete(hitIndex)
         else next.add(hitIndex)
         store.setSelectedVertices(next)
-        store.beginChange()
-        dragRef.current = {
-          kind: 'move-vertices',
-          objectId: selectedObj.id,
-          indices: Array.from(next),
-          lastWorld: world,
-        }
+        dragRef.current = { kind: 'none' }
         return
       }
       if (!e.shiftKey) useSceneStore.getState().setSelectedVertices(new Set())
@@ -1283,19 +1496,7 @@ export default function Viewport() {
         if (e.shiftKey && already) next.delete(hitKey)
         else next.add(hitKey)
         store.setSelectedEdges(next)
-        const indices = new Set<number>()
-        next.forEach((k) => {
-          const [a, b] = parseEdgeKey(k)
-          indices.add(a)
-          indices.add(b)
-        })
-        store.beginChange()
-        dragRef.current = {
-          kind: 'move-vertices',
-          objectId: selectedObj.id,
-          indices: Array.from(indices),
-          lastWorld: world,
-        }
+        dragRef.current = { kind: 'none' }
         return
       }
       if (!e.shiftKey) useSceneStore.getState().setSelectedEdges(new Set())
@@ -1326,15 +1527,7 @@ export default function Viewport() {
         if (e.shiftKey && already) next.delete(hitFace)
         else next.add(hitFace)
         store.setSelectedFaces(next)
-        const indices = new Set<number>()
-        next.forEach((fi) => selectedObj.mesh.faces[fi].forEach((i) => indices.add(i)))
-        store.beginChange()
-        dragRef.current = {
-          kind: 'move-vertices',
-          objectId: selectedObj.id,
-          indices: Array.from(indices),
-          lastWorld: world,
-        }
+        dragRef.current = { kind: 'none' }
         return
       }
       if (!e.shiftKey) useSceneStore.getState().setSelectedFaces(new Set())
@@ -1427,21 +1620,6 @@ export default function Viewport() {
         x: drag.startTransform.x + drag.axisDir.x * along,
         y: drag.startTransform.y + drag.axisDir.y * along,
       })
-      return
-    }
-
-    if (drag.kind === 'move-vertices') {
-      const dx = world.x - drag.lastWorld.x
-      const dy = world.y - drag.lastWorld.y
-      const obj = store.objects.find((o) => o.id === drag.objectId)
-      if (obj) {
-        const cos = Math.cos(-obj.transform.rotation)
-        const sin = Math.sin(-obj.transform.rotation)
-        const localDx = (dx * cos - dy * sin) / obj.transform.scaleX
-        const localDy = (dx * sin + dy * cos) / obj.transform.scaleY
-        store.moveVertices(drag.objectId, drag.indices, localDx, localDy)
-      }
-      dragRef.current = { ...drag, lastWorld: world }
       return
     }
 
@@ -1548,37 +1726,6 @@ export default function Viewport() {
               }
             })
             store.setSelectedFaces(next)
-          }
-        }
-      }
-    }
-
-    if (drag.kind === 'move-vertices') {
-      const store = useSceneStore.getState()
-      if (store.editElementType === 'vertex') {
-        const obj = store.objects.find((o) => o.id === drag.objectId)
-        if (obj) {
-          // snap-merge: dragging a vertex onto a topologically adjacent one welds them.
-          // Vertices that aren't connected by an edge are intentionally never considered,
-          // however close they end up — this is a weld, not a generic "merge by distance".
-          const movedSet = new Set(drag.indices)
-          let best: { keep: number; merge: number } | null = null
-          let bestDist = Infinity
-          for (const [a, b] of getEdges(obj.mesh)) {
-            const aMoved = movedSet.has(a)
-            const bMoved = movedSet.has(b)
-            if (aMoved === bMoved) continue // skip if both or neither moved
-            const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
-            const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
-            const d = pxDistSq(pa.x, pa.y, pb.x, pb.y)
-            if (d < bestDist) {
-              bestDist = d
-              best = aMoved ? { keep: b, merge: a } : { keep: a, merge: b }
-            }
-          }
-          const SNAP_MERGE_RADIUS_PX = 5
-          if (best && bestDist < SNAP_MERGE_RADIUS_PX ** 2) {
-            store.mergeVertexPair(drag.objectId, best.keep, best.merge)
           }
         }
       }

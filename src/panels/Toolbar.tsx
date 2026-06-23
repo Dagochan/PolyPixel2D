@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useSceneStore } from '../scene/store'
+import { useSceneStore, creaseValueForSelection } from '../scene/store'
 import { parseObjToMesh } from '../scene/objImport'
 import { parseProjectFile, serializeProject, PROJECT_VERSION, PROJECT_EXTENSION } from '../scene/project'
 import {
@@ -12,6 +12,13 @@ import {
   KnifeIcon,
   ExtrudeIcon,
   SeamIcon,
+  ProjectOpenIcon,
+  ProjectSaveIcon,
+  UndoIcon,
+  RedoIcon,
+  ObjImportIcon,
+  ReferenceImageIcon,
+  CreaseIcon,
 } from './icons'
 
 export default function Toolbar() {
@@ -36,10 +43,18 @@ export default function Toolbar() {
   const activeTool = useSceneStore((s) => s.activeTool)
   const setActiveTool = useSceneStore((s) => s.setActiveTool)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
-  const selectedEdgesCount = useSceneStore((s) => s.selectedEdges.size)
-  const selectedVerticesCount = useSceneStore((s) => s.selectedVertices.size)
+  const selectedEdges = useSceneStore((s) => s.selectedEdges)
+  const selectedVertices = useSceneStore((s) => s.selectedVertices)
+  const selectedEdgesCount = selectedEdges.size
+  const selectedVerticesCount = selectedVertices.size
   const toggleSeamOnSelection = useSceneStore((s) => s.toggleSeamOnSelection)
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
+  const setCreaseWeight = useSceneStore((s) => s.setCreaseWeight)
+  const creaseValue = creaseValueForSelection(selectedObj, editElementType, selectedEdges, selectedVertices)
+  const creaseSelectionEmpty =
+    (editElementType === 'edge' && selectedEdgesCount === 0) ||
+    (editElementType === 'vertex' && selectedVerticesCount === 0) ||
+    editElementType === 'face'
 
   const [segX, setSegX] = useState(1)
   const [segY, setSegY] = useState(1)
@@ -100,19 +115,19 @@ export default function Toolbar() {
           }}
         />
         <button title={`プロジェクトを開く（${PROJECT_EXTENSION}）`} onClick={() => projectFileInputRef.current?.click()}>
-          📁 開く
+          <ProjectOpenIcon />
         </button>
         <button title={`プロジェクトを保存（${PROJECT_EXTENSION}）`} onClick={handleSaveProject}>
-          💾 保存
+          <ProjectSaveIcon />
         </button>
       </div>
 
       <div className="toolbar-group">
         <button title="元に戻す (Cmd/Ctrl+Z)" disabled={!canUndo} onClick={() => undo()}>
-          ↶ 戻す
+          <UndoIcon />
         </button>
         <button title="やり直す (Cmd/Ctrl+Shift+Z)" disabled={!canRedo} onClick={() => redo()}>
-          ↷ 進む
+          <RedoIcon />
         </button>
       </div>
 
@@ -129,7 +144,7 @@ export default function Toolbar() {
           }}
         />
         <button title="OBJファイルを読み込み（平面メッシュ想定）" onClick={() => fileInputRef.current?.click()}>
-          📂 OBJ読込
+          <ObjImportIcon />
         </button>
       </div>
 
@@ -146,7 +161,7 @@ export default function Toolbar() {
           }}
         />
         <button title="トレース用の下絵を読み込み" onClick={() => refFileInputRef.current?.click()}>
-          🖼 下絵
+          <ReferenceImageIcon />
         </button>
         {referenceImage && (
           <>
@@ -325,6 +340,24 @@ export default function Toolbar() {
           >
             <SeamIcon />
           </button>
+          {(editElementType === 'edge' || editElementType === 'vertex') && (
+            <label
+              className="seg-input"
+              title="選択中の辺/頂点のSDSクリース強度（0=滑らか、1=分割しても尖りを維持）。複数選択時、値が混在していると空欄表示になりますが、操作すれば選択中全部に一括設定されます"
+            >
+              <CreaseIcon />
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                disabled={creaseSelectionEmpty}
+                value={creaseValue === 'mixed' ? 0 : creaseValue}
+                onChange={(e) => setCreaseWeight(+e.target.value)}
+              />
+              <span>{creaseSelectionEmpty ? '' : creaseValue === 'mixed' ? '—' : creaseValue.toFixed(2)}</span>
+            </label>
+          )}
         </div>
       )}
     </div>

@@ -59,16 +59,22 @@ export default function UvEditor({
   obj,
   size = 220,
   matchTexelDensity = false,
+  textureUrl,
+  textureOpacity = 0.5,
 }: {
   obj: SceneObject
   size?: number
   /** When scaling one island, scale every other island too, keeping each one's scale
    *  proportional to its real-world size — so texel density stays consistent across islands. */
   matchTexelDensity?: boolean
+  /** The object's texture (if any), drawn full-bleed behind the islands so they can be lined up against it. */
+  textureUrl?: string
+  textureOpacity?: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const [redrawTick, forceRedraw] = useState(0)
+  const textureImageRef = useRef<HTMLImageElement | null>(null)
 
   useEffect(() => {
     const onLoad = () => forceRedraw((n) => n + 1)
@@ -79,6 +85,18 @@ export default function UvEditor({
       EXCLUDED_ICON.removeEventListener('load', onLoad)
     }
   }, [])
+
+  useEffect(() => {
+    if (!textureUrl) {
+      textureImageRef.current = null
+      forceRedraw((n) => n + 1)
+      return
+    }
+    const img = new Image()
+    img.onload = () => forceRedraw((n) => n + 1)
+    img.src = textureUrl
+    textureImageRef.current = img
+  }, [textureUrl])
   const setUvIslandTransform = useSceneStore((s) => s.setUvIslandTransform)
   const beginChange = useSceneStore((s) => s.beginChange)
 
@@ -125,6 +143,15 @@ export default function UvEditor({
     ctx.clearRect(0, 0, size, size)
     ctx.fillStyle = '#1e1f22'
     ctx.fillRect(0, 0, size, size)
+
+    const texImg = textureImageRef.current
+    if (texImg && texImg.complete && texImg.naturalWidth > 0) {
+      ctx.save()
+      ctx.globalAlpha = textureOpacity
+      ctx.drawImage(texImg, 0, 0, size, size)
+      ctx.restore()
+    }
+
     ctx.strokeStyle = '#555'
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1)
 
@@ -195,7 +222,7 @@ export default function UvEditor({
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [obj.mesh, obj.uvIslandTransforms, size, redrawTick])
+  }, [obj.mesh, obj.uvIslandTransforms, size, redrawTick, textureOpacity])
 
   function uvFromEvent(e: React.PointerEvent): Vec2 {
     const rect = canvasRef.current!.getBoundingClientRect()

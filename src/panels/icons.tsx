@@ -87,3 +87,72 @@ export function SeamIcon({ size = 16 }: IconProps) {
     </svg>
   )
 }
+
+export function CreaseIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <path
+        d="M3,18 L9,7 L15,16 L21,6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+const wide = { viewBox: '0 -960 960 960', fill: 'currentColor' } as const
+
+export function ProjectOpenIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M160-160q-33 0-56.5-23.5T80-240v-400q0-33 23.5-56.5T160-720h240l80-80h320q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm73-280h207v-207L233-440Zm-73-40 160-160H160v160Zm0 120v120h640v-480H520v280q0 33-23.5 56.5T440-360H160Zm280-160Z" />
+    </svg>
+  )
+}
+
+export function ProjectSaveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M840-680v480q0 33-23.5 56.5T760-120H200q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h480l160 160Zm-80 34L646-760H200v560h560v-446ZM565-275q35-35 35-85t-35-85q-35-35-85-35t-85 35q-35 35-35 85t35 85q35 35 85 35t85-35ZM240-560h360v-160H240v160Zm-40-86v446-560 114Z" />
+    </svg>
+  )
+}
+
+export function UndoIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M280-200v-80h284q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l104 104-56 56-200-200 200-200 56 56-104 104h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H280Z" />
+    </svg>
+  )
+}
+
+export function RedoIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M396-200q-97 0-166.5-63T160-420q0-94 69.5-157T396-640h252L544-744l56-56 200 200-200 200-56-56 104-104H396q-63 0-109.5 40T240-420q0 60 46.5 100T396-280h284v80H396Z" />
+    </svg>
+  )
+}
+
+export function ObjImportIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M440-200h80v-167l64 64 56-57-160-160-160 160 57 56 63-63v167ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z" />
+    </svg>
+  )
+}
+
+export function ReferenceImageIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <g transform="matrix(0.027778,0,0,0.027778,-1.333333,25.333333)">
+        <path d="M200,-120C178,-120 159.167,-127.833 143.5,-143.5C127.833,-159.167 120,-178 120,-200L120,-760C120,-782 127.833,-800.833 143.5,-816.5C159.167,-832.167 178,-840 200,-840L520,-840L520,-768L192,-768L192,-192L768,-192L768,-520L840,-520L840,-200C840,-178 832.167,-159.167 816.5,-143.5C800.833,-127.833 782,-120 760,-120L200,-120ZM264,-264L696,-264C696,-264 670.498,-319.091 624,-336C558,-360 402,-360 336,-336C289.502,-319.091 264,-264 264,-264ZM680,-600L680,-680L600,-680L600,-760L680,-760L680,-840L760,-840L760,-760L840,-760L840,-680L760,-680L760,-600L680,-600Z" />
+      </g>
+      <g transform="matrix(0.875,0,0,0.875,1.5,2.75)">
+        <circle cx="12" cy="10" r="4" />
+      </g>
+    </svg>
+  )
+}
