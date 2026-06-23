@@ -58,6 +58,12 @@ export interface SceneObject {
   /** Edge keys ("a_b", a<b) marked as UV seams — cuts a UV island here even if the mesh
    *  itself stays connected (e.g. splitting a one-skin character's limbs from its torso). */
   seamEdges?: string[]
+  /** The "rest pose" position UV unwrapping is computed from, per vertex index — frozen at
+   *  creation (or last "UVを再展開") and never touched by ordinary vertex edits, so moving a
+   *  vertex deforms the mesh without dragging its UV along (matches normal DCC behavior, and is
+   *  what keeps texturing sane once bones start deforming the mesh). A vertex missing here (e.g.
+   *  one a future mesh op forgot to seed) just falls back to its live position. */
+  uvBaseVertices?: Record<number, Vec2>
   /** Catmull-Clark subdivision levels (0 = off) applied only to the rendered fill mesh — the
    *  editable control cage (this mesh) and its UVs are untouched. */
   sdsLevels?: number

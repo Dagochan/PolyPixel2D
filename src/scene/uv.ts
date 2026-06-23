@@ -6,6 +6,12 @@ export interface Island {
   vertices: number[]
 }
 
+/** The position UV unwrap math should use for vertex `i`: its frozen rest-pose position if one
+ *  has been seeded, else its live position (e.g. a vertex from before this field existed). */
+function uvPosition(mesh: Mesh, baseVertices: Record<number, Vec2> | undefined, i: number): Vec2 {
+  return baseVertices?.[i] ?? mesh.vertices[i]
+}
+
 function finiteOr(v: number | undefined, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
@@ -27,10 +33,10 @@ export function normalizeIslandTransform(
 }
 
 /** The island's real-world (mesh-space) size — its longer bounding-box side. */
-export function islandFootprint(mesh: Mesh, island: Island): number {
+export function islandFootprint(mesh: Mesh, island: Island, baseVertices?: Record<number, Vec2>): number {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const i of island.vertices) {
-    const v = mesh.vertices[i]
+    const v = uvPosition(mesh, baseVertices, i)
     if (v.x < minX) minX = v.x
     if (v.y < minY) minY = v.y
     if (v.x > maxX) maxX = v.x
@@ -46,9 +52,13 @@ export function islandFootprint(mesh: Mesh, island: Island): number {
  * past this is left to the user via the UV editor — this only avoids everything landing in the
  * same 0..1 square by default.
  */
-export function defaultIslandTransforms(mesh: Mesh, islands: Island[]): UvIslandTransform[] {
+export function defaultIslandTransforms(
+  mesh: Mesh,
+  islands: Island[],
+  baseVertices?: Record<number, Vec2>,
+): UvIslandTransform[] {
   if (islands.length === 0) return []
-  const footprints = islands.map((island) => islandFootprint(mesh, island))
+  const footprints = islands.map((island) => islandFootprint(mesh, island, baseVertices))
   const maxFootprint = Math.max(...footprints)
   const cols = Math.ceil(Math.sqrt(islands.length))
   const rows = Math.ceil(islands.length / cols)
@@ -121,10 +131,10 @@ export function findIslands(mesh: Mesh, seams?: ReadonlySet<string>): Island[] {
 }
 
 /** This island's own bounding box, normalized to 0..1 — before any manual transform. */
-export function islandBaseUV(mesh: Mesh, island: Island): Map<number, Vec2> {
+export function islandBaseUV(mesh: Mesh, island: Island, baseVertices?: Record<number, Vec2>): Map<number, Vec2> {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const i of island.vertices) {
-    const v = mesh.vertices[i]
+    const v = uvPosition(mesh, baseVertices, i)
     if (v.x < minX) minX = v.x
     if (v.y < minY) minY = v.y
     if (v.x > maxX) maxX = v.x
@@ -137,7 +147,7 @@ export function islandBaseUV(mesh: Mesh, island: Island): Map<number, Vec2> {
   const size = Math.max(w, h) || 1
   const uv = new Map<number, Vec2>()
   for (const i of island.vertices) {
-    const v = mesh.vertices[i]
+    const v = uvPosition(mesh, baseVertices, i)
     uv.set(i, { x: (v.x - minX) / size, y: (v.y - minY) / size })
   }
   return uv
@@ -171,13 +181,23 @@ export function applyIslandTransform(base: Vec2, baseCenter: Vec2, t: UvIslandTr
 }
 
 /** Final per-vertex UVs: each island normalized to its own bounding box, then rotated/offset/
- *  scaled by its manual transform — or, for islands that don't have one yet, the default grid layout. */
-export function computeUVs(mesh: Mesh, transforms?: UvIslandTransform[], seams?: ReadonlySet<string>): Vec2[] {
+ *  scaled by its manual transform — or, for islands that don't have one yet, the default grid
+ *  layout. A vertex shared by two islands (i.e. right on a seam) can only hold one of their UVs
+ *  here, since this is a flat per-vertex array — that island "wins" arbitrarily and the other
+ *  island's faces touching it get visibly pulled toward it. Used only for the SDS path, where
+ *  `subdivideMeshWithUVs` needs a single UV channel indexed in lockstep with position; everywhere
+ *  else use `computeSplitUVs`, which doesn't have this problem. */
+export function computeUVs(
+  mesh: Mesh,
+  transforms?: UvIslandTransform[],
+  seams?: ReadonlySet<string>,
+  baseVertices?: Record<number, Vec2>,
+): Vec2[] {
   const islands = findIslands(mesh, seams)
-  const defaults = defaultIslandTransforms(mesh, islands)
+  const defaults = defaultIslandTransforms(mesh, islands, baseVertices)
   const out = new Array<Vec2>(mesh.vertices.length)
   islands.forEach((island, i) => {
-    const base = islandBaseUV(mesh, island)
+    const base = islandBaseUV(mesh, island, baseVertices)
     const t = normalizeIslandTransform(transforms?.[i], defaults[i])
     const center = islandBaseCenter(base.values())
     for (const [vi, uv] of base) {
@@ -185,4 +205,55 @@ export function computeUVs(mesh: Mesh, transforms?: UvIslandTransform[], seams?:
     }
   })
   return out
+}
+
+/**
+ * Build a renderable mesh + per-vertex UV with islands fully resolved: a vertex that sits on a
+ * seam is shared, topologically, by faces in two different islands, but each side needs its own
+ * UV — a single per-vertex UV array can only hold one, which is what used to make seam-adjacent
+ * islands look "pulled together" in the actual render/export (the mini UV editor never had this
+ * bug — it already draws each island's faces with that island's own UV, never merging into one
+ * shared array). The fix matches how every other DCC tool handles it: duplicate the vertex along
+ * the seam so each island gets its own copy, sharing the same position but not the same UV.
+ * The *editable* mesh (`mesh` argument) is never touched — this only ever produces a new, larger
+ * one for rendering/export.
+ */
+export function computeSplitUVs(
+  mesh: Mesh,
+  transforms?: UvIslandTransform[],
+  seams?: ReadonlySet<string>,
+  baseVertices?: Record<number, Vec2>,
+): { mesh: Mesh; uvs: Vec2[] } {
+  const islands = findIslands(mesh, seams)
+  const defaults = defaultIslandTransforms(mesh, islands, baseVertices)
+
+  const vertices: Vec2[] = []
+  const uvs: Vec2[] = []
+  const faces: number[][] = []
+  // one duplicate per (island, original vertex) pair that's actually used — a vertex touched by
+  // only one island never gets duplicated, so this only grows the mesh at seam boundaries
+  const dupIndex = new Map<string, number>()
+
+  islands.forEach((island, islandIdx) => {
+    const base = islandBaseUV(mesh, island, baseVertices)
+    const t = normalizeIslandTransform(transforms?.[islandIdx], defaults[islandIdx])
+    const center = islandBaseCenter(base.values())
+
+    for (const fi of island.faces) {
+      const newFace = mesh.faces[fi].map((origIndex) => {
+        const key = `${islandIdx}_${origIndex}`
+        let ni = dupIndex.get(key)
+        if (ni === undefined) {
+          ni = vertices.length
+          vertices.push({ ...mesh.vertices[origIndex] })
+          uvs.push(applyIslandTransform(base.get(origIndex)!, center, t))
+          dupIndex.set(key, ni)
+        }
+        return ni
+      })
+      faces.push(newFace)
+    }
+  })
+
+  return { mesh: { vertices, faces }, uvs }
 }

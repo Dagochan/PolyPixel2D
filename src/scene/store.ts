@@ -93,6 +93,12 @@ interface SceneState {
   setSdsShowWireframe: (id: string, show: boolean) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
+  /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
+   *  a post-extrude grab confirms, so the new geometry's UV reflects where it ended up. */
+  freezeUvBaseVertices: (id: string, indices: number[]) => void
+  /** Re-unwrap the whole object: every vertex's UV rest-pose becomes its current position. Manual
+   *  per-island placement (offset/scale/rotation) is untouched. */
+  reunwrapUVs: (id: string) => void
   setTransform: (id: string, transform: Partial<Transform>) => void
   /** Move the pivot (in local mesh space) while keeping the mesh visually in place. */
   setPivot: (id: string, localPivot: Vec2) => void
@@ -184,6 +190,18 @@ export function creaseValueForSelection(
   return 0
 }
 
+/** Freeze a UV rest-pose position for any of `mesh`'s vertices that don't have one yet (existing
+ *  entries are left untouched) — call this after any op that adds vertices, so new geometry gets
+ *  a fixed UV reference from the moment it exists, instead of "live" UV that drifts as it's
+ *  later moved/posed. Ordinary vertex edits (drag, G/R/S, bone deform later) must NOT call this. */
+function seedUvBaseVertices(mesh: Mesh, existing: Record<number, Vec2> | undefined): Record<number, Vec2> {
+  const next = { ...(existing ?? {}) }
+  mesh.vertices.forEach((v, i) => {
+    if (!(i in next)) next[i] = { x: v.x, y: v.y }
+  })
+  return next
+}
+
 function cloneObjects(objects: SceneObject[]): SceneObject[] {
   return objects.map((o) => ({
     ...o,
@@ -250,14 +268,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const objects = get().objects
     segX = Math.max(1, Math.floor(segX))
     segY = Math.max(1, Math.floor(segY))
+    const mesh = createRectMesh(width, height, segX, segY)
     const obj: SceneObject = {
       id: genId('obj'),
       name: `Rect_${objects.length + 1}`,
-      mesh: createRectMesh(width, height, segX, segY),
+      mesh,
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -265,14 +285,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   addCircle: (radius, segments) => {
     get().beginChange()
     const objects = get().objects
+    const mesh = createCircleMesh(radius, segments)
     const obj: SceneObject = {
       id: genId('obj'),
       name: `Circle_${objects.length + 1}`,
-      mesh: createCircleMesh(radius, segments),
+      mesh,
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -280,14 +302,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   addImportedMesh: (mesh, name) => {
     get().beginChange()
     const objects = get().objects
+    const prunedMesh = pruneOrphanVertices(mesh) // a malformed OBJ could list vertices no face uses
     const obj: SceneObject = {
       id: genId('obj'),
       name,
-      mesh: pruneOrphanVertices(mesh), // a malformed OBJ could list vertices no face uses
+      mesh: prunedMesh,
       transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(prunedMesh, undefined),
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -296,16 +320,18 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
     const mesh = mergeMeshAsIsland(obj.mesh, createRectMesh(width, height, segX, segY), at)
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
     get().beginChange()
-    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)) }))
+    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)) }))
   },
 
   addCircleIsland: (objectId, at, radius, segments) => {
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
     const mesh = mergeMeshAsIsland(obj.mesh, createCircleMesh(radius, segments), at)
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
     get().beginChange()
-    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)) }))
+    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)) }))
   },
 
   setPendingPrimitive: (pendingPrimitive) => set({ pendingPrimitive }),
@@ -396,6 +422,33 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         while (next.length <= islandIndex) next.push({ offsetX: 0, offsetY: 0, scale: 1, rotation: 0 })
         next[islandIndex] = { ...next[islandIndex], ...clean }
         return { ...o, uvIslandTransforms: next }
+      }),
+    }))
+  },
+
+  freezeUvBaseVertices: (id, indices) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const next = { ...(o.uvBaseVertices ?? {}) }
+        for (const i of indices) {
+          const v = o.mesh.vertices[i]
+          if (v) next[i] = { x: v.x, y: v.y }
+        }
+        return { ...o, uvBaseVertices: next }
+      }),
+    })),
+
+  reunwrapUVs: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const uvBaseVertices: Record<number, Vec2> = {}
+        o.mesh.vertices.forEach((v, i) => {
+          uvBaseVertices[i] = { x: v.x, y: v.y }
+        })
+        return { ...o, uvBaseVertices }
       }),
     }))
   },
@@ -493,10 +546,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!path) return
     const result = applyLoopCutToMesh(obj.mesh, path, ts)
     const mesh = pruneOrphanVertices(result.mesh)
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
 
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -508,10 +562,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!obj || path.length < 2) return
     const result = applyKnifeCutToMesh(obj.mesh, path)
     const mesh = pruneOrphanVertices(result.mesh)
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
 
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),

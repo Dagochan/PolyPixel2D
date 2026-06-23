@@ -1,6 +1,6 @@
 import { useRef, useState, type CSSProperties } from 'react'
 import { useSceneStore } from '../scene/store'
-import { computeUVs } from '../scene/uv'
+import { computeSplitUVs } from '../scene/uv'
 import { getEdges } from '../scene/meshUtils'
 import type { SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
@@ -41,7 +41,7 @@ const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
 /** Draw the mesh's UV wireframe (UV 0,0 = bottom-left, image 0,0 = top-left) and trigger a PNG download. */
 function exportUvMap(obj: SceneObject, resolution: number) {
   const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-  const uvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams)
+  const { mesh: splitMesh, uvs } = computeSplitUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
   const canvas = document.createElement('canvas')
   canvas.width = resolution
   canvas.height = resolution
@@ -50,7 +50,7 @@ function exportUvMap(obj: SceneObject, resolution: number) {
   ctx.fillRect(0, 0, resolution, resolution)
   ctx.strokeStyle = '#000000'
   ctx.lineWidth = 1
-  for (const [a, b] of getEdges(obj.mesh)) {
+  for (const [a, b] of getEdges(splitMesh)) {
     const pa = uvs[a]
     const pb = uvs[b]
     ctx.beginPath()
@@ -72,6 +72,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
   const setSdsLevels = useSceneStore((s) => s.setSdsLevels)
   const setSdsShowWireframe = useSceneStore((s) => s.setSdsShowWireframe)
+  const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
   const [matchTexelDensity, setMatchTexelDensity] = useState(false)
@@ -193,6 +194,12 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               }}
             >
               UVを編集...
+            </button>
+            <button
+              title="現在の形状でUVを再計算します。普段は頂点を動かしてもUVは固定されたままテクスチャが伸びますが、大きく作り直した後など、改めて展開し直したい時に使います"
+              onClick={() => reunwrapUVs(obj.id)}
+            >
+              UVを再展開
             </button>
           </div>
           <div className="prop-row">

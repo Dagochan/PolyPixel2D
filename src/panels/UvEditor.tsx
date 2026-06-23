@@ -102,11 +102,11 @@ export default function UvEditor({
 
   const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
   const islands = findIslands(obj.mesh, seams)
-  const defaults = defaultIslandTransforms(obj.mesh, islands)
+  const defaults = defaultIslandTransforms(obj.mesh, islands, obj.uvBaseVertices)
   const transforms = islands.map((_, i) => normalizeIslandTransform(obj.uvIslandTransforms?.[i], defaults[i]))
-  const bases = islands.map((island) => islandBaseUV(obj.mesh, island))
+  const bases = islands.map((island) => islandBaseUV(obj.mesh, island, obj.uvBaseVertices))
   const baseCenters = bases.map((base) => islandBaseCenter(base.values()))
-  const footprints = islands.map((island) => islandFootprint(obj.mesh, island))
+  const footprints = islands.map((island) => islandFootprint(obj.mesh, island, obj.uvBaseVertices))
   const handleHitUv = HANDLE_SIZE_PX / size
   const lockHitUv = LOCK_ICON_SIZE_PX / size
   const rotateHandleDistUv = ROTATE_HANDLE_DIST_PX / size

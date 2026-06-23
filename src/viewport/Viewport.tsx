@@ -4,10 +4,10 @@ import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type Refer
 import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scene/meshUtils'
 import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
-import type { SceneObject, Vec2 } from '../scene/types'
+import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
-import { computeUVs } from '../scene/uv'
+import { computeUVs, computeSplitUVs } from '../scene/uv'
 import { subdivideMeshWithUVs } from '../scene/subdivision'
 
 const HANDLE_SIZE = 8 // px
@@ -79,6 +79,10 @@ type ElementModal =
       startPositions: Vec2[]
       startWorld: Vec2
       axisLock: 'x' | 'y' | null // world-space axis lock, toggled by pressing X/Y again
+      // true for the post-extrude grab only: the new vertices' UV rest-pose was seeded at their
+      // pre-drag (zero-size) position, so it must be re-stamped to wherever they end up once
+      // this modal confirms — otherwise the new geometry's UV stays collapsed to a sliver
+      seedUvOnConfirm: boolean
     }
 
 export default function Viewport() {
@@ -177,6 +181,7 @@ export default function Viewport() {
         startPositions,
         startWorld: currentPointerWorld(),
         axisLock: null,
+        seedUvOnConfirm: skipBeginChange,
       }
     }
   }
@@ -190,6 +195,11 @@ export default function Viewport() {
       const store = useSceneStore.getState()
       const obj = store.objects.find((o) => o.id === modal.objectId)
       if (obj) {
+        // the post-extrude grab seeded these vertices' UV rest-pose back when they were still
+        // sitting at distance 0 — now that the user has actually dragged them out, re-stamp it
+        // to where they ended up, or the new geometry's UV would stay collapsed to a sliver
+        if (modal.seedUvOnConfirm) store.freezeUvBaseVertices(modal.objectId, modal.indices)
+
         const movedSet = new Set(modal.indices)
         let best: { keep: number; merge: number } | null = null
         let bestDist = Infinity
@@ -501,16 +511,31 @@ export default function Viewport() {
       // (matches applyTransform: world = R*scale*(v - pivot) + position).
       const { pivot } = obj.transform
       const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-      const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams)
       // SDS only smooths the rendered fill mesh — the editable control cage and its UVs
       // (used everywhere else: picking, the UV editor, export) are untouched.
-      const { mesh: displayMesh, uvs: displayUvs } = subdivideMeshWithUVs(
-        obj.mesh,
-        baseUvs,
-        obj.sdsLevels ?? 0,
-        obj.creaseEdges,
-        obj.creaseVertices,
-      )
+      let displayMesh: Mesh
+      let displayUvs: Vec2[]
+      if ((obj.sdsLevels ?? 0) > 0) {
+        // subdivideMeshWithUVs needs one UV per vertex in lockstep with position, which can't
+        // represent a seam (one vertex, two desired UVs) — known limitation: a seam can still
+        // look "pulled" together here specifically when SDS is on. Without SDS, the branch below
+        // uses computeSplitUVs instead, which doesn't have this problem.
+        const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
+        ;({ mesh: displayMesh, uvs: displayUvs } = subdivideMeshWithUVs(
+          obj.mesh,
+          baseUvs,
+          obj.sdsLevels ?? 0,
+          obj.creaseEdges,
+          obj.creaseVertices,
+        ))
+      } else {
+        ;({ mesh: displayMesh, uvs: displayUvs } = computeSplitUVs(
+          obj.mesh,
+          obj.uvIslandTransforms,
+          seams,
+          obj.uvBaseVertices,
+        ))
+      }
       const positions = displayMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
