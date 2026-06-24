@@ -28,7 +28,8 @@ body {
   align-items: center;
 }
 
-.toolbar button {
+.toolbar button,
+.tool-pane button {
   background: #3a3b3e;
   color: #ddd;
   border: 1px solid #111;
@@ -41,11 +42,13 @@ body {
   justify-content: center;
 }
 
-.toolbar button svg {
+.toolbar button svg,
+.tool-pane button svg {
   display: block;
 }
 
-.toolbar button.active {
+.toolbar button.active,
+.tool-pane button.active {
   background: #4ea1ff;
   color: #111;
 }
@@ -60,12 +63,51 @@ body {
   color: #111;
 }
 
-.toolbar button:hover { filter: brightness(1.15); }
+.toolbar button:hover,
+.tool-pane button:hover { filter: brightness(1.15); }
 
-.toolbar button:disabled {
+.toolbar button:disabled,
+.tool-pane button:disabled {
   opacity: 0.4;
   cursor: default;
   filter: none;
+}
+
+/* left vertical tool palette (Blender-style): icon-only buttons stacked along the viewport's
+   left edge, holding only the edit-mode element-type/mesh-tool buttons — everything else stays
+   in the top Toolbar */
+.tool-pane {
+  flex-shrink: 0;
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  background: #2a2b2e;
+  border-right: 1px solid #111;
+  overflow-y: auto;
+}
+
+.tool-pane-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3a3b3e;
+}
+
+.tool-pane-group:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.tool-pane button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
 }
 
 .seg-input {

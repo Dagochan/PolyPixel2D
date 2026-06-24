@@ -3,6 +3,7 @@ import Viewport from './viewport/Viewport'
 import Outliner from './panels/Outliner'
 import Properties from './panels/Properties'
 import Toolbar from './panels/Toolbar'
+import ToolPane from './panels/ToolPane'
 import { useSceneStore } from './scene/store'
 
 const SIDEBAR_MIN_WIDTH = 180
@@ -187,6 +188,7 @@ export default function App() {
     <div className="app">
       <Toolbar />
       <div className="main-area">
+        <ToolPane />
         <Viewport />
         <div className="sidebar-resizer" onPointerDown={startSidebarResize} />
         <div className="sidebar" ref={sidebarRef} style={{ width: sidebarWidth }}>

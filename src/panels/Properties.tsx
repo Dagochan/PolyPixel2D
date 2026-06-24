@@ -254,6 +254,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 title="選択中の辺/頂点のSDSクリース強度（0=滑らか、1=分割しても尖りを維持）。複数選択時、値が混在していると空欄表示になりますが、操作すれば選択中全部に一括設定されます"
               >
                 <CreaseIcon />
+                <span>（クリース強度）</span>
                 <input
                   type="range"
                   min={0}
