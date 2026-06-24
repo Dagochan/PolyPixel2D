@@ -84,6 +84,29 @@ type ElementModal =
       // this modal confirms — otherwise the new geometry's UV stays collapsed to a sliver
       seedUvOnConfirm: boolean
     }
+  | {
+      // started by pressing G again while a 'move' modal is active (Blender's GG vertex slide):
+      // each vertex is constrained to ride along whichever adjacent edge is currently best
+      // aligned with the cumulative drag direction (re-picked every pointermove, not fixed at
+      // GG time) — so redirecting the mouse toward a different edge re-targets the slide onto it
+      kind: 'vertex-slide'
+      objectId: string
+      indices: number[]
+      origPositions: Vec2[] // pre-drag local positions, parallel to `indices`
+      slideOriginWorld: Vec2 // pointer world position when the slide started
+      neighbors: Vec2[][] // per index: pre-drag local positions of all adjacent vertices
+      // the neighbor each vertex is currently riding toward, persisted across frames with
+      // hysteresis (see updateElementModal) so tiny mouse jitter doesn't flicker between two
+      // similarly-aligned edges — null until the drag direction is decisive enough to commit
+      chosenNeighbor: Array<Vec2 | null>
+      // only set while Alt is held: the edge the vertex locked onto the moment Alt went down,
+      // ridden exclusively (no competing edge considered) until Alt is released — this is what
+      // lets it cross back through the original vertex position without another edge interjecting
+      lockedNeighbor: Array<Vec2 | null>
+      // world-space rail each vertex is currently riding, refreshed every update — used to draw
+      // the dashed guide line, and null for a vertex with nothing to ride (no aligned edge yet)
+      liveRails: Array<{ origWorld: Vec2; targetWorld: Vec2 } | null>
+    }
 
 export default function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -186,19 +209,66 @@ export default function Viewport() {
     }
   }
 
+  /** GG: switch the active 'move' modal into a vertex-slide modal. Which adjacent edge each
+   *  vertex rides is *not* fixed here — only the neighbor list is captured. The actual edge is
+   *  re-picked every pointermove in updateElementModal, based on whatever direction the cursor
+   *  has travelled since the slide started, so redirecting the mouse retargets the slide onto a
+   *  different edge instead of staying locked to whichever one happened to be best at GG time.
+   *  No-op outside a move modal, or in face select mode (face has no well-defined per-vertex
+   *  slide edges here). */
+  function startVertexSlide() {
+    const modal = elementModalRef.current
+    if (!modal || modal.kind !== 'move') return
+    const store = useSceneStore.getState()
+    if (store.editElementType === 'face') return
+    const obj = store.objects.find((o) => o.id === modal.objectId)
+    if (!obj) return
+
+    // undo whatever the free-move drag had already applied — slide computes its own offsets
+    // from the original pre-drag positions
+    store.setVertexPositions(modal.objectId, modal.indices, modal.startPositions)
+
+    const origLocal = (idx: number): Vec2 => {
+      const at = modal.indices.indexOf(idx)
+      return at >= 0 ? modal.startPositions[at] : obj.mesh.vertices[idx]
+    }
+
+    const neighborsOf = new Map<number, number[]>()
+    for (const [a, b] of getEdges(obj.mesh)) {
+      if (!neighborsOf.has(a)) neighborsOf.set(a, [])
+      if (!neighborsOf.has(b)) neighborsOf.set(b, [])
+      neighborsOf.get(a)!.push(b)
+      neighborsOf.get(b)!.push(a)
+    }
+
+    const neighbors = modal.indices.map((idx) => (neighborsOf.get(idx) ?? []).map((n) => origLocal(n)))
+
+    elementModalRef.current = {
+      kind: 'vertex-slide',
+      objectId: modal.objectId,
+      indices: modal.indices,
+      origPositions: modal.startPositions,
+      slideOriginWorld: currentPointerWorld(),
+      neighbors,
+      chosenNeighbor: modal.indices.map(() => null),
+      lockedNeighbor: modal.indices.map(() => null),
+      liveRails: modal.indices.map(() => null),
+    }
+  }
+
   /** Confirm the active modal transform (click/Enter). A vertex move also snap-merges onto
    *  a topologically adjacent vertex it ended up on top of, mirroring the old drag-to-merge behavior. */
   function confirmElementModal() {
     const modal = elementModalRef.current
     if (!modal) return
-    if (modal.kind === 'move') {
+    if (modal.kind === 'move' || modal.kind === 'vertex-slide') {
       const store = useSceneStore.getState()
       const obj = store.objects.find((o) => o.id === modal.objectId)
       if (obj) {
         // the post-extrude grab seeded these vertices' UV rest-pose back when they were still
         // sitting at distance 0 — now that the user has actually dragged them out, re-stamp it
         // to where they ended up, or the new geometry's UV would stay collapsed to a sliver
-        if (modal.seedUvOnConfirm) store.freezeUvBaseVertices(modal.objectId, modal.indices)
+        if (modal.kind === 'move' && modal.seedUvOnConfirm) store.freezeUvBaseVertices(modal.objectId, modal.indices)
 
         const movedSet = new Set(modal.indices)
         let best: { keep: number; merge: number } | null = null
@@ -225,7 +295,7 @@ export default function Viewport() {
   }
 
   /** Recompute and write the live vertex positions for the active R/S modal, given the cursor. */
-  function updateElementModal(ctrlKey: boolean) {
+  function updateElementModal(ctrlKey: boolean, altKey: boolean) {
     const modal = elementModalRef.current
     if (!modal) return
     const store = useSceneStore.getState()
@@ -244,6 +314,140 @@ export default function Viewport() {
       const localDx = (dx * cos - dy * sin) / obj.transform.scaleX
       const localDy = (dx * sin + dy * cos) / obj.transform.scaleY
       const positions = modal.startPositions.map((p) => ({ x: p.x + localDx, y: p.y + localDy }))
+      store.setVertexPositions(modal.objectId, modal.indices, positions)
+      return
+    }
+
+    if (modal.kind === 'vertex-slide') {
+      const currentWorld = currentPointerWorld()
+      const dragX = currentWorld.x - modal.slideOriginWorld.x
+      const dragY = currentWorld.y - modal.slideOriginWorld.y
+      const dragLen = Math.hypot(dragX, dragY)
+      // ignore sub-pixel jitter right after GG — without this, the edge choice reacts to noise
+      // before the user has actually committed to a direction
+      const DEADZONE = 3 / viewRef.current.zoom
+      // without Alt: only switch to a different edge if it's clearly (not just marginally)
+      // better aligned with the current drag — otherwise two similarly-angled edges flicker
+      // back and forth on ordinary, slightly-wobbly hand movement
+      const SWITCH_MARGIN = 0.08
+      const positions = modal.indices.map((_, i) => {
+        const origPos = modal.origPositions[i]
+        const neighborList = modal.neighbors[i]
+        if (neighborList.length === 0) {
+          modal.liveRails[i] = null
+          modal.chosenNeighbor[i] = null
+          modal.lockedNeighbor[i] = null
+          return origPos
+        }
+        const origWorld = applyTransform(origPos, obj.transform)
+
+        if (!altKey) {
+          // no Alt: dynamic and redirectable (re-picked every frame, hysteresis-stabilized),
+          // clamped to the segment, no guide line — and the Alt-lock is released so the next
+          // Alt-press re-locks onto whatever edge is current at that moment
+          modal.lockedNeighbor[i] = null
+          modal.liveRails[i] = null
+          if (dragLen < DEADZONE) {
+            modal.chosenNeighbor[i] = null
+            return origPos
+          }
+          const dirX = dragX / dragLen
+          const dirY = dragY / dragLen
+          let bestTarget: Vec2 | null = null
+          let bestDot = -Infinity
+          let bestLen = 0
+          let currentDot = -Infinity
+          let currentLen = 0
+          for (const n of neighborList) {
+            const nWorld = applyTransform(n, obj.transform)
+            const ex = nWorld.x - origWorld.x
+            const ey = nWorld.y - origWorld.y
+            const len = Math.hypot(ex, ey)
+            if (len < 1e-9) continue
+            const dot = (ex / len) * dirX + (ey / len) * dirY
+            if (dot > bestDot) {
+              bestDot = dot
+              bestTarget = n
+              bestLen = len
+            }
+            if (n === modal.chosenNeighbor[i]) {
+              currentDot = dot
+              currentLen = len
+            }
+          }
+          if (!bestTarget) {
+            modal.chosenNeighbor[i] = null
+            return origPos
+          }
+          let target = bestTarget
+          let dot = bestDot
+          let len = bestLen
+          if (modal.chosenNeighbor[i] && currentDot > -Infinity && bestDot - currentDot < SWITCH_MARGIN) {
+            target = modal.chosenNeighbor[i]!
+            dot = currentDot
+            len = currentLen
+          }
+          modal.chosenNeighbor[i] = target
+          const targetWorld = applyTransform(target, obj.transform)
+          const t = Math.max(0, Math.min(1, (dragLen * dot) / len))
+          const worldPos = {
+            x: origWorld.x + (targetWorld.x - origWorld.x) * t,
+            y: origWorld.y + (targetWorld.y - origWorld.y) * t,
+          }
+          return inverseTransform(worldPos, obj.transform)
+        }
+
+        // Alt held: lock onto whatever edge is active right now (falling back to a fresh,
+        // direction-agnostic pick if nothing was chosen yet) and ride it exclusively — no
+        // competing edge gets reconsidered until Alt is released, so crossing back through the
+        // original vertex position can't make a different edge interject
+        if (!modal.lockedNeighbor[i]) {
+          let lockTarget = modal.chosenNeighbor[i]
+          if (!lockTarget) {
+            if (dragLen < DEADZONE) {
+              modal.liveRails[i] = null
+              return origPos
+            }
+            const dirX = dragX / dragLen
+            const dirY = dragY / dragLen
+            let bestTarget: Vec2 | null = null
+            let bestMetric = -Infinity
+            for (const n of neighborList) {
+              const nWorld = applyTransform(n, obj.transform)
+              const ex = nWorld.x - origWorld.x
+              const ey = nWorld.y - origWorld.y
+              const len = Math.hypot(ex, ey)
+              if (len < 1e-9) continue
+              const dot = (ex / len) * dirX + (ey / len) * dirY
+              const metric = Math.abs(dot)
+              if (metric > bestMetric) {
+                bestMetric = metric
+                bestTarget = n
+              }
+            }
+            lockTarget = bestTarget
+          }
+          if (!lockTarget) {
+            modal.liveRails[i] = null
+            return origPos
+          }
+          modal.lockedNeighbor[i] = lockTarget
+        }
+
+        const target = modal.lockedNeighbor[i]!
+        const targetWorld = applyTransform(target, obj.transform)
+        const ex = targetWorld.x - origWorld.x
+        const ey = targetWorld.y - origWorld.y
+        const len = Math.hypot(ex, ey)
+        const dot = dragLen > 1e-9 && len > 1e-9 ? (ex / len) * (dragX / dragLen) + (ey / len) * (dragY / dragLen) : 0
+        modal.liveRails[i] = { origWorld, targetWorld }
+        const t = (dragLen * dot) / len
+        const worldPos = {
+          x: origWorld.x + (targetWorld.x - origWorld.x) * t,
+          y: origWorld.y + (targetWorld.y - origWorld.y) * t,
+        }
+        return inverseTransform(worldPos, obj.transform)
+      })
       store.setVertexPositions(modal.objectId, modal.indices, positions)
       return
     }
@@ -390,7 +594,7 @@ export default function Viewport() {
     const onPointerMove = (e: PointerEvent) => {
       lastPointerRef.current = { clientX: e.clientX, clientY: e.clientY }
       if (elementModalRef.current) {
-        updateElementModal(e.ctrlKey)
+        updateElementModal(e.ctrlKey, e.altKey)
         return
       }
       updateLoopCutHover(e)
@@ -415,12 +619,14 @@ export default function Viewport() {
         if (elementModalRef.current) confirmElementModal()
       }
       // while grabbing (G), X/Y constrains the move to that world axis; pressing the same
-      // key again releases the constraint (Blender-style)
+      // key again releases the constraint (Blender-style). Pressing G again (GG) switches
+      // into a vertex-slide constrained to the selection's adjacent edges instead.
       const moveModal = elementModalRef.current
       if (moveModal && moveModal.kind === 'move' && !e.ctrlKey && !e.metaKey) {
         const k = e.key.toLowerCase()
         if (k === 'x') moveModal.axisLock = moveModal.axisLock === 'x' ? null : 'x'
         if (k === 'y') moveModal.axisLock = moveModal.axisLock === 'y' ? null : 'y'
+        if (k === 'g') startVertexSlide()
       }
       if (!elementModalRef.current && !e.ctrlKey && !e.metaKey) {
         if (e.key.toLowerCase() === 'g') startElementModal('move')
@@ -435,11 +641,23 @@ export default function Viewport() {
           }
         }
       }
+      // Blender shows the slide guide / lifts the clamp the instant Alt goes down, even if the
+      // mouse hasn't moved since the drag paused — without this, the guide only appears once a
+      // pointermove happens to fire while Alt is held
+      if (e.key === 'Alt' && moveModal && moveModal.kind === 'vertex-slide') {
+        updateElementModal(e.ctrlKey, true)
+      }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Alt' && elementModalRef.current?.kind === 'vertex-slide') {
+        updateElementModal(e.ctrlKey, false)
+      }
     }
     const onDblClick = () => {
       if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
     }
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
     container.addEventListener('pointerdown', onPointerDown)
     container.addEventListener('dblclick', onDblClick)
     window.addEventListener('pointermove', onPointerMove)
@@ -457,6 +675,7 @@ export default function Viewport() {
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
       container.removeChild(renderer.domElement)
       renderer.dispose()
       for (const tex of textureCacheRef.current.values()) tex.dispose()
@@ -749,6 +968,8 @@ export default function Viewport() {
         if (modal && modal.objectId === obj.id) {
           if (modal.kind === 'move') {
             if (modal.axisLock) addMoveAxisLine(scene, obj, modal)
+          } else if (modal.kind === 'vertex-slide') {
+            addVertexSlideGuides(scene, modal)
           } else {
             addElementModalPreview(scene, obj, modal)
           }
@@ -1076,6 +1297,32 @@ export default function Viewport() {
     }
   }
 
+  /** Live feedback during GG vertex-slide: a dashed guide line through the rail each sliding
+   *  vertex is currently riding, extended past both endpoints (Blender shows the same guide,
+   *  and it's what makes the Alt-unclamped overshoot past the neighbor legible). */
+  function addVertexSlideGuides(scene: THREE.Scene, modal: Extract<ElementModal, { kind: 'vertex-slide' }>) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const extend = 2000 * pxToWorld
+    for (const rail of modal.liveRails) {
+      if (!rail) continue
+      const dx = rail.targetWorld.x - rail.origWorld.x
+      const dy = rail.targetWorld.y - rail.origWorld.y
+      const len = Math.hypot(dx, dy)
+      if (len < 1e-6) continue
+      const ux = dx / len
+      const uy = dy / len
+      addDashedThickLine(
+        scene,
+        rail.origWorld.x - ux * extend,
+        rail.origWorld.y - uy * extend,
+        rail.origWorld.x + ux * extend,
+        rail.origWorld.y + uy * extend,
+        0xffaa33,
+        pxToWorld,
+      )
+    }
+  }
+
   /** Live feedback while an R/S modal transform is in progress: a radial line from the pivot
    *  out to the cursor (and, for rotate, a faint full ring as an angle reference). */
   function addElementModalPreview(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'rotate' | 'scale' }>) {
@@ -1363,7 +1610,10 @@ export default function Viewport() {
   }
 
   function handlePointerDown(e: PointerEvent) {
-    if (e.button === 1 || e.altKey) {
+    // Alt+click normally pans the camera, but Alt is repurposed during vertex-slide (to unclamp
+    // the rail) — without this exception, clicking to confirm the slide while still holding Alt
+    // would hijack the click into a pan instead of confirming
+    if (e.button === 1 || (e.altKey && elementModalRef.current?.kind !== 'vertex-slide')) {
       e.preventDefault() // stop native middle-click auto-scroll from hijacking pointer events
       dragRef.current = {
         kind: 'pan',
