@@ -1,9 +1,10 @@
 import { useRef, useState, type CSSProperties } from 'react'
-import { useSceneStore } from '../scene/store'
+import { useSceneStore, creaseValueForSelection } from '../scene/store'
 import { computeSplitUVs } from '../scene/uv'
 import { getEdges } from '../scene/meshUtils'
 import type { SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
+import { CreaseIcon } from './icons'
 
 function NumberField({
   label,
@@ -72,6 +73,17 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
   const setSdsLevels = useSceneStore((s) => s.setSdsLevels)
   const setSdsShowWireframe = useSceneStore((s) => s.setSdsShowWireframe)
+  const applySds = useSceneStore((s) => s.applySds)
+  const mode = useSceneStore((s) => s.mode)
+  const editElementType = useSceneStore((s) => s.editElementType)
+  const selectedEdges = useSceneStore((s) => s.selectedEdges)
+  const selectedVertices = useSceneStore((s) => s.selectedVertices)
+  const setCreaseWeight = useSceneStore((s) => s.setCreaseWeight)
+  const creaseValue = creaseValueForSelection(obj, editElementType, selectedEdges, selectedVertices)
+  const creaseSelectionEmpty =
+    (editElementType === 'edge' && selectedEdges.size === 0) ||
+    (editElementType === 'vertex' && selectedVertices.size === 0) ||
+    editElementType === 'face'
   const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
@@ -222,7 +234,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             <span>面数: {obj.mesh.faces.length}</span>
           </div>
           <div className="prop-row">
-            <label className="prop-field" title="表示用の輪郭スムージング。編集メッシュ自体は変わらず、見た目だけ滑らかになります（角を立てたい辺を維持するクリース機能は未実装）">
+            <label className="prop-field" title="表示用の輪郭スムージング。編集メッシュ自体は変わらず、見た目だけ滑らかになります（角を立てたい辺/頂点は下のクリースで維持できます）">
               <span>SDS（サブディビジョン）</span>
               <select
                 value={obj.sdsLevels ?? 0}
@@ -235,6 +247,26 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               </select>
             </label>
           </div>
+          {mode === 'edit' && (editElementType === 'edge' || editElementType === 'vertex') && (
+            <div className="prop-row">
+              <label
+                className="seg-input"
+                title="選択中の辺/頂点のSDSクリース強度（0=滑らか、1=分割しても尖りを維持）。複数選択時、値が混在していると空欄表示になりますが、操作すれば選択中全部に一括設定されます"
+              >
+                <CreaseIcon />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  disabled={creaseSelectionEmpty}
+                  value={creaseValue === 'mixed' ? 0 : creaseValue}
+                  onChange={(e) => setCreaseWeight(+e.target.value)}
+                />
+                <span>{creaseSelectionEmpty ? '' : creaseValue === 'mixed' ? '—' : creaseValue.toFixed(2)}</span>
+              </label>
+            </div>
+          )}
           {(obj.sdsLevels ?? 0) > 0 && (
             <div className="prop-row">
               <label className="uv-hint uv-density-toggle">
@@ -245,6 +277,16 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 />
                 SDSワイヤーフレームを表示
               </label>
+            </div>
+          )}
+          {(obj.sdsLevels ?? 0) > 0 && (
+            <div className="prop-row">
+              <button
+                title="現在表示されている分割後の形状を、編集可能なコントロールケージとして確定します。クリースとUVシームは新しいトポロジーに対応しないためリセットされます。元に戻す（Cmd/Ctrl+Z）で復元できます"
+                onClick={() => applySds(obj.id)}
+              >
+                SDSを適用
+              </button>
             </div>
           )}
         </div>

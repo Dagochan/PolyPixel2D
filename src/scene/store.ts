@@ -17,6 +17,8 @@ import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland } from './meshUtils'
+import { computeUVs } from './uv'
+import { subdivideMeshWithUVs } from './subdivision'
 
 export type ActiveTool = 'select' | 'loopcut' | 'knife' | 'place-rect' | 'place-circle'
 
@@ -91,6 +93,9 @@ interface SceneState {
   /** Catmull-Clark subdivision level for the rendered fill mesh (0 = off). Clamped to 0-3. */
   setSdsLevels: (id: string, levels: number) => void
   setSdsShowWireframe: (id: string, show: boolean) => void
+  /** Bake the current SDS-subdivided display mesh into the editable control cage itself, then
+   *  turn SDS off (Blender's "Apply Modifier"). Irreversible past this point except via undo. */
+  applySds: (id: string) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
   /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
@@ -405,6 +410,44 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? { ...o, sdsShowWireframe: show } : o)),
     })),
+
+  applySds: (id) => {
+    const obj = get().objects.find((o) => o.id === id)
+    if (!obj || !(obj.sdsLevels ?? 0)) return
+
+    // mirror the viewport's own SDS render path exactly (computeUVs + subdivideMeshWithUVs, not
+    // the seam-aware computeSplitUVs) so the baked cage looks identical to what was on screen —
+    // including the known seam-bleed limitation, since that path can't carry per-island UVs
+    const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
+    const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
+    const { mesh, uvs } = subdivideMeshWithUVs(obj.mesh, baseUvs, obj.sdsLevels ?? 0, obj.creaseEdges, obj.creaseVertices)
+
+    // the new cage's vertices/edges/faces have nothing to do with the old ones, so every index-
+    // keyed map (creases, seams, UV islands, selection) is stale and must be reset, not remapped
+    const uvBaseVertices = Object.fromEntries(uvs.map((uv, i) => [i, uv]))
+
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? {
+              ...o,
+              mesh,
+              uvBaseVertices,
+              uvIslandTransforms: undefined,
+              seamEdges: undefined,
+              creaseEdges: undefined,
+              creaseVertices: undefined,
+              sdsLevels: 0,
+              sdsShowWireframe: false,
+            }
+          : o,
+      ),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
 
   setUvIslandTransform: (id, islandIndex, transform) => {
     // never let a bad numeric computation (NaN/Infinity) get written — it would otherwise

@@ -869,10 +869,12 @@ export default function Viewport() {
             // any creased vertex (selected or not) renders as a triangle instead of a dot — shape
             // alone is enough to read, so its color otherwise follows the normal selection rule
             const color: THREE.ColorRepresentation = selected ? 0xffcc00 : 0xffffff
+            // unselected dots are deliberately smaller than selected ones — at high vertex
+            // counts (e.g. after "SDSを適用") a sea of full-size dots gets visually noisy
             const dotGeom =
               creaseWeight > 0
                 ? new THREE.CircleGeometry(4.5 / viewRef.current.zoom, 3)
-                : new THREE.CircleGeometry(4 / viewRef.current.zoom, 12)
+                : new THREE.CircleGeometry((selected ? 4 : 1.5) / viewRef.current.zoom, 12)
             // `transparent: true` (even at opacity 1) puts this in Three's transparent render
             // queue, which draws after the opaque one — without it, a low "メッシュ不透明度" fill
             // (itself transparent, to trace over a reference image) would paint over the dot,
