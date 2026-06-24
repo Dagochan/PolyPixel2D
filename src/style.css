@@ -199,7 +199,7 @@ input[type='range']:disabled {
     flex item's content-based min-width, and it refuses to shrink below that when the
     sidebar is dragged wider */
   position: relative;
-  background: #15161a;
+  background: #3b3b3b;
 }
 
 .viewport canvas { display: block; }

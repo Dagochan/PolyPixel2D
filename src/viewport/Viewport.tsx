@@ -626,7 +626,7 @@ export default function Viewport() {
           }
           const seamGeom = new THREE.BufferGeometry()
           seamGeom.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3))
-          const seamMat = new THREE.LineBasicMaterial({ color: 0xff3355, depthTest: false })
+          const seamMat = new THREE.LineBasicMaterial({ color: 0xff3355, depthTest: false, transparent: true })
           group.add(new THREE.LineSegments(seamGeom, seamMat))
         }
 
@@ -654,7 +654,11 @@ export default function Viewport() {
               creaseWeight > 0
                 ? new THREE.CircleGeometry(4.5 / viewRef.current.zoom, 3)
                 : new THREE.CircleGeometry(4 / viewRef.current.zoom, 12)
-            const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false })
+            // `transparent: true` (even at opacity 1) puts this in Three's transparent render
+            // queue, which draws after the opaque one — without it, a low "メッシュ不透明度" fill
+            // (itself transparent, to trace over a reference image) would paint over the dot,
+            // since opaque objects all render before transparent ones regardless of scene order
+            const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })
             const dot = new THREE.Mesh(dotGeom, dotMat)
             dot.position.set(p.x, p.y, 0.02)
             if (creaseWeight > 0) dot.rotation.z = Math.atan2(p.y - centroidY, p.x - centroidX)
@@ -689,7 +693,7 @@ export default function Viewport() {
               ),
             )
             quadGeom.setIndex([0, 1, 2, 0, 2, 3])
-            const quadMat = new THREE.MeshBasicMaterial({ color: 0xffe066, depthTest: false })
+            const quadMat = new THREE.MeshBasicMaterial({ color: 0xffe066, depthTest: false, transparent: true })
             const quad = new THREE.Mesh(quadGeom, quadMat)
             quad.position.z = 0.025
             group.add(quad)
@@ -697,7 +701,7 @@ export default function Viewport() {
             // endpoint markers for extra visibility
             for (const p of [pa, pb]) {
               const dotGeom = new THREE.CircleGeometry(2.5 / viewRef.current.zoom, 12)
-              const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffe066, depthTest: false }))
+              const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffe066, depthTest: false, transparent: true }))
               dot.position.set(p.x, p.y, 0.026)
               group.add(dot)
             }
@@ -809,15 +813,23 @@ export default function Viewport() {
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    const mat = new THREE.LineDashedMaterial({ color: 0x4ea1ff, dashSize: 6 * pxToWorld, gapSize: 4 * pxToWorld, depthTest: false })
+    const mat = new THREE.LineDashedMaterial({
+      color: 0x4ea1ff,
+      dashSize: 6 * pxToWorld,
+      gapSize: 4 * pxToWorld,
+      depthTest: false,
+      transparent: true,
+    })
     const outline = new THREE.LineSegments(geom, mat)
     outline.computeLineDistances()
     scene.add(outline)
 
     const center = applyTransform(at, obj.transform)
+    // `transparent: true` (even at opacity 1) is needed so this draws after a low "メッシュ不透明
+    // 度" fill or the reference image — see the vertex-dot comment above for why
     const dot = new THREE.Mesh(
       new THREE.CircleGeometry(3 * pxToWorld, 12),
-      new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false }),
+      new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false, transparent: true }),
     )
     dot.position.set(center.x, center.y, 0.71)
     scene.add(dot)
@@ -837,7 +849,9 @@ export default function Viewport() {
     if (positions.length > 0) {
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-      scene.add(new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff5577, depthTest: false })))
+      scene.add(
+        new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xff5577, depthTest: false, transparent: true })),
+      )
     }
 
     const pxToWorld = 1 / viewRef.current.zoom
@@ -845,7 +859,9 @@ export default function Viewport() {
       const isHoverTip = i === worldPts.length - 1 && knifeHoverRef.current
       const dotGeom = new THREE.CircleGeometry((isHoverTip ? 4 : 3) * pxToWorld, 12)
       const color = isHoverTip ? 0xff5577 : 0xffffff
-      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color, depthTest: false }))
+      // `transparent: true` (even at opacity 1) is needed so this draws after a low "メッシュ不透明
+      // 度" fill or the reference image — see the vertex-dot comment above for why
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }))
       dot.position.set(p.x, p.y, 0.71)
       scene.add(dot)
     })
@@ -868,12 +884,16 @@ export default function Viewport() {
     }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    scene.add(new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false })))
+    scene.add(
+      new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true })),
+    )
 
     const pxToWorld = 1 / viewRef.current.zoom
     for (const p of points) {
       const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 12)
-      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false }))
+      // `transparent: true` (even at opacity 1) is needed so this draws after a low "メッシュ不透明
+      // 度" fill or the reference image — see the vertex-dot comment above for why
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
       dot.position.set(p.x, p.y, 0.7)
       scene.add(dot)
     }
@@ -895,7 +915,9 @@ export default function Viewport() {
     const geom = new THREE.PlaneGeometry(width, height)
     const mat = new THREE.MeshBasicMaterial({
       map: texture,
-      transparent: ref.opacity < 1,
+      // always on, not just when opacity<1 — the image's own alpha channel (e.g. a PNG with a
+      // transparent background) needs respecting regardless of the opacity slider's value
+      transparent: true,
       opacity: ref.opacity,
       depthWrite: false,
     })
@@ -938,7 +960,7 @@ export default function Viewport() {
     if (minorPositions.length > 0) {
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(minorPositions, 3))
-      const mat = new THREE.LineBasicMaterial({ color: 0x33343a })
+      const mat = new THREE.LineBasicMaterial({ color: 0x545454 })
       scene.add(new THREE.LineSegments(geom, mat))
     }
     if (xAxisPositions) {
@@ -982,7 +1004,7 @@ export default function Viewport() {
     const pxToWorld = 1 / viewRef.current.zoom
     const center = applyTransform(pivot, obj.transform)
     const ringGeom = new THREE.RingGeometry(6 * pxToWorld - 0.8 * pxToWorld, 6 * pxToWorld + 0.8 * pxToWorld, 24)
-    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false }))
+    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true }))
     ring.position.set(center.x, center.y, 0.65)
     scene.add(ring)
   }
@@ -1030,7 +1052,7 @@ export default function Viewport() {
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     geom.setIndex(indices)
-    scene.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, depthTest: false })))
+    scene.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })))
   }
 
   /** Live feedback while a G move is axis-locked (X/Y): a dashed world-space line through the
@@ -1079,10 +1101,10 @@ export default function Viewport() {
       'position',
       new THREE.Float32BufferAttribute([center.x, center.y, 0.7, world.x, world.y, 0.7], 3),
     )
-    scene.add(new THREE.LineSegments(lineGeom, new THREE.LineBasicMaterial({ color: 0xe5484d, depthTest: false })))
+    scene.add(new THREE.LineSegments(lineGeom, new THREE.LineBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true })))
 
     const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 16)
-    const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false }))
+    const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true }))
     dot.position.set(center.x, center.y, 0.71)
     scene.add(dot)
   }
@@ -1107,13 +1129,14 @@ export default function Viewport() {
       dashSize: 6 * pxToWorld,
       gapSize: 4 * pxToWorld,
       depthTest: false,
+      transparent: true,
     })
     const outline = new THREE.LineSegments(outlineGeom, outlineMat)
     outline.computeLineDistances()
     scene.add(outline)
 
     // corner handles for free (non-axis-locked) scale
-    const handleMat = new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false })
+    const handleMat = new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false, transparent: true })
     for (const { x, y } of corners) {
       const size = (HANDLE_SIZE * pxToWorld) / 2
       const geom = new THREE.PlaneGeometry(size, size)
@@ -1128,7 +1151,7 @@ export default function Viewport() {
       ringRadius + 1 * pxToWorld,
       48,
     )
-    const ringMesh = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false }))
+    const ringMesh = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
     ringMesh.position.set(center.x, center.y, 0.55)
     scene.add(ringMesh)
 
@@ -1138,7 +1161,7 @@ export default function Viewport() {
 
     // pivot dot (white) — Shift+drag this to relocate the pivot without moving the mesh
     const pivotDotGeom = new THREE.CircleGeometry(3.5 * pxToWorld, 16)
-    const pivotDot = new THREE.Mesh(pivotDotGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }))
+    const pivotDot = new THREE.Mesh(pivotDotGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
     pivotDot.position.set(center.x, center.y, 0.65)
     scene.add(pivotDot)
   }
@@ -1170,7 +1193,7 @@ export default function Viewport() {
       ),
     )
     shaftGeom.setIndex([0, 1, 2, 0, 2, 3])
-    scene.add(new THREE.Mesh(shaftGeom, new THREE.MeshBasicMaterial({ color, depthTest: false })))
+    scene.add(new THREE.Mesh(shaftGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })))
 
     const headLen = 12 * pxToWorld
     const headWidth = 6 * pxToWorld
@@ -1188,7 +1211,7 @@ export default function Viewport() {
         3,
       ),
     )
-    const head = new THREE.Mesh(headGeom, new THREE.MeshBasicMaterial({ color, depthTest: false }))
+    const head = new THREE.Mesh(headGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }))
     scene.add(head)
   }
 
