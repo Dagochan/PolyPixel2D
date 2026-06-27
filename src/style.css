@@ -358,6 +358,11 @@ input[type='range']:disabled {
   padding: 2px 4px;
 }
 
+.icon-btn.active {
+  background: #4ea1ff;
+  border-radius: 3px;
+}
+
 .empty-hint {
   color: #777;
   font-size: 12px;

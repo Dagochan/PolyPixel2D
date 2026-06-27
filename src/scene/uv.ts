@@ -81,12 +81,10 @@ export function defaultIslandTransforms(
 
 /**
  * Group faces into connected components for UV purposes: two faces are in the same island if
- * they share a full edge that isn't marked as a seam. A topologically single-piece mesh (e.g.
- * a one-skin character) can still be split into multiple UV islands this way, same as Blender's
- * seams — necessary because a long/branchy connected shape wastes a lot of the UV square if it's
- * forced to unwrap as one piece.
+ * they share a full edge. A mesh made of several genuinely disconnected pieces (e.g. separate
+ * primitives merged into one object) gets one island per piece.
  */
-export function findIslands(mesh: Mesh, seams?: ReadonlySet<string>): Island[] {
+export function findIslands(mesh: Mesh): Island[] {
   const edgeFaces = new Map<string, number[]>()
   mesh.faces.forEach((face, fi) => {
     for (let i = 0; i < face.length; i++) {
@@ -116,7 +114,6 @@ export function findIslands(mesh: Mesh, seams?: ReadonlySet<string>): Island[] {
         const a = face[i]
         const b = face[(i + 1) % face.length]
         const key = edgeKey(a, b)
-        if (seams?.has(key)) continue // seam — don't cross into the neighboring face here
         for (const neighbor of edgeFaces.get(key) ?? []) {
           if (!visited[neighbor]) {
             visited[neighbor] = true
@@ -180,80 +177,65 @@ export function applyIslandTransform(base: Vec2, baseCenter: Vec2, t: UvIslandTr
   }
 }
 
-/** Final per-vertex UVs: each island normalized to its own bounding box, then rotated/offset/
- *  scaled by its manual transform — or, for islands that don't have one yet, the default grid
- *  layout. A vertex shared by two islands (i.e. right on a seam) can only hold one of their UVs
- *  here, since this is a flat per-vertex array — that island "wins" arbitrarily and the other
- *  island's faces touching it get visibly pulled toward it. Used only for the SDS path, where
- *  `subdivideMeshWithUVs` needs a single UV channel indexed in lockstep with position; everywhere
- *  else use `computeSplitUVs`, which doesn't have this problem. */
-export function computeUVs(
-  mesh: Mesh,
-  transforms?: UvIslandTransform[],
-  seams?: ReadonlySet<string>,
-  baseVertices?: Record<number, Vec2>,
-): Vec2[] {
-  const islands = findIslands(mesh, seams)
-  const defaults = defaultIslandTransforms(mesh, islands, baseVertices)
-  const out = new Array<Vec2>(mesh.vertices.length)
-  islands.forEach((island, i) => {
-    const base = islandBaseUV(mesh, island, baseVertices)
-    const t = normalizeIslandTransform(transforms?.[i], defaults[i])
-    const center = islandBaseCenter(base.values())
-    for (const [vi, uv] of base) {
-      out[vi] = applyIslandTransform(uv, center, t)
-    }
-  })
-  return out
-}
-
 /**
- * Build a renderable mesh + per-vertex UV with islands fully resolved: a vertex that sits on a
- * seam is shared, topologically, by faces in two different islands, but each side needs its own
- * UV — a single per-vertex UV array can only hold one, which is what used to make seam-adjacent
- * islands look "pulled together" in the actual render/export (the mini UV editor never had this
- * bug — it already draws each island's faces with that island's own UV, never merging into one
- * shared array). The fix matches how every other DCC tool handles it: duplicate the vertex along
- * the seam so each island gets its own copy, sharing the same position but not the same UV.
- * The *editable* mesh (`mesh` argument) is never touched — this only ever produces a new, larger
- * one for rendering/export.
+ * Build one renderable mesh + per-vertex UV per island: each island is normalized to its own
+ * bounding box, then rotated/offset/scaled by its manual transform (or, for islands that don't
+ * have one yet, the default grid layout). Returned in the same order as `findIslands`. The
+ * *editable* mesh (`mesh` argument) is never touched — this only ever produces new meshes for
+ * rendering/export. Split out per-island (rather than one merged mesh) so a caller can render
+ * each island as its own draw call, e.g. to stack islands at different Z depths.
  */
-export function computeSplitUVs(
+export function computeSplitUVIslands(
   mesh: Mesh,
   transforms?: UvIslandTransform[],
-  seams?: ReadonlySet<string>,
   baseVertices?: Record<number, Vec2>,
-): { mesh: Mesh; uvs: Vec2[] } {
-  const islands = findIslands(mesh, seams)
+): { mesh: Mesh; uvs: Vec2[] }[] {
+  const islands = findIslands(mesh)
   const defaults = defaultIslandTransforms(mesh, islands, baseVertices)
 
-  const vertices: Vec2[] = []
-  const uvs: Vec2[] = []
-  const faces: number[][] = []
-  // one duplicate per (island, original vertex) pair that's actually used — a vertex touched by
-  // only one island never gets duplicated, so this only grows the mesh at seam boundaries
-  const dupIndex = new Map<string, number>()
-
-  islands.forEach((island, islandIdx) => {
+  return islands.map((island, islandIdx) => {
     const base = islandBaseUV(mesh, island, baseVertices)
     const t = normalizeIslandTransform(transforms?.[islandIdx], defaults[islandIdx])
     const center = islandBaseCenter(base.values())
 
+    const vertices: Vec2[] = []
+    const uvs: Vec2[] = []
+    const faces: number[][] = []
+    const newIndex = new Map<number, number>()
     for (const fi of island.faces) {
       const newFace = mesh.faces[fi].map((origIndex) => {
-        const key = `${islandIdx}_${origIndex}`
-        let ni = dupIndex.get(key)
+        let ni = newIndex.get(origIndex)
         if (ni === undefined) {
           ni = vertices.length
           vertices.push({ ...mesh.vertices[origIndex] })
           uvs.push(applyIslandTransform(base.get(origIndex)!, center, t))
-          dupIndex.set(key, ni)
+          newIndex.set(origIndex, ni)
         }
         return ni
       })
       faces.push(newFace)
     }
+    return { mesh: { vertices, faces }, uvs }
   })
+}
 
+/** Same as `computeSplitUVIslands`, but merged into a single mesh+uv array (islands concatenated
+ *  in `findIslands` order) — for consumers that don't need per-island draw calls (UV export, the
+ *  UV editor's underlying data). */
+export function computeSplitUVs(
+  mesh: Mesh,
+  transforms?: UvIslandTransform[],
+  baseVertices?: Record<number, Vec2>,
+): { mesh: Mesh; uvs: Vec2[] } {
+  const perIsland = computeSplitUVIslands(mesh, transforms, baseVertices)
+  const vertices: Vec2[] = []
+  const uvs: Vec2[] = []
+  const faces: number[][] = []
+  for (const island of perIsland) {
+    const offset = vertices.length
+    vertices.push(...island.mesh.vertices)
+    uvs.push(...island.uvs)
+    faces.push(...island.mesh.faces.map((f) => f.map((i) => i + offset)))
+  }
   return { mesh: { vertices, faces }, uvs }
 }

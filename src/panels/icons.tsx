@@ -12,6 +12,15 @@ export function ObjectModeIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function PivotModeIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+      <path d="M12,1L12,7M12,17L12,23M1,12L7,12M17,12L23,12" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export function EditModeIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} {...base}>
@@ -76,28 +85,6 @@ export function ExtrudeIcon({ size = 16 }: IconProps) {
       <g transform="matrix(1,0,0,1,-8,8.5)">
         <path d="M11.5,2C12.328,2 13,2.672 13,3.5C13,4.328 12.328,5 11.5,5C10.672,5 10,4.328 10,3.5C10,2.672 10.672,2 11.5,2ZM28.5,2C29.328,2 30,2.672 30,3.5C30,4.328 29.328,5 28.5,5C27.672,5 27,4.328 27,3.5C27,2.672 27.672,2 28.5,2Z" />
       </g>
-    </svg>
-  )
-}
-
-export function SeamIcon({ size = 16 }: IconProps) {
-  return (
-    <svg width={size} height={size} {...base}>
-      <path d="M22,2L22,22L2,22L2,2L22,2ZM8,3L3,3L3,21L21,21L21,16L18,16L18,15L21,15L21,3L9,3L9,6L8,6L8,3ZM15,13L15,15L17,15L17,16L14,16L14,13L15,13ZM9,7L9,9L11,9L11,10L8,10L8,7L9,7ZM12,9L15,9L15,12L14,12L14,10L12,10L12,9Z" />
-    </svg>
-  )
-}
-
-export function CreaseIcon({ size = 16 }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      <path
-        d="M3,18 L9,7 L15,16 L21,6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
     </svg>
   )
 }

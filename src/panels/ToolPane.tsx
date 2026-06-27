@@ -2,13 +2,13 @@ import { useSceneStore } from '../scene/store'
 import {
   ObjectModeIcon,
   EditModeIcon,
+  PivotModeIcon,
   VertexIcon,
   EdgeIcon,
   FaceIcon,
   LoopCutIcon,
   KnifeIcon,
   ExtrudeIcon,
-  SeamIcon,
 } from './icons'
 
 /** Narrow, icon-only vertical tool palette along the left edge of the viewport (Blender-style
@@ -26,7 +26,6 @@ export default function ToolPane() {
   const selectedVertices = useSceneStore((s) => s.selectedVertices)
   const selectedEdgesCount = selectedEdges.size
   const selectedVerticesCount = selectedVertices.size
-  const toggleSeamOnSelection = useSceneStore((s) => s.toggleSeamOnSelection)
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
 
   return (
@@ -45,6 +44,14 @@ export default function ToolPane() {
           onClick={() => setMode('edit')}
         >
           <EditModeIcon />
+        </button>
+        <button
+          className={mode === 'pivot' ? 'active' : ''}
+          disabled={!selectedObj}
+          title="ピボットモード（Head/Tailの位置をドラッグで編集）"
+          onClick={() => setMode('pivot')}
+        >
+          <PivotModeIcon />
         </button>
       </div>
 
@@ -101,13 +108,6 @@ export default function ToolPane() {
               onClick={() => extrudeSelection()}
             >
               <ExtrudeIcon />
-            </button>
-            <button
-              disabled={editElementType !== 'edge' || selectedEdgesCount === 0}
-              title="選択した辺をUVシームとしてマーク/解除（トポロジーは繋がったままUVだけ分割できます）"
-              onClick={() => toggleSeamOnSelection()}
-            >
-              <SeamIcon />
             </button>
           </div>
         </>

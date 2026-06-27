@@ -1,14 +1,13 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
-import { triangulate, getEdges, edgeKey, parseEdgeKey, getBounds } from '../scene/meshUtils'
-import { applyTransform, inverseTransform, worldBounds } from '../scene/transformUtils'
+import { triangulate, getEdges, edgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
+import { applyTransform, inverseTransform, worldBounds, getWorldTransform, getWorldTail } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
-import { computeUVs, computeSplitUVs } from '../scene/uv'
-import { subdivideMeshWithUVs } from '../scene/subdivision'
+import { computeSplitUVIslands, findIslands } from '../scene/uv'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -35,7 +34,8 @@ type DragMode =
       meshCornerRel: { x: number; y: number } // relative to pivot
     }
   | { kind: 'rotate-object'; objectId: string; startRotation: number; startAngle: number; center: { x: number; y: number } }
-  | { kind: 'move-pivot'; objectId: string }
+  | { kind: 'move-head'; objectId: string }
+  | { kind: 'move-tail'; objectId: string }
   | {
       kind: 'box-select'
       objectId: string
@@ -174,9 +174,10 @@ export default function Viewport() {
     const indices = selectedVertexIndices(store, obj.mesh)
     if (indices.length === 0) return
 
-    const pivot = store.editPivot ?? obj.transform.pivot
+    const pivot = store.editPivot ?? obj.transform.head
     const startPositions = indices.map((i) => ({ ...obj.mesh.vertices[i] }))
-    const local = inverseTransform(currentPointerWorld(), obj.transform)
+    const worldTransform = getWorldTransform(obj, store.objects)
+    const local = inverseTransform(currentPointerWorld(), worldTransform)
     if (!skipBeginChange) store.beginChange()
     if (kind === 'rotate') {
       elementModalRef.current = {
@@ -265,6 +266,7 @@ export default function Viewport() {
       const store = useSceneStore.getState()
       const obj = store.objects.find((o) => o.id === modal.objectId)
       if (obj) {
+        const worldTransform = getWorldTransform(obj, store.objects)
         // the post-extrude grab seeded these vertices' UV rest-pose back when they were still
         // sitting at distance 0 — now that the user has actually dragged them out, re-stamp it
         // to where they ended up, or the new geometry's UV would stay collapsed to a sliver
@@ -277,8 +279,8 @@ export default function Viewport() {
           const aMoved = movedSet.has(a)
           const bMoved = movedSet.has(b)
           if (aMoved === bMoved) continue
-          const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
-          const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+          const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
+          const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
           const d = pxDistSq(pa.x, pa.y, pb.x, pb.y)
           if (d < bestDist) {
             bestDist = d
@@ -301,6 +303,7 @@ export default function Viewport() {
     const store = useSceneStore.getState()
     const obj = store.objects.find((o) => o.id === modal.objectId)
     if (!obj) return
+    const worldTransform = getWorldTransform(obj, store.objects)
 
     if (modal.kind === 'move') {
       const world = currentPointerWorld()
@@ -309,10 +312,10 @@ export default function Viewport() {
       if (modal.axisLock === 'x') dy = 0
       if (modal.axisLock === 'y') dx = 0
       // world-space delta -> local mesh space, undoing the object's rotation/scale
-      const cos = Math.cos(-obj.transform.rotation)
-      const sin = Math.sin(-obj.transform.rotation)
-      const localDx = (dx * cos - dy * sin) / obj.transform.scaleX
-      const localDy = (dx * sin + dy * cos) / obj.transform.scaleY
+      const cos = Math.cos(-worldTransform.rotation)
+      const sin = Math.sin(-worldTransform.rotation)
+      const localDx = (dx * cos - dy * sin) / worldTransform.scaleX
+      const localDy = (dx * sin + dy * cos) / worldTransform.scaleY
       const positions = modal.startPositions.map((p) => ({ x: p.x + localDx, y: p.y + localDy }))
       store.setVertexPositions(modal.objectId, modal.indices, positions)
       return
@@ -339,7 +342,7 @@ export default function Viewport() {
           modal.lockedNeighbor[i] = null
           return origPos
         }
-        const origWorld = applyTransform(origPos, obj.transform)
+        const origWorld = applyTransform(origPos, worldTransform)
 
         if (!altKey) {
           // no Alt: dynamic and redirectable (re-picked every frame, hysteresis-stabilized),
@@ -359,7 +362,7 @@ export default function Viewport() {
           let currentDot = -Infinity
           let currentLen = 0
           for (const n of neighborList) {
-            const nWorld = applyTransform(n, obj.transform)
+            const nWorld = applyTransform(n, worldTransform)
             const ex = nWorld.x - origWorld.x
             const ey = nWorld.y - origWorld.y
             const len = Math.hypot(ex, ey)
@@ -388,13 +391,13 @@ export default function Viewport() {
             len = currentLen
           }
           modal.chosenNeighbor[i] = target
-          const targetWorld = applyTransform(target, obj.transform)
+          const targetWorld = applyTransform(target, worldTransform)
           const t = Math.max(0, Math.min(1, (dragLen * dot) / len))
           const worldPos = {
             x: origWorld.x + (targetWorld.x - origWorld.x) * t,
             y: origWorld.y + (targetWorld.y - origWorld.y) * t,
           }
-          return inverseTransform(worldPos, obj.transform)
+          return inverseTransform(worldPos, worldTransform)
         }
 
         // Alt held: lock onto whatever edge is active right now (falling back to a fresh,
@@ -413,7 +416,7 @@ export default function Viewport() {
             let bestTarget: Vec2 | null = null
             let bestMetric = -Infinity
             for (const n of neighborList) {
-              const nWorld = applyTransform(n, obj.transform)
+              const nWorld = applyTransform(n, worldTransform)
               const ex = nWorld.x - origWorld.x
               const ey = nWorld.y - origWorld.y
               const len = Math.hypot(ex, ey)
@@ -435,7 +438,7 @@ export default function Viewport() {
         }
 
         const target = modal.lockedNeighbor[i]!
-        const targetWorld = applyTransform(target, obj.transform)
+        const targetWorld = applyTransform(target, worldTransform)
         const ex = targetWorld.x - origWorld.x
         const ey = targetWorld.y - origWorld.y
         const len = Math.hypot(ex, ey)
@@ -446,13 +449,13 @@ export default function Viewport() {
           x: origWorld.x + (targetWorld.x - origWorld.x) * t,
           y: origWorld.y + (targetWorld.y - origWorld.y) * t,
         }
-        return inverseTransform(worldPos, obj.transform)
+        return inverseTransform(worldPos, worldTransform)
       })
       store.setVertexPositions(modal.objectId, modal.indices, positions)
       return
     }
 
-    const local = inverseTransform(currentPointerWorld(), obj.transform)
+    const local = inverseTransform(currentPointerWorld(), worldTransform)
 
     if (modal.kind === 'rotate') {
       const currentAngle = Math.atan2(local.y - modal.pivot.y, local.x - modal.pivot.x)
@@ -693,6 +696,10 @@ export default function Viewport() {
       const material = (obj as THREE.Mesh).material
       if (Array.isArray(material)) material.forEach((m) => m.dispose())
       else material?.dispose()
+      // unlike every other texture in this file (cached/reused across frames via
+      // textureCacheRef), island-name-label sprites build a brand new CanvasTexture every
+      // frame, so it must be disposed here too or it leaks
+      if (obj instanceof THREE.Sprite) (obj.material as THREE.SpriteMaterial).map?.dispose()
     })
   }
 
@@ -724,42 +731,12 @@ export default function Viewport() {
       const group = new THREE.Group()
       group.position.z = depthIndex
       const isSelected = obj.id === selectedObjectId
+      const worldTransform = getWorldTransform(obj, objects)
 
       // THREE's Object3D position/rotation/scale always pivots about the local origin, but our
-      // objects can have an arbitrary pivot — so bake the pivot offset into the geometry itself
-      // (matches applyTransform: world = R*scale*(v - pivot) + position).
-      const { pivot } = obj.transform
-      const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-      // SDS only smooths the rendered fill mesh — the editable control cage and its UVs
-      // (used everywhere else: picking, the UV editor, export) are untouched.
-      let displayMesh: Mesh
-      let displayUvs: Vec2[]
-      if ((obj.sdsLevels ?? 0) > 0) {
-        // subdivideMeshWithUVs needs one UV per vertex in lockstep with position, which can't
-        // represent a seam (one vertex, two desired UVs) — known limitation: a seam can still
-        // look "pulled" together here specifically when SDS is on. Without SDS, the branch below
-        // uses computeSplitUVs instead, which doesn't have this problem.
-        const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
-        ;({ mesh: displayMesh, uvs: displayUvs } = subdivideMeshWithUVs(
-          obj.mesh,
-          baseUvs,
-          obj.sdsLevels ?? 0,
-          obj.creaseEdges,
-          obj.creaseVertices,
-        ))
-      } else {
-        ;({ mesh: displayMesh, uvs: displayUvs } = computeSplitUVs(
-          obj.mesh,
-          obj.uvIslandTransforms,
-          seams,
-          obj.uvBaseVertices,
-        ))
-      }
-      const positions = displayMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
-      const geom = new THREE.BufferGeometry()
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(displayUvs.flatMap((uv) => [uv.x, uv.y]), 2))
-      geom.setIndex(triangulate(displayMesh))
+      // objects can have an arbitrary head — so bake the head offset into the geometry itself
+      // (matches applyTransform: world = R*scale*(v - head) + position).
+      const { head: pivot } = worldTransform
 
       let texture: THREE.Texture | undefined
       if (obj.material.textureUrl) {
@@ -779,16 +756,43 @@ export default function Viewport() {
         transparent: meshOpacity < 1,
         opacity: meshOpacity,
       })
-      const mesh = new THREE.Mesh(geom, mat)
-      mesh.position.set(obj.transform.x, obj.transform.y, 0)
-      mesh.rotation.z = obj.transform.rotation
-      mesh.scale.set(obj.transform.scaleX, obj.transform.scaleY, 1)
-      group.add(mesh)
 
-      // wireframe edges — normally the editable control cage, but optionally the subdivided
-      // display mesh instead (so SDS's actual generated geometry can be inspected)
-      const showSdsWireframe = (obj.sdsLevels ?? 0) > 0 && obj.sdsShowWireframe
-      const wireMesh = showSdsWireframe ? displayMesh : obj.mesh
+      // one draw call per island, stacked in rank order (`islandZOrders`, default = natural
+      // island order) via a tiny per-island Z offset — small enough to never cross into a
+      // neighboring object's `depthIndex` slot, which are spaced 1 apart.
+      const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+      const islandOrder = perIsland
+        .map((_, i) => i)
+        .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
+      islandOrder.forEach((islandIdx, depthWithinObject) => {
+        const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
+        const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+        const geom = new THREE.BufferGeometry()
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
+        geom.setIndex(triangulate(islandMesh))
+        const mesh = new THREE.Mesh(geom, mat)
+        mesh.position.set(worldTransform.x, worldTransform.y, depthWithinObject * 0.001)
+        mesh.rotation.z = worldTransform.rotation
+        mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
+        group.add(mesh)
+      })
+
+      if (obj.showIslandNames) {
+        const islands = findIslands(obj.mesh)
+        const labelPxToWorld = 1 / viewRef.current.zoom
+        islands.forEach((island, islandIdx) => {
+          const label = obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`
+          const localCenter = localBoundsCenter(obj.mesh, island.vertices)
+          const worldCenter = applyTransform(localCenter, worldTransform)
+          // offset in screen space (not local mesh space) so the label stays legibly "below"
+          // the shape regardless of the object's own rotation — roughly two lines of the
+          // label's own font size, so it doesn't crowd the silhouette
+          addIslandNameLabel(scene, { x: worldCenter.x, y: worldCenter.y - 40 * labelPxToWorld }, label)
+        })
+      }
+
+      const wireMesh = obj.mesh
       const edgePositions: number[] = []
       for (const [a, b] of getEdges(wireMesh)) {
         const va = wireMesh.vertices[a]
@@ -799,82 +803,21 @@ export default function Viewport() {
       edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
       const edgeMat = new THREE.LineBasicMaterial({ color: isSelected ? 0xffffff : 0x000000, opacity: 0.6, transparent: true })
       const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
-      edgeLines.position.copy(mesh.position)
-      edgeLines.rotation.copy(mesh.rotation)
-      edgeLines.scale.copy(mesh.scale)
-      edgeLines.position.z = 0.01
+      edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (islandOrder.length - 1) * 0.001)
+      edgeLines.rotation.z = worldTransform.rotation
+      edgeLines.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
       group.add(edgeLines)
-
-      // when showing the SDS wireframe, also sketch the control cage underneath it — dashed
-      // and faint, just enough to relate the dense subdivided grid back to the edited shape
-      if (showSdsWireframe) {
-        const pxToWorld = 1 / viewRef.current.zoom
-        const cagePositions: number[] = []
-        for (const [a, b] of getEdges(obj.mesh)) {
-          const va = obj.mesh.vertices[a]
-          const vb = obj.mesh.vertices[b]
-          cagePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
-        }
-        const cageGeom = new THREE.BufferGeometry()
-        cageGeom.setAttribute('position', new THREE.Float32BufferAttribute(cagePositions, 3))
-        const cageMat = new THREE.LineDashedMaterial({
-          color: isSelected ? 0xffffff : 0x000000,
-          opacity: 0.3,
-          transparent: true,
-          dashSize: 5 * pxToWorld,
-          gapSize: 4 * pxToWorld,
-        })
-        const cageLines = new THREE.LineSegments(cageGeom, cageMat)
-        cageLines.computeLineDistances()
-        cageLines.position.copy(mesh.position)
-        cageLines.rotation.copy(mesh.rotation)
-        cageLines.scale.copy(mesh.scale)
-        cageLines.position.z = 0.011
-        group.add(cageLines)
-      }
 
       // edit-mode overlays
       if (mode === 'edit' && isSelected) {
-        if (obj.seamEdges && obj.seamEdges.length > 0) {
-          const seamPositions: number[] = []
-          for (const key of obj.seamEdges) {
-            const [a, b] = parseEdgeKey(key)
-            const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
-            const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
-            seamPositions.push(pa.x, pa.y, 0.022, pb.x, pb.y, 0.022)
-          }
-          const seamGeom = new THREE.BufferGeometry()
-          seamGeom.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3))
-          const seamMat = new THREE.LineBasicMaterial({ color: 0xff3355, depthTest: false, transparent: true })
-          group.add(new THREE.LineSegments(seamGeom, seamMat))
-        }
-
         if (editElementType === 'vertex') {
-          // world-space centroid, just so a creased vertex's triangle marker can point outward
-          // (away from the shape) rather than in an arbitrary fixed direction
-          let centroidX = 0
-          let centroidY = 0
-          obj.mesh.vertices.forEach((v) => {
-            const wp = applyTransform(v, obj.transform)
-            centroidX += wp.x
-            centroidY += wp.y
-          })
-          centroidX /= obj.mesh.vertices.length
-          centroidY /= obj.mesh.vertices.length
-
           obj.mesh.vertices.forEach((v, i) => {
-            const p = applyTransform(v, obj.transform)
+            const p = applyTransform(v, worldTransform)
             const selected = selectedVertices.has(i)
-            const creaseWeight = obj.creaseVertices?.[i] ?? 0
-            // any creased vertex (selected or not) renders as a triangle instead of a dot — shape
-            // alone is enough to read, so its color otherwise follows the normal selection rule
+            // unselected dots are deliberately smaller than selected ones, to stay legible at
+            // high vertex counts
             const color: THREE.ColorRepresentation = selected ? 0xffcc00 : 0xffffff
-            // unselected dots are deliberately smaller than selected ones — at high vertex
-            // counts (e.g. after "SDSを適用") a sea of full-size dots gets visually noisy
-            const dotGeom =
-              creaseWeight > 0
-                ? new THREE.CircleGeometry(4.5 / viewRef.current.zoom, 3)
-                : new THREE.CircleGeometry((selected ? 4 : 1.5) / viewRef.current.zoom, 12)
+            const dotGeom = new THREE.CircleGeometry((selected ? 4 : 1.5) / viewRef.current.zoom, 12)
             // `transparent: true` (even at opacity 1) puts this in Three's transparent render
             // queue, which draws after the opaque one — without it, a low "メッシュ不透明度" fill
             // (itself transparent, to trace over a reference image) would paint over the dot,
@@ -882,7 +825,6 @@ export default function Viewport() {
             const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })
             const dot = new THREE.Mesh(dotGeom, dotMat)
             dot.position.set(p.x, p.y, 0.02)
-            if (creaseWeight > 0) dot.rotation.z = Math.atan2(p.y - centroidY, p.x - centroidX)
             group.add(dot)
           })
         }
@@ -890,8 +832,8 @@ export default function Viewport() {
         if (editElementType === 'edge') {
           for (const [a, b] of getEdges(obj.mesh)) {
             if (!selectedEdges.has(edgeKey(a, b))) continue
-            const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
-            const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+            const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
+            const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
 
             // thick quad along the edge (LineBasicMaterial linewidth is ignored by WebGL)
             const halfWidth = 1.2 / viewRef.current.zoom
@@ -932,7 +874,7 @@ export default function Viewport() {
         if (editElementType === 'face') {
           obj.mesh.faces.forEach((face, fi) => {
             if (!selectedFaces.has(fi)) return
-            const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], obj.transform))
+            const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
             const positions = pts.flatMap((p) => [p.x, p.y, 0])
             const indices: number[] = []
             for (let i = 1; i < pts.length - 1; i++) indices.push(0, i, i + 1)
@@ -950,10 +892,28 @@ export default function Viewport() {
       scene.add(group)
     })
 
+    // informational connector lines for every deliberately-detached parent link (connected:
+    // false but still parented) — rendered for all such objects, not just the selected one
+    for (const obj of objects) {
+      if (obj.connected || obj.parentId === null) continue
+      const parent = objects.find((o) => o.id === obj.parentId)
+      if (!parent) continue
+      const parentWorldTransform = getWorldTransform(parent, objects)
+      const parentTailWorld = getWorldTail(parent, parentWorldTransform)
+      const childWorldTransform = getWorldTransform(obj, objects)
+      addDisconnectedLink(scene, parentTailWorld, { x: childWorldTransform.x, y: childWorldTransform.y })
+    }
+
     // BBox gizmo in object mode
     if (mode === 'object' && selectedObjectId) {
       const obj = objects.find((o) => o.id === selectedObjectId)
       if (obj) addGizmo(scene, obj)
+    }
+
+    // head/tail handles only in pivot mode — see addPivotHandles
+    if (mode === 'pivot' && selectedObjectId) {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) addPivotHandles(scene, obj)
     }
 
     // edit-mode pivot marker (small, always-on) + live R/S modal preview
@@ -963,7 +923,7 @@ export default function Viewport() {
         const state = useSceneStore.getState()
         const indices = selectedVertexIndices(state, obj.mesh)
         if (indices.length > 0) {
-          const pivot = state.editPivot ?? obj.transform.pivot
+          const pivot = state.editPivot ?? obj.transform.head
           addEditPivotMarker(scene, obj, pivot)
         }
         const modal = elementModalRef.current
@@ -1005,6 +965,7 @@ export default function Viewport() {
   }
 
   function addPlacePreview(scene: THREE.Scene, obj: SceneObject, pending: PendingPrimitive, at: Vec2) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const pxToWorld = 1 / viewRef.current.zoom
     const positions: number[] = []
     if (pending.kind === 'rect') {
@@ -1015,7 +976,7 @@ export default function Viewport() {
         { x: at.x + hw, y: at.y - hh },
         { x: at.x + hw, y: at.y + hh },
         { x: at.x - hw, y: at.y + hh },
-      ].map((p) => applyTransform(p, obj.transform))
+      ].map((p) => applyTransform(p, worldTransform))
       for (let i = 0; i < corners.length; i++) {
         const a = corners[i]
         const b = corners[(i + 1) % corners.length]
@@ -1026,7 +987,7 @@ export default function Viewport() {
       const pts: { x: number; y: number }[] = []
       for (let i = 0; i < segments; i++) {
         const angle = (i / segments) * Math.PI * 2
-        pts.push(applyTransform({ x: at.x + Math.cos(angle) * pending.radius, y: at.y + Math.sin(angle) * pending.radius }, obj.transform))
+        pts.push(applyTransform({ x: at.x + Math.cos(angle) * pending.radius, y: at.y + Math.sin(angle) * pending.radius }, worldTransform))
       }
       for (let i = 0; i < pts.length; i++) {
         const a = pts[i]
@@ -1047,7 +1008,7 @@ export default function Viewport() {
     outline.computeLineDistances()
     scene.add(outline)
 
-    const center = applyTransform(at, obj.transform)
+    const center = applyTransform(at, worldTransform)
     // `transparent: true` (even at opacity 1) is needed so this draws after a low "メッシュ不透明
     // 度" fill or the reference image — see the vertex-dot comment above for why
     const dot = new THREE.Mesh(
@@ -1063,7 +1024,8 @@ export default function Viewport() {
     if (knifeHoverRef.current) points.push(knifeHoverRef.current)
     if (points.length === 0) return
 
-    const worldPts = points.map((p) => applyTransform(knifePointLocal(obj, p), obj.transform))
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const worldPts = points.map((p) => applyTransform(knifePointLocal(obj, p), worldTransform))
 
     const positions: number[] = []
     for (let i = 0; i < worldPts.length - 1; i++) {
@@ -1091,14 +1053,15 @@ export default function Viewport() {
   }
 
   function addLoopCutPreview(scene: THREE.Scene, obj: SceneObject, path: LoopPath, t: number) {
-    const { mesh, transform } = obj
+    const { mesh } = obj
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
       x: a.x + (b.x - a.x) * t,
       y: a.y + (b.y - a.y) * t,
     })
 
     const points = path.cuts.map(([a, b]) =>
-      applyTransform(lerp(mesh.vertices[a], mesh.vertices[b], t), transform),
+      applyTransform(lerp(mesh.vertices[a], mesh.vertices[b], t), worldTransform),
     )
 
     const positions: number[] = []
@@ -1202,21 +1165,22 @@ export default function Viewport() {
    *  Ring/arrow size is fixed in screen pixels (like Blender) so it doesn't balloon or shrink
    *  with object size/rotation/zoom; only the corner scale handles follow the actual mesh bounds. */
   function getGizmoGeom(obj: SceneObject) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const lb = getBounds(obj.mesh)
-    const center = { x: obj.transform.x, y: obj.transform.y }
+    const center = { x: worldTransform.x, y: worldTransform.y }
     const pxToWorld = 1 / viewRef.current.zoom
     const ringRadius = RING_RADIUS_PX * pxToWorld
     const arrowLength = ARROW_LENGTH_PX * pxToWorld
-    const cos = Math.cos(obj.transform.rotation)
-    const sin = Math.sin(obj.transform.rotation)
+    const cos = Math.cos(worldTransform.rotation)
+    const sin = Math.sin(worldTransform.rotation)
     const axisX = { x: cos, y: sin } // local +X in world space
     const axisY = { x: -sin, y: cos } // local +Y in world space
     // the four local corners, transformed into world space (follows rotation exactly)
     const corners: Array<{ key: 'tl' | 'tr' | 'bl' | 'br'; x: number; y: number }> = [
-      { key: 'bl', ...applyTransform({ x: lb.minX, y: lb.minY }, obj.transform) },
-      { key: 'br', ...applyTransform({ x: lb.maxX, y: lb.minY }, obj.transform) },
-      { key: 'tl', ...applyTransform({ x: lb.minX, y: lb.maxY }, obj.transform) },
-      { key: 'tr', ...applyTransform({ x: lb.maxX, y: lb.maxY }, obj.transform) },
+      { key: 'bl', ...applyTransform({ x: lb.minX, y: lb.minY }, worldTransform) },
+      { key: 'br', ...applyTransform({ x: lb.maxX, y: lb.minY }, worldTransform) },
+      { key: 'tl', ...applyTransform({ x: lb.minX, y: lb.maxY }, worldTransform) },
+      { key: 'tr', ...applyTransform({ x: lb.maxX, y: lb.maxY }, worldTransform) },
     ]
     return { localBounds: lb, center, ringRadius, arrowLength, axisX, axisY, corners }
   }
@@ -1224,12 +1188,77 @@ export default function Viewport() {
   /** Small always-on marker at the edit-mode pivot (set via P) — deliberately not a full
    *  gizmo, just enough to know where rotate/scale will anchor when R/S is pressed. */
   function addEditPivotMarker(scene: THREE.Scene, obj: SceneObject, pivot: Vec2) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const pxToWorld = 1 / viewRef.current.zoom
-    const center = applyTransform(pivot, obj.transform)
+    const center = applyTransform(pivot, worldTransform)
     const ringGeom = new THREE.RingGeometry(6 * pxToWorld - 0.8 * pxToWorld, 6 * pxToWorld + 0.8 * pxToWorld, 24)
     const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true }))
     ring.position.set(center.x, center.y, 0.65)
     scene.add(ring)
+  }
+
+  /** Informational dashed line from a parent's world tail to a `connected: false` child's world
+   *  head — the visual indicator that a deliberately-detached parent link still exists. */
+  function addDisconnectedLink(scene: THREE.Scene, parentTailWorld: Vec2, childHeadWorld: Vec2) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(
+        [parentTailWorld.x, parentTailWorld.y, 0.6, childHeadWorld.x, childHeadWorld.y, 0.6],
+        3,
+      ),
+    )
+    const mat = new THREE.LineDashedMaterial({
+      color: 0xcc8400,
+      dashSize: 5 * pxToWorld,
+      gapSize: 4 * pxToWorld,
+      depthTest: false,
+      transparent: true,
+    })
+    const line = new THREE.LineSegments(geom, mat)
+    line.computeLineDistances()
+    scene.add(line)
+  }
+
+  /** A billboarded text label at a world position — used to show every island's name (toggled
+   *  once per object in the Properties panel) just below its bounding-box center. Rendered as a
+   *  canvas-texture sprite rather than a DOM overlay, consistent with every other viewport
+   *  annotation in this file. Drawn at `RESOLUTION_SCALE`x and scaled back down so the on-screen
+   *  size matches ordinary UI text (~12px) without the canvas's own low resolution blurring it. */
+  function addIslandNameLabel(scene: THREE.Scene, worldPos: Vec2, text: string) {
+    const RESOLUTION_SCALE = 3
+    const fontSizeOnScreen = 12
+    const fontSize = fontSizeOnScreen * RESOLUTION_SCALE
+    const fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" // matches body { font-family } in style.css
+    const paddingX = 6 * RESOLUTION_SCALE
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+    ctx.font = `${fontSize}px ${fontFamily}`
+    const textWidth = ctx.measureText(text).width
+    canvas.width = Math.ceil(textWidth) + paddingX * 2
+    canvas.height = fontSize + paddingX
+    ctx.font = `${fontSize}px ${fontFamily}`
+    ctx.fillStyle = '#707070'
+    ctx.beginPath()
+    ctx.roundRect(0, 0, canvas.width, canvas.height, 6 * RESOLUTION_SCALE)
+    ctx.fill()
+    ctx.fillStyle = '#ffffff'
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    // without this, the renderer treats the canvas's colors as already-linear and re-encodes
+    // them to sRGB on output, washing out/brightening what was actually drawn (e.g. #848484
+    // would render visibly lighter, like #bebebe) — same fix as the material texture below
+    texture.colorSpace = THREE.SRGBColorSpace
+    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true })
+    const sprite = new THREE.Sprite(material)
+    const pxToWorld = 1 / viewRef.current.zoom / RESOLUTION_SCALE
+    sprite.scale.set(canvas.width * pxToWorld, canvas.height * pxToWorld, 1)
+    sprite.position.set(worldPos.x, worldPos.y, 0.9)
+    scene.add(sprite)
   }
 
   /** Dashed line rendered as a chain of quads (LineDashedMaterial linewidth is ignored by WebGL,
@@ -1283,7 +1312,8 @@ export default function Viewport() {
    *  colors (X=red, Y=green). */
   function addMoveAxisLine(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'move' }>) {
     if (!modal.axisLock) return
-    const pts = modal.indices.map((i) => applyTransform(obj.mesh.vertices[i], obj.transform))
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const pts = modal.indices.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
     const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
     const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
     const pxToWorld = 1 / viewRef.current.zoom
@@ -1328,8 +1358,9 @@ export default function Viewport() {
   /** Live feedback while an R/S modal transform is in progress: a radial line from the pivot
    *  out to the cursor (and, for rotate, a faint full ring as an angle reference). */
   function addElementModalPreview(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'rotate' | 'scale' }>) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const pxToWorld = 1 / viewRef.current.zoom
-    const center = applyTransform(modal.pivot, obj.transform)
+    const center = applyTransform(modal.pivot, worldTransform)
     const world = screenToWorld(
       lastPointerRef.current.clientX,
       lastPointerRef.current.clientY,
@@ -1408,11 +1439,39 @@ export default function Viewport() {
     addAxisArrow(scene, center, axisX, arrowLength, pxToWorld, 0xe5484d)
     addAxisArrow(scene, center, axisY, arrowLength, pxToWorld, 0x4ec96a)
 
-    // pivot dot (white) — Shift+drag this to relocate the pivot without moving the mesh
-    const pivotDotGeom = new THREE.CircleGeometry(3.5 * pxToWorld, 16)
-    const pivotDot = new THREE.Mesh(pivotDotGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
-    pivotDot.position.set(center.x, center.y, 0.65)
-    scene.add(pivotDot)
+    // head/tail reference rings (hollow circles, not draggable here — switch to pivot mode to
+    // relocate them). Hollow rather than filled so they don't read as clickable handles in this mode.
+    const headRefGeom = new THREE.RingGeometry(2 * pxToWorld, 3 * pxToWorld, 16)
+    const headRefDot = new THREE.Mesh(headRefGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
+    headRefDot.position.set(center.x, center.y, 0.65)
+    scene.add(headRefDot)
+
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const tailWorld = getWorldTail(obj, worldTransform)
+    const tailRefGeom = new THREE.RingGeometry(2 * pxToWorld, 3 * pxToWorld, 16)
+    const tailRefDot = new THREE.Mesh(tailRefGeom, new THREE.MeshBasicMaterial({ color: 0xff3fb4, depthTest: false, transparent: true }))
+    tailRefDot.position.set(tailWorld.x, tailWorld.y, 0.65)
+    scene.add(tailRefDot)
+  }
+
+  /** Pivot-mode-only overlay: head (white) and tail (magenta) dots, draggable here only — see
+   *  the `mode === 'pivot'` hit-tests in handlePointerDown. Kept out of the object-mode BBox
+   *  gizmo so head/tail can't be relocated by accident while just moving/rotating an object. */
+  function addPivotHandles(scene: THREE.Scene, obj: SceneObject) {
+    const { center } = getGizmoGeom(obj)
+    const pxToWorld = 1 / viewRef.current.zoom
+
+    const headDotGeom = new THREE.CircleGeometry(4 * pxToWorld, 16)
+    const headDot = new THREE.Mesh(headDotGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
+    headDot.position.set(center.x, center.y, 0.65)
+    scene.add(headDot)
+
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const tailWorld = getWorldTail(obj, worldTransform)
+    const tailDotGeom = new THREE.CircleGeometry(4 * pxToWorld, 16)
+    const tailDot = new THREE.Mesh(tailDotGeom, new THREE.MeshBasicMaterial({ color: 0xff3fb4, depthTest: false, transparent: true }))
+    tailDot.position.set(tailWorld.x, tailWorld.y, 0.65)
+    scene.add(tailDot)
   }
 
   function addAxisArrow(
@@ -1515,14 +1574,15 @@ export default function Viewport() {
       loopCutHoverRef.current = null
       return
     }
+    const worldTransform = getWorldTransform(obj, store.objects)
     const world = getWorldPos(e)
     let bestA = -1
     let bestB = -1
     let bestT = 0
     let bestDist = Infinity
     for (const [a, b] of getEdges(obj.mesh)) {
-      const va = applyTransform(obj.mesh.vertices[a], obj.transform)
-      const vb = applyTransform(obj.mesh.vertices[b], obj.transform)
+      const va = applyTransform(obj.mesh.vertices[a], worldTransform)
+      const vb = applyTransform(obj.mesh.vertices[b], worldTransform)
       const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
       if (dist < bestDist) {
         bestDist = dist
@@ -1542,8 +1602,8 @@ export default function Viewport() {
         // preview always advances the same way the cursor does, regardless of which way
         // getEdges happened to sort this particular edge's vertex indices.
         const [ca, cb] = path.cuts[0]
-        const va2 = applyTransform(obj.mesh.vertices[ca], obj.transform)
-        const vb2 = applyTransform(obj.mesh.vertices[cb], obj.transform)
+        const va2 = applyTransform(obj.mesh.vertices[ca], worldTransform)
+        const vb2 = applyTransform(obj.mesh.vertices[cb], worldTransform)
         const { t } = pxDistToSegmentWithT(world.x, world.y, va2.x, va2.y, vb2.x, vb2.y)
         next = { edgeA: bestA, edgeB: bestB, t, path }
       }
@@ -1562,13 +1622,14 @@ export default function Viewport() {
       knifeHoverRef.current = null
       return
     }
+    const worldTransform = getWorldTransform(obj, store.objects)
     const world = getWorldPos(e)
     const zoom = viewRef.current.zoom
 
     let bestVertex = -1
     let bestVertexDist = Infinity
     obj.mesh.vertices.forEach((v, i) => {
-      const p = applyTransform(v, obj.transform)
+      const p = applyTransform(v, worldTransform)
       const dist = Math.hypot((world.x - p.x) * zoom, (world.y - p.y) * zoom)
       if (dist < bestVertexDist) {
         bestVertexDist = dist
@@ -1585,8 +1646,8 @@ export default function Viewport() {
     let bestT = 0
     let bestDist = Infinity
     for (const [a, b] of getEdges(obj.mesh)) {
-      const va = applyTransform(obj.mesh.vertices[a], obj.transform)
-      const vb = applyTransform(obj.mesh.vertices[b], obj.transform)
+      const va = applyTransform(obj.mesh.vertices[a], worldTransform)
+      const vb = applyTransform(obj.mesh.vertices[b], worldTransform)
       const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
       if (dist < bestDist) {
         bestDist = dist
@@ -1608,7 +1669,7 @@ export default function Viewport() {
       placePreviewRef.current = null
       return
     }
-    placePreviewRef.current = inverseTransform(getWorldPos(e), obj.transform)
+    placePreviewRef.current = inverseTransform(getWorldPos(e), getWorldTransform(obj, store.objects))
   }
 
   function handlePointerDown(e: PointerEvent) {
@@ -1681,15 +1742,29 @@ export default function Viewport() {
     const { objects, selectedObjectId, mode, editElementType } = useSceneStore.getState()
     const selectedObj = objects.find((o) => o.id === selectedObjectId) || null
 
-    if (mode === 'object' && selectedObj) {
-      const { center, ringRadius, arrowLength, axisX, axisY, corners } = getGizmoGeom(selectedObj)
+    // pivot mode: head/tail dots are the only draggable handles here (no move/rotate/scale gizmo
+    // is rendered in this mode, so there's nothing else to hit-test against)
+    if (mode === 'pivot' && selectedObj) {
+      const selectedWorldTransform = getWorldTransform(selectedObj, objects)
+      const { center } = getGizmoGeom(selectedObj)
 
-      // Shift+click near the pivot dot: relocate the pivot (mesh stays visually in place)
-      if (e.shiftKey && pxDistSq(world.x, world.y, center.x, center.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
+      if (pxDistSq(world.x, world.y, center.x, center.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
         useSceneStore.getState().beginChange()
-        dragRef.current = { kind: 'move-pivot', objectId: selectedObj.id }
+        dragRef.current = { kind: 'move-head', objectId: selectedObj.id }
         return
       }
+
+      const tailWorld = getWorldTail(selectedObj, selectedWorldTransform)
+      if (pxDistSq(world.x, world.y, tailWorld.x, tailWorld.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
+        useSceneStore.getState().beginChange()
+        dragRef.current = { kind: 'move-tail', objectId: selectedObj.id }
+        return
+      }
+    }
+
+    if (mode === 'object' && selectedObj) {
+      const selectedWorldTransform = getWorldTransform(selectedObj, objects)
+      const { center, ringRadius, arrowLength, axisX, axisY, corners } = getGizmoGeom(selectedObj)
 
       // rotate ring: distance from center close to ringRadius
       const distFromCenter = Math.hypot(world.x - center.x, world.y - center.y) * viewRef.current.zoom
@@ -1698,41 +1773,46 @@ export default function Viewport() {
         dragRef.current = {
           kind: 'rotate-object',
           objectId: selectedObj.id,
-          startRotation: selectedObj.transform.rotation,
+          startRotation: selectedWorldTransform.rotation,
           startAngle: Math.atan2(world.y - center.y, world.x - center.x),
           center,
         }
         return
       }
 
-      // axis move arrows (local X = red, local Y = green)
-      for (const axisDir of [axisX, axisY]) {
-        const tip = { x: center.x + axisDir.x * arrowLength, y: center.y + axisDir.y * arrowLength }
-        const d = pxDistToSegment(world.x, world.y, center.x, center.y, tip.x, tip.y)
-        if (d < GIZMO_HIT_TOLERANCE) {
-          useSceneStore.getState().beginChange()
-          dragRef.current = {
-            kind: 'move-object-axis',
-            objectId: selectedObj.id,
-            axisDir,
-            startWorld: world,
-            startTransform: { x: selectedObj.transform.x, y: selectedObj.transform.y },
+      // axis move arrows (local X = red, local Y = green) — a connected child's position is
+      // forced to the parent's tail, so moving it via these handles would be silently overridden;
+      // skip starting the drag entirely rather than leaving the handle visually live but inert.
+      const isConnectedChild = selectedObj.connected && selectedObj.parentId !== null
+      if (!isConnectedChild) {
+        for (const axisDir of [axisX, axisY]) {
+          const tip = { x: center.x + axisDir.x * arrowLength, y: center.y + axisDir.y * arrowLength }
+          const d = pxDistToSegment(world.x, world.y, center.x, center.y, tip.x, tip.y)
+          if (d < GIZMO_HIT_TOLERANCE) {
+            useSceneStore.getState().beginChange()
+            dragRef.current = {
+              kind: 'move-object-axis',
+              objectId: selectedObj.id,
+              axisDir,
+              startWorld: world,
+              startTransform: { x: selectedObj.transform.x, y: selectedObj.transform.y },
+            }
+            return
           }
-          return
         }
       }
 
       // corner handles for free (non-axis-locked) scale, anchored at the pivot
       for (const c of corners) {
         if (pxDistSq(world.x, world.y, c.x, c.y) < HANDLE_SIZE ** 2) {
-          const meshCorner = inverseTransform({ x: c.x, y: c.y }, selectedObj.transform)
-          const pivot = selectedObj.transform.pivot
+          const meshCorner = inverseTransform({ x: c.x, y: c.y }, selectedWorldTransform)
+          const pivot = selectedObj.transform.head
           useSceneStore.getState().beginChange()
           dragRef.current = {
             kind: 'scale-object',
             objectId: selectedObj.id,
             corner: c.key,
-            startTransform: { ...selectedObj.transform, pivot: { ...pivot } },
+            startTransform: { ...selectedObj.transform, head: { ...pivot } },
             meshCornerRel: { x: meshCorner.x - pivot.x, y: meshCorner.y - pivot.y },
           }
           return
@@ -1741,10 +1821,11 @@ export default function Viewport() {
     }
 
     if (mode === 'edit' && selectedObj && editElementType === 'vertex') {
+      const selectedWorldTransform = getWorldTransform(selectedObj, objects)
       let hitIndex = -1
       let bestDist = Infinity
       selectedObj.mesh.vertices.forEach((v, i) => {
-        const p = applyTransform(v, selectedObj.transform)
+        const p = applyTransform(v, selectedWorldTransform)
         const d = pxDistSq(world.x, world.y, p.x, p.y)
         if (d < bestDist) {
           bestDist = d
@@ -1778,11 +1859,12 @@ export default function Viewport() {
     }
 
     if (mode === 'edit' && selectedObj && editElementType === 'edge') {
+      const selectedWorldTransform = getWorldTransform(selectedObj, objects)
       let hitKey: string | null = null
       let bestDist = Infinity
       for (const [a, b] of getEdges(selectedObj.mesh)) {
-        const pa = applyTransform(selectedObj.mesh.vertices[a], selectedObj.transform)
-        const pb = applyTransform(selectedObj.mesh.vertices[b], selectedObj.transform)
+        const pa = applyTransform(selectedObj.mesh.vertices[a], selectedWorldTransform)
+        const pb = applyTransform(selectedObj.mesh.vertices[b], selectedWorldTransform)
         const d = pxDistToSegment(world.x, world.y, pa.x, pa.y, pb.x, pb.y)
         if (d < bestDist) {
           bestDist = d
@@ -1813,7 +1895,7 @@ export default function Viewport() {
     }
 
     if (mode === 'edit' && selectedObj && editElementType === 'face') {
-      const local = inverseTransform(world, selectedObj.transform)
+      const local = inverseTransform(world, getWorldTransform(selectedObj, objects))
       let hitFace = -1
       selectedObj.mesh.faces.forEach((face, fi) => {
         if (hitFace === -1 && pointInPolygon(local, face.map((i) => selectedObj.mesh.vertices[i]))) {
@@ -1849,12 +1931,16 @@ export default function Viewport() {
       useSceneStore.getState().selectObject(picked)
       if (picked) {
         const obj = objects.find((o) => o.id === picked)!
-        useSceneStore.getState().beginChange()
-        dragRef.current = {
-          kind: 'move-object',
-          objectId: picked,
-          startWorld: world,
-          startTransform: { x: obj.transform.x, y: obj.transform.y },
+        // a connected child's position is forced to the parent's tail — free-drag-to-move would
+        // be silently overridden, so don't even start the drag (selection still happens above)
+        if (!(obj.connected && obj.parentId !== null)) {
+          useSceneStore.getState().beginChange()
+          dragRef.current = {
+            kind: 'move-object',
+            objectId: picked,
+            startWorld: world,
+            startTransform: { x: obj.transform.x, y: obj.transform.y },
+          }
         }
       }
     }
@@ -1865,7 +1951,7 @@ export default function Viewport() {
     const sorted = [...objects].filter((o) => o.visible).sort((a, b) => b.zOrder - a.zOrder)
     const world = getWorldPos(e)
     for (const obj of sorted) {
-      const local = inverseTransform(world, obj.transform)
+      const local = inverseTransform(world, getWorldTransform(obj, objects))
       if (pointInPolygonFaces(local, obj)) return obj.id
     }
     return null
@@ -1927,7 +2013,7 @@ export default function Viewport() {
       const obj = store.objects.find((o) => o.id === drag.objectId)
       if (!obj) return
       const local = inverseTransform(world, { ...drag.startTransform, scaleX: 1, scaleY: 1 })
-      const pivot = drag.startTransform.pivot
+      const pivot = drag.startTransform.head
       const relX = local.x - pivot.x
       const relY = local.y - pivot.y
       const mc = drag.meshCornerRel
@@ -1952,11 +2038,19 @@ export default function Viewport() {
       return
     }
 
-    if (drag.kind === 'move-pivot') {
+    if (drag.kind === 'move-head') {
       const obj = store.objects.find((o) => o.id === drag.objectId)
       if (!obj) return
-      const localUnderMouse = inverseTransform(world, obj.transform)
-      store.setPivot(drag.objectId, localUnderMouse)
+      const localUnderMouse = inverseTransform(world, getWorldTransform(obj, store.objects))
+      store.setHead(drag.objectId, localUnderMouse)
+      return
+    }
+
+    if (drag.kind === 'move-tail') {
+      const obj = store.objects.find((o) => o.id === drag.objectId)
+      if (!obj) return
+      const localUnderMouse = inverseTransform(world, getWorldTransform(obj, store.objects))
+      store.setTail(drag.objectId, localUnderMouse)
       return
     }
 
@@ -2004,24 +2098,25 @@ export default function Viewport() {
           const inside = (p: { x: number; y: number }) =>
             p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
 
+          const worldTransform = getWorldTransform(obj, store.objects)
           if (store.editElementType === 'vertex') {
             const next = drag.additive ? new Set(store.selectedVertices) : new Set<number>()
             obj.mesh.vertices.forEach((v, i) => {
-              if (inside(applyTransform(v, obj.transform))) next.add(i)
+              if (inside(applyTransform(v, worldTransform))) next.add(i)
             })
             store.setSelectedVertices(next)
           } else if (store.editElementType === 'edge') {
             const next = drag.additive ? new Set(store.selectedEdges) : new Set<string>()
             for (const [a, b] of getEdges(obj.mesh)) {
-              const pa = applyTransform(obj.mesh.vertices[a], obj.transform)
-              const pb = applyTransform(obj.mesh.vertices[b], obj.transform)
+              const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
+              const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
               if (inside(pa) && inside(pb)) next.add(edgeKey(a, b))
             }
             store.setSelectedEdges(next)
           } else {
             const next = drag.additive ? new Set(store.selectedFaces) : new Set<number>()
             obj.mesh.faces.forEach((face, fi) => {
-              if (face.every((i) => inside(applyTransform(obj.mesh.vertices[i], obj.transform)))) {
+              if (face.every((i) => inside(applyTransform(obj.mesh.vertices[i], worldTransform)))) {
                 next.add(fi)
               }
             })

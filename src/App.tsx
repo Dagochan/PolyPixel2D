@@ -93,6 +93,14 @@ export default function App() {
         return
       }
 
+      if (meta && e.key.toLowerCase() === 'l') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        e.preventDefault()
+        store.selectLinked()
+        return
+      }
+
       if (e.key === 'Tab') {
         e.preventDefault()
         const store = useSceneStore.getState()

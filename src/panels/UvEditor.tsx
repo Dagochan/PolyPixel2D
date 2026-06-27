@@ -100,8 +100,7 @@ export default function UvEditor({
   const setUvIslandTransform = useSceneStore((s) => s.setUvIslandTransform)
   const beginChange = useSceneStore((s) => s.beginChange)
 
-  const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-  const islands = findIslands(obj.mesh, seams)
+  const islands = findIslands(obj.mesh)
   const defaults = defaultIslandTransforms(obj.mesh, islands, obj.uvBaseVertices)
   const transforms = islands.map((_, i) => normalizeIslandTransform(obj.uvIslandTransforms?.[i], defaults[i]))
   const bases = islands.map((island) => islandBaseUV(obj.mesh, island, obj.uvBaseVertices))

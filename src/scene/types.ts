@@ -10,12 +10,14 @@ export interface Mesh {
 }
 
 export interface Transform {
-  x: number // world position of the pivot
+  // For a root object (parentId === null), world position of `head`. For a child object, the
+  // local offset from the parent's world tail position (forced to (0,0) when `connected`).
+  x: number
   y: number
-  rotation: number // radians, about the pivot
-  scaleX: number // about the pivot
+  rotation: number // radians, about the head
+  scaleX: number // about the head
   scaleY: number
-  pivot: Vec2 // in local (mesh) space; defaults to the origin
+  head: Vec2 // in local (mesh) space; defaults to the origin
 }
 
 export interface Material {
@@ -55,31 +57,38 @@ export interface SceneObject {
   visible: boolean
   material: Material
   uvIslandTransforms?: UvIslandTransform[]
-  /** Edge keys ("a_b", a<b) marked as UV seams — cuts a UV island here even if the mesh
-   *  itself stays connected (e.g. splitting a one-skin character's limbs from its torso). */
-  seamEdges?: string[]
   /** The "rest pose" position UV unwrapping is computed from, per vertex index — frozen at
    *  creation (or last "UVを再展開") and never touched by ordinary vertex edits, so moving a
    *  vertex deforms the mesh without dragging its UV along (matches normal DCC behavior, and is
    *  what keeps texturing sane once bones start deforming the mesh). A vertex missing here (e.g.
    *  one a future mesh op forgot to seed) just falls back to its live position. */
   uvBaseVertices?: Record<number, Vec2>
-  /** Catmull-Clark subdivision levels (0 = off) applied only to the rendered fill mesh — the
-   *  editable control cage (this mesh) and its UVs are untouched. */
-  sdsLevels?: number
-  /** Show the subdivided display mesh's wireframe instead of the control cage's, when SDS is on. */
-  sdsShowWireframe?: boolean
-  /** Edge crease weight (0-1) for SDS — keys are edge keys ("a_b", a<b). An edge absent from
-   *  this map has weight 0 (fully smooth). Weight 1 makes that edge subdivide as if it were a
-   *  mesh boundary, even when it has two adjacent faces. */
-  creaseEdges?: Record<string, number>
-  /** Vertex crease weight (0-1) for SDS — keys are vertex indices. Weight 1 keeps that vertex
-   *  fixed in place under subdivision (e.g. to keep a hair-tip or torn-cloth corner pointed). */
-  creaseVertices?: Record<number, number>
+  /** Local mesh-space point a child object attaches to (its `transform.head`'s world position,
+   *  when `connected`). Independent of `transform.head`. */
+  tail: Vec2
+  /** Id of this object's parent, or `null` for a root object. */
+  parentId: string | null
+  /** When true (the default), this object's `transform.head` world position is forced to equal
+   *  its parent's world tail position — the object cannot be positioned independently of its
+   *  parent's tail, like a bone-chain link. When false, the parent-child rotation/scale
+   *  composition still applies, but this object keeps an independent offset from the parent's
+   *  tail (stored in `transform.x`/`y`). Meaningless when `parentId` is null. */
+  connected: boolean
+  /** Draw-order rank per island (indexed by island order from `findIslands` — same caveat as
+   *  `uvIslandTransforms`: only meaningful as long as the mesh's islands haven't changed). An
+   *  island absent from this map draws in its natural (face-traversal) order relative to others
+   *  that are also absent. Lower rank draws first (further back). */
+  islandZOrders?: Record<number, number>
+  /** User-given name per island (indexed by island order from `findIslands` — same caveat as
+   *  `islandZOrders`). An island absent from this map displays as "アイランド N" (N = index + 1). */
+  islandNames?: Record<number, string>
+  /** One toggle for the whole object: show every island's name in the viewport, just below its
+   *  bounding-box center. Default false (hidden). */
+  showIslandNames?: boolean
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'
-export type AppMode = 'object' | 'edit'
+export type AppMode = 'object' | 'edit' | 'pivot'
 
 export interface EdgeKey {
   a: number

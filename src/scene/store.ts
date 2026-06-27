@@ -16,9 +16,8 @@ import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
-import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland } from './meshUtils'
-import { computeUVs } from './uv'
-import { subdivideMeshWithUVs } from './subdivision'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland, clampToMesh } from './meshUtils'
+import { findIslands, type Island } from './uv'
 
 export type ActiveTool = 'select' | 'loopcut' | 'knife' | 'place-rect' | 'place-circle'
 
@@ -44,6 +43,29 @@ function bumpNextIdPast(objects: SceneObject[]) {
 }
 
 const DEFAULT_MATERIAL_COLOR = '#91AA9B'
+
+/** Selection state that selects every vertex/edge/face belonging to the given islands (by
+ *  `findIslands` index) — shared by `selectLinked` and `selectIsland`. */
+function islandSelectionState(
+  obj: SceneObject,
+  islands: Island[],
+  islandIndices: number[],
+): Pick<SceneState, 'selectedVertices' | 'selectedEdges' | 'selectedFaces'> {
+  const vertices = new Set<number>()
+  const faces = new Set<number>()
+  for (const i of islandIndices) {
+    islands[i].vertices.forEach((v) => vertices.add(v))
+    islands[i].faces.forEach((f) => faces.add(f))
+  }
+  const edges = new Set<string>()
+  faces.forEach((fi) => {
+    const face = obj.mesh.faces[fi]
+    for (let i = 0; i < face.length; i++) {
+      edges.add(edgeKey(face[i], face[(i + 1) % face.length]))
+    }
+  })
+  return { selectedVertices: vertices, selectedEdges: edges, selectedFaces: faces }
+}
 
 interface SceneState {
   objects: SceneObject[]
@@ -90,14 +112,18 @@ interface SceneState {
   renameObject: (id: string, name: string) => void
   setMaterialColor: (id: string, color: string) => void
   setMaterialTexture: (id: string, textureUrl: string | undefined) => void
-  /** Catmull-Clark subdivision level for the rendered fill mesh (0 = off). Clamped to 0-3. */
-  setSdsLevels: (id: string, levels: number) => void
-  setSdsShowWireframe: (id: string, show: boolean) => void
-  /** Bake the current SDS-subdivided display mesh into the editable control cage itself, then
-   *  turn SDS off (Blender's "Apply Modifier"). Irreversible past this point except via undo. */
-  applySds: (id: string) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
+  /** Swap this island's draw-order rank with the island immediately in front of/behind it
+   *  (direction 1 = move forward/up, -1 = move back/down). No-op at either end. */
+  moveIslandZOrder: (id: string, islandIndex: number, direction: 1 | -1) => void
+  /** Rename one island (by `findIslands` order) — stores the raw value as typed. */
+  setIslandName: (id: string, islandIndex: number, name: string) => void
+  /** Call on blur: if that island's stored name is empty/whitespace-only, clears it back to the
+   *  default "アイランド N" label rather than leaving a blank name stuck in place. */
+  clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
+  /** Toggle showing every island's name in the viewport, just below its bounding-box center. */
+  setShowIslandNames: (id: string, show: boolean) => void
   /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
    *  a post-extrude grab confirms, so the new geometry's UV reflects where it ended up. */
   freezeUvBaseVertices: (id: string, indices: number[]) => void
@@ -105,8 +131,15 @@ interface SceneState {
    *  per-island placement (offset/scale/rotation) is untouched. */
   reunwrapUVs: (id: string) => void
   setTransform: (id: string, transform: Partial<Transform>) => void
-  /** Move the pivot (in local mesh space) while keeping the mesh visually in place. */
-  setPivot: (id: string, localPivot: Vec2) => void
+  /** Move the head (in local mesh space) while keeping the mesh visually in place. */
+  setHead: (id: string, localHead: Vec2) => void
+  /** Set the tail (in local mesh space) — a plain field set, no x/y compensation needed since
+   *  the tail is just an attachment reference point, not something rotation/scale pivots about. */
+  setTail: (id: string, localTail: Vec2) => void
+  /** Reparent `id` onto `parentId` (or detach to root with `null`). No-op (rejected) if that
+   *  would create a cycle. */
+  setParent: (id: string, parentId: string | null) => void
+  setConnected: (id: string, connected: boolean) => void
   reorder: (id: string, newZOrder: number) => void
 
   setMode: (mode: AppMode) => void
@@ -129,19 +162,19 @@ interface SceneState {
   deleteSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
-  /** Toggle UV seam on the current edge selection: marks all as seams unless they all already
-   *  are, in which case it clears them. No-op outside edge mode or with nothing selected. */
-  toggleSeamOnSelection: () => void
+  /** Expand the current selection to every vertex/edge/face in the same island(s) (topologically
+   *  connected component) as anything already selected — like Blender's "Select Linked". No-op
+   *  if nothing is selected. */
+  selectLinked: () => void
+  /** Select every vertex/edge/face in one island (by `findIslands` order) and switch to edit
+   *  mode — used by the Properties panel's island list. */
+  selectIsland: (islandIndex: number) => void
   /** Merge the current vertex selection (2+) into one vertex, positioned per `mode`. */
   mergeSelectedVertices: (mode: MergeMode) => void
   /** Create one new face directly from the selected vertices, in selection (click) order. */
   fillSelectedFace: () => void
   /** Merge `mergeIndex` into `keepIndex` (keepIndex's position wins). Used for drag-to-weld onto an adjacent vertex. */
   mergeVertexPair: (objectId: string, keepIndex: number, mergeIndex: number) => void
-  /** Set the SDS crease weight (0-1) on every currently selected edge (edge mode) or vertex
-   *  (vertex mode). Weight 0 removes the entry entirely. No-op outside those modes, in face
-   *  mode, or with nothing selected. */
-  setCreaseWeight: (weight: number) => void
 }
 
 /** The vertex indices touched by the current selection, given which element type is active. */
@@ -163,38 +196,6 @@ export function selectedVertexIndices(
   return Array.from(set)
 }
 
-/** The crease weight shared by every selected edge/vertex, or 'mixed' if they differ. 0 if
- *  nothing is selected, or outside edge/vertex mode (a selection of 1 is never 'mixed'). */
-export function creaseValueForSelection(
-  obj: SceneObject | undefined,
-  editElementType: EditElementType,
-  selectedEdges: Set<string>,
-  selectedVertices: Set<number>,
-): number | 'mixed' {
-  if (!obj) return 0
-  if (editElementType === 'edge') {
-    const map = obj.creaseEdges ?? {}
-    let result: number | null = null
-    for (const k of selectedEdges) {
-      const w = map[k] ?? 0
-      if (result === null) result = w
-      else if (w !== result) return 'mixed'
-    }
-    return result ?? 0
-  }
-  if (editElementType === 'vertex') {
-    const map = obj.creaseVertices ?? {}
-    let result: number | null = null
-    for (const vi of selectedVertices) {
-      const w = map[vi] ?? 0
-      if (result === null) result = w
-      else if (w !== result) return 'mixed'
-    }
-    return result ?? 0
-  }
-  return 0
-}
-
 /** Freeze a UV rest-pose position for any of `mesh`'s vertices that don't have one yet (existing
  *  entries are left untouched) — call this after any op that adds vertices, so new geometry gets
  *  a fixed UV reference from the moment it exists, instead of "live" UV that drifts as it's
@@ -210,7 +211,8 @@ function seedUvBaseVertices(mesh: Mesh, existing: Record<number, Vec2> | undefin
 function cloneObjects(objects: SceneObject[]): SceneObject[] {
   return objects.map((o) => ({
     ...o,
-    transform: { ...o.transform, pivot: { ...o.transform.pivot } },
+    transform: { ...o.transform, head: { ...o.transform.head } },
+    tail: { ...o.tail },
     mesh: { vertices: o.mesh.vertices.map((v) => ({ ...v })), faces: o.mesh.faces.map((f) => [...f]) },
   }))
 }
@@ -278,11 +280,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       id: genId('obj'),
       name: `Rect_${objects.length + 1}`,
       mesh,
-      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -295,11 +300,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       id: genId('obj'),
       name: `Circle_${objects.length + 1}`,
       mesh,
-      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -312,11 +320,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       id: genId('obj'),
       name,
       mesh: prunedMesh,
-      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivot: { x: 0, y: 0 } },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(prunedMesh, undefined),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
@@ -351,8 +362,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   loadProject: (project) => {
     bumpNextIdPast(project.objects)
+    // older saved files predate tail/parentId/connected — backfill so every loaded object has
+    // the full shape new code can rely on
+    const objects = project.objects.map((o) => {
+      const partial = o as Partial<SceneObject> & Pick<SceneObject, 'id' | 'name' | 'mesh' | 'transform' | 'zOrder' | 'visible' | 'material'>
+      return {
+        tail: { x: 0, y: 0 },
+        parentId: null,
+        connected: true,
+        ...partial,
+      }
+    })
     set({
-      objects: project.objects,
+      objects,
       referenceImage: project.referenceImage,
       meshOpacity: project.meshOpacity,
       selectedObjectId: null,
@@ -399,56 +421,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
-  setSdsLevels: (id, levels) => {
-    const clamped = Math.max(0, Math.min(3, Math.round(levels)))
-    set((s) => ({
-      objects: s.objects.map((o) => (o.id === id ? { ...o, sdsLevels: clamped } : o)),
-    }))
-  },
-
-  setSdsShowWireframe: (id, show) =>
-    set((s) => ({
-      objects: s.objects.map((o) => (o.id === id ? { ...o, sdsShowWireframe: show } : o)),
-    })),
-
-  applySds: (id) => {
-    const obj = get().objects.find((o) => o.id === id)
-    if (!obj || !(obj.sdsLevels ?? 0)) return
-
-    // mirror the viewport's own SDS render path exactly (computeUVs + subdivideMeshWithUVs, not
-    // the seam-aware computeSplitUVs) so the baked cage looks identical to what was on screen —
-    // including the known seam-bleed limitation, since that path can't carry per-island UVs
-    const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-    const baseUvs = computeUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
-    const { mesh, uvs } = subdivideMeshWithUVs(obj.mesh, baseUvs, obj.sdsLevels ?? 0, obj.creaseEdges, obj.creaseVertices)
-
-    // the new cage's vertices/edges/faces have nothing to do with the old ones, so every index-
-    // keyed map (creases, seams, UV islands, selection) is stale and must be reset, not remapped
-    const uvBaseVertices = Object.fromEntries(uvs.map((uv, i) => [i, uv]))
-
-    get().beginChange()
-    set((s) => ({
-      objects: s.objects.map((o) =>
-        o.id === id
-          ? {
-              ...o,
-              mesh,
-              uvBaseVertices,
-              uvIslandTransforms: undefined,
-              seamEdges: undefined,
-              creaseEdges: undefined,
-              creaseVertices: undefined,
-              sdsLevels: 0,
-              sdsShowWireframe: false,
-            }
-          : o,
-      ),
-      selectedVertices: new Set(),
-      selectedEdges: new Set(),
-      selectedFaces: new Set(),
-    }))
-  },
-
   setUvIslandTransform: (id, islandIndex, transform) => {
     // never let a bad numeric computation (NaN/Infinity) get written — it would otherwise
     // persist forever, since reads merge stored values in rather than always trusting a fresh default
@@ -466,6 +438,56 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         next[islandIndex] = { ...next[islandIndex], ...clean }
         return { ...o, uvIslandTransforms: next }
       }),
+    }))
+  },
+
+  moveIslandZOrder: (id, islandIndex, direction) => {
+    const obj = get().objects.find((o) => o.id === id)
+    if (!obj) return
+    const islandCount = findIslands(obj.mesh).length
+    const rankOf = (i: number) => obj.islandZOrders?.[i] ?? i
+    const order = Array.from({ length: islandCount }, (_, i) => i).sort((a, b) => rankOf(a) - rankOf(b))
+    const pos = order.indexOf(islandIndex)
+    const swapWith = pos + direction
+    if (pos === -1 || swapWith < 0 || swapWith >= order.length) return
+    const other = order[swapWith]
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, islandZOrders: { ...o.islandZOrders, [islandIndex]: rankOf(other), [other]: rankOf(islandIndex) } }
+          : o,
+      ),
+    }))
+  },
+
+  setIslandName: (id, islandIndex, name) => {
+    get().beginChange()
+    // stores the raw value as typed (even empty) rather than immediately falling back to the
+    // default "アイランド N" label — that fallback only happens on blur (see
+    // `clearIslandNameIfEmpty`), otherwise the input field would jump back to the default text
+    // the instant it's fully backspaced, fighting the user mid-edit.
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, islandNames: { ...o.islandNames, [islandIndex]: name } } : o)),
+    }))
+  },
+
+  clearIslandNameIfEmpty: (id, islandIndex) => {
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const current = o.islandNames?.[islandIndex]
+        if (current === undefined || current.trim() !== '') return o
+        const next = { ...o.islandNames }
+        delete next[islandIndex]
+        return { ...o, islandNames: next }
+      }),
+    }))
+  },
+
+  setShowIslandNames: (id, show) => {
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, showIslandNames: show } : o)),
     }))
   },
 
@@ -503,30 +525,64 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       ),
     })),
 
-  setPivot: (id, localPivot) =>
+  setHead: (id, localHead) =>
     set((s) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id) return o
+        const clamped = clampToMesh(o.mesh, localHead)
         const t = o.transform
-        const dx = localPivot.x - t.pivot.x
-        const dy = localPivot.y - t.pivot.y
+        const dx = clamped.x - t.head.x
+        const dy = clamped.y - t.head.y
         const sx = dx * t.scaleX
         const sy = dy * t.scaleY
         const cos = Math.cos(t.rotation)
         const sin = Math.sin(t.rotation)
         // keep the mesh visually in place: compensate the world position by how far
-        // the pivot moved, transformed through the current rotation/scale
+        // the head moved, transformed through the current rotation/scale
         return {
           ...o,
           transform: {
             ...t,
-            pivot: { ...localPivot },
+            head: clamped,
             x: t.x + (sx * cos - sy * sin),
             y: t.y + (sx * sin + sy * cos),
           },
         }
       }),
     })),
+
+  setTail: (id, localTail) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, tail: clampToMesh(o.mesh, localTail) } : o)),
+    }))
+  },
+
+  setParent: (id, parentId) => {
+    if (parentId !== null) {
+      // reject if walking up from parentId reaches id (would create a cycle)
+      const byId = new Map(get().objects.map((o) => [o.id, o]))
+      const visited = new Set<string>()
+      let cur: string | null = parentId
+      while (cur !== null) {
+        if (cur === id) return // cycle — reject
+        if (visited.has(cur)) break // already-corrupted chain elsewhere; don't loop forever
+        visited.add(cur)
+        cur = byId.get(cur)?.parentId ?? null
+      }
+    }
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, parentId } : o)),
+    }))
+  },
+
+  setConnected: (id, connected) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, connected } : o)),
+    }))
+  },
 
   reorder: (id, newZOrder) => {
     get().beginChange()
@@ -708,54 +764,45 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
   },
 
-  toggleSeamOnSelection: () => {
+  selectLinked: () => {
     const s = get()
-    const objectId = s.selectedObjectId
-    if (!objectId || s.editElementType !== 'edge' || s.selectedEdges.size === 0) return
-    const obj = s.objects.find((o) => o.id === objectId)
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
     if (!obj) return
-    const current = new Set(obj.seamEdges ?? [])
-    const allAlreadySeams = Array.from(s.selectedEdges).every((k) => current.has(k))
-    for (const k of s.selectedEdges) {
-      if (allAlreadySeams) current.delete(k)
-      else current.add(k)
+    const islands = findIslands(obj.mesh)
+
+    const touched = new Set<number>()
+    if (s.editElementType === 'vertex') {
+      islands.forEach((island, i) => {
+        if (island.vertices.some((v) => s.selectedVertices.has(v))) touched.add(i)
+      })
+    } else if (s.editElementType === 'edge') {
+      islands.forEach((island, i) => {
+        const verts = new Set(island.vertices)
+        if (
+          Array.from(s.selectedEdges).some((key) => {
+            const [a, b] = parseEdgeKey(key)
+            return verts.has(a) || verts.has(b)
+          })
+        ) {
+          touched.add(i)
+        }
+      })
+    } else {
+      islands.forEach((island, i) => {
+        if (island.faces.some((f) => s.selectedFaces.has(f))) touched.add(i)
+      })
     }
-    set({
-      objects: s.objects.map((o) => (o.id === objectId ? { ...o, seamEdges: Array.from(current) } : o)),
-    })
+    if (touched.size === 0) return
+    set(islandSelectionState(obj, islands, Array.from(touched)))
   },
 
-  setCreaseWeight: (weight) => {
+  selectIsland: (islandIndex) => {
     const s = get()
-    const objectId = s.selectedObjectId
-    if (!objectId) return
-    if (s.editElementType === 'edge') {
-      if (s.selectedEdges.size === 0) return
-      set({
-        objects: s.objects.map((o) => {
-          if (o.id !== objectId) return o
-          const map = { ...(o.creaseEdges ?? {}) }
-          for (const k of s.selectedEdges) {
-            if (weight > 0) map[k] = weight
-            else delete map[k]
-          }
-          return { ...o, creaseEdges: map }
-        }),
-      })
-    } else if (s.editElementType === 'vertex') {
-      if (s.selectedVertices.size === 0) return
-      set({
-        objects: s.objects.map((o) => {
-          if (o.id !== objectId) return o
-          const map = { ...(o.creaseVertices ?? {}) }
-          for (const vi of s.selectedVertices) {
-            if (weight > 0) map[vi] = weight
-            else delete map[vi]
-          }
-          return { ...o, creaseVertices: map }
-        }),
-      })
-    }
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+    if (!obj) return
+    const islands = findIslands(obj.mesh)
+    if (!islands[islandIndex]) return
+    set({ mode: 'edit', ...islandSelectionState(obj, islands, [islandIndex]) })
   },
 
   mergeSelectedVertices: (mode) => {

@@ -1,4 +1,4 @@
-import type { Mesh } from './types'
+import type { Mesh, Vec2 } from './types'
 
 export function edgeKey(a: number, b: number): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`
@@ -64,6 +64,56 @@ export function mergeMeshAsIsland(base: Mesh, addition: Mesh, at: { x: number; y
   return { vertices, faces }
 }
 
+/** Standard ray-casting point-in-polygon test, works for convex or concave (single, non-
+ *  self-intersecting) polygons. */
+function pointInPolygon(p: Vec2, poly: Vec2[]): boolean {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]
+    const b = poly[j]
+    const crosses = a.y > p.y !== b.y > p.y
+    if (!crosses) continue
+    const xAtY = a.x + ((p.y - a.y) / (b.y - a.y)) * (b.x - a.x)
+    if (p.x < xAtY) inside = !inside
+  }
+  return inside
+}
+
+/** Is `p` inside any face of `mesh`? Each face is tested as its own (possibly concave) polygon,
+ *  so this is correct for multi-island and non-convex meshes alike. */
+export function pointInMesh(mesh: Mesh, p: Vec2): boolean {
+  return mesh.faces.some((face) => pointInPolygon(p, face.map((i) => mesh.vertices[i])))
+}
+
+function closestPointOnSegment(p: Vec2, a: Vec2, b: Vec2): Vec2 {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const lenSq = dx * dx + dy * dy
+  const t = lenSq > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq)) : 0
+  return { x: a.x + dx * t, y: a.y + dy * t }
+}
+
+/** Clamp `p` to stay within the mesh's actual silhouette (not just its bounding box) — if it's
+ *  already inside one of the mesh's faces, it's returned unchanged; otherwise it's projected to
+ *  the nearest point on the mesh's boundary edges. */
+export function clampToMesh(mesh: Mesh, p: Vec2): Vec2 {
+  if (mesh.faces.length === 0) return p
+  if (pointInMesh(mesh, p)) return p
+  let closest = mesh.vertices[0] ?? p
+  let bestDistSq = Infinity
+  for (const [a, b] of getEdges(mesh)) {
+    const candidate = closestPointOnSegment(p, mesh.vertices[a], mesh.vertices[b])
+    const dx = candidate.x - p.x
+    const dy = candidate.y - p.y
+    const distSq = dx * dx + dy * dy
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq
+      closest = candidate
+    }
+  }
+  return closest
+}
+
 export function getBounds(mesh: Mesh) {
   let minX = Infinity
   let minY = Infinity
@@ -76,4 +126,21 @@ export function getBounds(mesh: Mesh) {
     if (v.y > maxY) maxY = v.y
   }
   return { minX, minY, maxX, maxY }
+}
+
+/** Bounding-box center, in the mesh's own local space, of just the given vertex indices (e.g.
+ *  one island's `vertices`) — used to place an island name label near its silhouette. */
+export function localBoundsCenter(mesh: Mesh, vertexIndices: number[]): Vec2 {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const i of vertexIndices) {
+    const v = mesh.vertices[i]
+    if (v.x < minX) minX = v.x
+    if (v.y < minY) minY = v.y
+    if (v.x > maxX) maxX = v.x
+    if (v.y > maxY) maxY = v.y
+  }
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
 }

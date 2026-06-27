@@ -1,21 +1,22 @@
 import { useRef, useState, type CSSProperties } from 'react'
-import { useSceneStore, creaseValueForSelection } from '../scene/store'
-import { computeSplitUVs } from '../scene/uv'
+import { useSceneStore } from '../scene/store'
+import { computeSplitUVs, findIslands } from '../scene/uv'
 import { getEdges } from '../scene/meshUtils'
 import type { SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
-import { CreaseIcon } from './icons'
 
 function NumberField({
   label,
   value,
   onChange,
   step = 1,
+  disabled = false,
 }: {
   label: string
   value: number
   onChange: (v: number) => void
   step?: number
+  disabled?: boolean
 }) {
   return (
     <label className="prop-field">
@@ -23,6 +24,7 @@ function NumberField({
       <input
         type="number"
         step={step}
+        disabled={disabled}
         value={Number.isFinite(value) ? round(value) : 0}
         onChange={(e) => {
           const v = parseFloat(e.target.value)
@@ -41,8 +43,7 @@ const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
 
 /** Draw the mesh's UV wireframe (UV 0,0 = bottom-left, image 0,0 = top-left) and trigger a PNG download. */
 function exportUvMap(obj: SceneObject, resolution: number) {
-  const seams = obj.seamEdges ? new Set(obj.seamEdges) : undefined
-  const { mesh: splitMesh, uvs } = computeSplitUVs(obj.mesh, obj.uvIslandTransforms, seams, obj.uvBaseVertices)
+  const { mesh: splitMesh, uvs } = computeSplitUVs(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
   const canvas = document.createElement('canvas')
   canvas.width = resolution
   canvas.height = resolution
@@ -65,26 +66,98 @@ function exportUvMap(obj: SceneObject, resolution: number) {
   link.click()
 }
 
+/** Only shown for an object whose mesh has 2+ disconnected islands — lets the user pick which
+ *  island draws in front of which when they overlap on screen (the spec calls for per-island
+ *  Z stacking within a single object's mesh, since one object can hold multiple islands). Listed
+ *  front-most first, with up/down buttons swapping rank with the neighboring island. */
+function IslandZOrderSection({
+  obj,
+  moveIslandZOrder,
+  selectIsland,
+  setIslandName,
+  clearIslandNameIfEmpty,
+  setShowIslandNames,
+}: {
+  obj: SceneObject
+  moveIslandZOrder: (id: string, islandIndex: number, direction: 1 | -1) => void
+  selectIsland: (islandIndex: number) => void
+  setIslandName: (id: string, islandIndex: number, name: string) => void
+  clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
+  setShowIslandNames: (id: string, show: boolean) => void
+}) {
+  const islandCount = findIslands(obj.mesh).length
+  if (islandCount < 2) return null
+
+  const order = Array.from({ length: islandCount }, (_, i) => i).sort(
+    (a, b) => (obj.islandZOrders?.[b] ?? b) - (obj.islandZOrders?.[a] ?? a),
+  )
+  const showNames = obj.showIslandNames ?? false
+
+  return (
+    <>
+      <div className="prop-section">アイランド（重なり順）</div>
+      <div className="prop-row prop-static">
+        <span>前面が上、背面が下。左のボタンで選択、名前は編集可能</span>
+      </div>
+      <div className="prop-row">
+        <button
+          className={'icon-btn' + (showNames ? ' active' : '')}
+          title="ビューポートに全アイランドの名前を表示"
+          onClick={() => setShowIslandNames(obj.id, !showNames)}
+        >
+          🏷 名前を表示
+        </button>
+      </div>
+      {order.map((islandIdx, pos) => (
+        <div className="prop-row" key={islandIdx}>
+          <button
+            className="icon-btn"
+            title="このアイランドを選択（編集モードに切り替えます）"
+            onClick={() => selectIsland(islandIdx)}
+          >
+            ◎
+          </button>
+          <input
+            className="layer-name"
+            value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
+            onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
+            onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
+            onKeyDown={(e) => {
+              // ignore the Enter that confirms an IME conversion (isComposing) — only a "real"
+              // Enter after that should commit the name and blur, otherwise blurring mid-
+              // composition lets the IME re-commit the same text a second time
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
+            }}
+          />
+          <button disabled={pos === 0} onClick={() => moveIslandZOrder(obj.id, islandIdx, 1)}>
+            ▲
+          </button>
+          <button disabled={pos === order.length - 1} onClick={() => moveIslandZOrder(obj.id, islandIdx, -1)}>
+            ▼
+          </button>
+        </div>
+      ))}
+    </>
+  )
+}
+
 export default function Properties({ style }: { style?: CSSProperties }) {
   const obj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
+  const objects = useSceneStore((s) => s.objects)
   const setTransform = useSceneStore((s) => s.setTransform)
-  const setPivot = useSceneStore((s) => s.setPivot)
+  const setHead = useSceneStore((s) => s.setHead)
+  const setTail = useSceneStore((s) => s.setTail)
+  const setParent = useSceneStore((s) => s.setParent)
+  const setConnected = useSceneStore((s) => s.setConnected)
   const setMaterialColor = useSceneStore((s) => s.setMaterialColor)
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
-  const setSdsLevels = useSceneStore((s) => s.setSdsLevels)
-  const setSdsShowWireframe = useSceneStore((s) => s.setSdsShowWireframe)
-  const applySds = useSceneStore((s) => s.applySds)
-  const mode = useSceneStore((s) => s.mode)
-  const editElementType = useSceneStore((s) => s.editElementType)
-  const selectedEdges = useSceneStore((s) => s.selectedEdges)
-  const selectedVertices = useSceneStore((s) => s.selectedVertices)
-  const setCreaseWeight = useSceneStore((s) => s.setCreaseWeight)
-  const creaseValue = creaseValueForSelection(obj, editElementType, selectedEdges, selectedVertices)
-  const creaseSelectionEmpty =
-    (editElementType === 'edge' && selectedEdges.size === 0) ||
-    (editElementType === 'vertex' && selectedVertices.size === 0) ||
-    editElementType === 'face'
   const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
+  const moveIslandZOrder = useSceneStore((s) => s.moveIslandZOrder)
+  const selectIsland = useSceneStore((s) => s.selectIsland)
+  const setIslandName = useSceneStore((s) => s.setIslandName)
+  const clearIslandNameIfEmpty = useSceneStore((s) => s.clearIslandNameIfEmpty)
+  const setShowIslandNames = useSceneStore((s) => s.setShowIslandNames)
+  const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
   const [matchTexelDensity, setMatchTexelDensity] = useState(false)
@@ -122,10 +195,46 @@ export default function Properties({ style }: { style?: CSSProperties }) {
         <div className="empty-hint">オブジェクトが選択されていません</div>
       ) : (
         <div className="prop-body">
+          <div className="prop-section">階層</div>
+          {obj.parentId !== null ? (
+            <>
+              <div className="prop-row prop-static">
+                <span>親: {objects.find((o) => o.id === obj.parentId)?.name ?? '(不明)'}</span>
+              </div>
+              <div className="prop-row">
+                <button onClick={() => setParent(obj.id, null)}>親を解除</button>
+              </div>
+              <div className="prop-row">
+                <label className="uv-hint uv-density-toggle">
+                  <input
+                    type="checkbox"
+                    checked={obj.connected}
+                    onChange={(e) => setConnected(obj.id, e.target.checked)}
+                  />
+                  親のTailに接続
+                </label>
+              </div>
+            </>
+          ) : (
+            <div className="prop-row prop-static">
+              <span>親オブジェクトなし（アウトライナーでドラッグして設定）</span>
+            </div>
+          )}
+
           <div className="prop-section">トランスフォーム</div>
           <div className="prop-row">
-            <NumberField label="位置 X" value={obj.transform.x} onChange={(v) => setTransform(obj.id, { x: v })} />
-            <NumberField label="位置 Y" value={obj.transform.y} onChange={(v) => setTransform(obj.id, { y: v })} />
+            <NumberField
+              label="位置 X"
+              value={obj.transform.x}
+              disabled={obj.connected && obj.parentId !== null}
+              onChange={(v) => setTransform(obj.id, { x: v })}
+            />
+            <NumberField
+              label="位置 Y"
+              value={obj.transform.y}
+              disabled={obj.connected && obj.parentId !== null}
+              onChange={(v) => setTransform(obj.id, { y: v })}
+            />
           </div>
           <div className="prop-row">
             <NumberField
@@ -149,19 +258,34 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             />
           </div>
 
-          <div className="prop-section">ピボット（ローカル座標）</div>
+          <div className="prop-section">Head（ローカル座標）</div>
           <div className="prop-row">
             <NumberField
-              label="ピボット X"
-              value={obj.transform.pivot.x}
-              onChange={(v) => setPivot(obj.id, { x: v, y: obj.transform.pivot.y })}
+              label="Head X"
+              value={obj.transform.head.x}
+              onChange={(v) => setHead(obj.id, { x: v, y: obj.transform.head.y })}
             />
             <NumberField
-              label="ピボット Y"
-              value={obj.transform.pivot.y}
-              onChange={(v) => setPivot(obj.id, { x: obj.transform.pivot.x, y: v })}
+              label="Head Y"
+              value={obj.transform.head.y}
+              onChange={(v) => setHead(obj.id, { x: obj.transform.head.x, y: v })}
             />
           </div>
+          <div className="prop-row">
+            <NumberField label="Tail X" value={obj.tail.x} onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })} />
+            <NumberField label="Tail Y" value={obj.tail.y} onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })} />
+          </div>
+
+          {mode === 'edit' && (
+            <IslandZOrderSection
+              obj={obj}
+              moveIslandZOrder={moveIslandZOrder}
+              selectIsland={selectIsland}
+              setIslandName={setIslandName}
+              clearIslandNameIfEmpty={clearIslandNameIfEmpty}
+              setShowIslandNames={setShowIslandNames}
+            />
+          )}
 
           <div className="prop-section">マテリアル</div>
           <div className="prop-row">
@@ -233,63 +357,6 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             <span>頂点数: {obj.mesh.vertices.length}</span>
             <span>面数: {obj.mesh.faces.length}</span>
           </div>
-          <div className="prop-row">
-            <label className="prop-field" title="表示用の輪郭スムージング。編集メッシュ自体は変わらず、見た目だけ滑らかになります（角を立てたい辺/頂点は下のクリースで維持できます）">
-              <span>SDS（サブディビジョン）</span>
-              <select
-                value={obj.sdsLevels ?? 0}
-                onChange={(e) => setSdsLevels(obj.id, parseInt(e.target.value, 10))}
-              >
-                <option value={0}>オフ</option>
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
-            </label>
-          </div>
-          {mode === 'edit' && (editElementType === 'edge' || editElementType === 'vertex') && (
-            <div className="prop-row">
-              <label
-                className="seg-input"
-                title="選択中の辺/頂点のSDSクリース強度（0=滑らか、1=分割しても尖りを維持）。複数選択時、値が混在していると空欄表示になりますが、操作すれば選択中全部に一括設定されます"
-              >
-                <CreaseIcon />
-                <span>（クリース強度）</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  disabled={creaseSelectionEmpty}
-                  value={creaseValue === 'mixed' ? 0 : creaseValue}
-                  onChange={(e) => setCreaseWeight(+e.target.value)}
-                />
-                <span>{creaseSelectionEmpty ? '' : creaseValue === 'mixed' ? '—' : creaseValue.toFixed(2)}</span>
-              </label>
-            </div>
-          )}
-          {(obj.sdsLevels ?? 0) > 0 && (
-            <div className="prop-row">
-              <label className="uv-hint uv-density-toggle">
-                <input
-                  type="checkbox"
-                  checked={obj.sdsShowWireframe ?? false}
-                  onChange={(e) => setSdsShowWireframe(obj.id, e.target.checked)}
-                />
-                SDSワイヤーフレームを表示
-              </label>
-            </div>
-          )}
-          {(obj.sdsLevels ?? 0) > 0 && (
-            <div className="prop-row">
-              <button
-                title="現在表示されている分割後の形状を、編集可能なコントロールケージとして確定します。クリースとUVシームは新しいトポロジーに対応しないためリセットされます。元に戻す（Cmd/Ctrl+Z）で復元できます"
-                onClick={() => applySds(obj.id)}
-              >
-                SDSを適用
-              </button>
-            </div>
-          )}
         </div>
       )}
 
