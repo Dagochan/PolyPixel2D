@@ -2,7 +2,14 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
 import { triangulate, getEdges, edgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
-import { applyTransform, inverseTransform, worldBounds, getWorldTransform, getWorldTail } from '../scene/transformUtils'
+import {
+  applyTransform,
+  inverseTransform,
+  worldBounds,
+  getWorldTransform,
+  getWorldTail,
+  getParentWorldTransform,
+} from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
@@ -33,7 +40,14 @@ type DragMode =
       startTransform: SceneObject['transform']
       meshCornerRel: { x: number; y: number } // relative to pivot
     }
-  | { kind: 'rotate-object'; objectId: string; startRotation: number; startAngle: number; center: { x: number; y: number } }
+  | {
+      kind: 'rotate-object'
+      objectId: string
+      startRotation: number
+      startAngle: number
+      center: { x: number; y: number }
+      parentWorldRotation: number
+    }
   | { kind: 'move-head'; objectId: string }
   | { kind: 'move-tail'; objectId: string }
   | {
@@ -1776,6 +1790,7 @@ export default function Viewport() {
           startRotation: selectedWorldTransform.rotation,
           startAngle: Math.atan2(world.y - center.y, world.x - center.x),
           center,
+          parentWorldRotation: getParentWorldTransform(selectedObj, objects).transform.rotation,
         }
         return
       }
@@ -2029,7 +2044,11 @@ export default function Viewport() {
     if (drag.kind === 'rotate-object') {
       const currentAngle = Math.atan2(world.y - drag.center.y, world.x - drag.center.x)
       const delta = currentAngle - drag.startAngle
-      let rotation = drag.startRotation + delta
+      // startRotation/the dragged delta are both in world space (matches the world-space center
+      // the ring is drawn around), but `transform.rotation` is local — subtract the parent's
+      // world rotation to convert back, or a parented object snaps to its world rotation the
+      // instant the drag starts
+      let rotation = drag.startRotation + delta - drag.parentWorldRotation
       if (e.ctrlKey) {
         const step = (5 * Math.PI) / 180
         rotation = Math.round(rotation / step) * step

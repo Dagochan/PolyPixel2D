@@ -1,5 +1,18 @@
+import { useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
+
+/** Where a drag-over point falls within a row: near the top/bottom edge reorders this object as
+ *  a sibling immediately before/after the hovered row (adopting its parent); the middle band
+ *  reparents the dragged object as a child of the hovered row instead. */
+type DropZone = 'before' | 'after' | 'inside'
+
+function dropZoneAt(e: { clientY: number }, rect: DOMRect): DropZone {
+  const ratio = (e.clientY - rect.top) / rect.height
+  if (ratio < 0.25) return 'before'
+  if (ratio > 0.75) return 'after'
+  return 'inside'
+}
 
 export default function Outliner() {
   const objects = useSceneStore((s) => s.objects)
@@ -9,26 +22,56 @@ export default function Outliner() {
   const removeObject = useSceneStore((s) => s.removeObject)
   const renameObject = useSceneStore((s) => s.renameObject)
   const setParent = useSceneStore((s) => s.setParent)
+  const reorder = useSceneStore((s) => s.reorder)
+  const [dragOver, setDragOver] = useState<{ id: string; zone: DropZone } | null>(null)
 
   const childrenOf = (parentId: string | null) =>
     objects.filter((o) => o.parentId === parentId).sort((a, b) => b.zOrder - a.zOrder)
 
+  const dropOnRow = (e: React.DragEvent, obj: SceneObject) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // computed fresh from the drop event itself rather than read back from `dragOver` state —
+    // that state is only set by a prior dragover, and isn't guaranteed to have committed yet by
+    // the time drop fires in the same gesture
+    const zone = dropZoneAt(e, e.currentTarget.getBoundingClientRect())
+    const draggedId = e.dataTransfer.getData('text/plain')
+    setDragOver(null)
+    if (!draggedId || draggedId === obj.id) return
+    if (zone === 'inside') {
+      setParent(draggedId, obj.id)
+    } else {
+      // become a sibling at this row's level, positioned immediately before/after it in the
+      // (global, flat) zOrder — zOrder values are contiguous 0..N-1, so the row's own zOrder
+      // doubles as its index in that ordering
+      setParent(draggedId, obj.parentId)
+      reorder(draggedId, zone === 'before' ? obj.zOrder : obj.zOrder + 1)
+    }
+  }
+
   const renderRow = (obj: SceneObject, depth: number) => (
     <li key={obj.id}>
       <div
-        className={'layer-item' + (obj.id === selectedObjectId ? ' selected' : '')}
+        className={
+          'layer-item' +
+          (obj.id === selectedObjectId ? ' selected' : '') +
+          (dragOver?.id === obj.id ? ` drop-${dragOver.zone}` : '')
+        }
         style={{ paddingLeft: depth * 16 }}
         draggable
         onDragStart={(e) => e.dataTransfer.setData('text/plain', obj.id)}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
+        onDragOver={(e) => {
           e.preventDefault()
-          e.stopPropagation()
-          const draggedId = e.dataTransfer.getData('text/plain')
-          if (draggedId && draggedId !== obj.id) setParent(draggedId, obj.id)
+          setDragOver({ id: obj.id, zone: dropZoneAt(e, e.currentTarget.getBoundingClientRect()) })
         }}
+        onDragLeave={() => setDragOver((d) => (d?.id === obj.id ? null : d))}
+        onDrop={(e) => dropOnRow(e, obj)}
+        onDragEnd={() => setDragOver(null)}
         onClick={() => selectObject(obj.id)}
       >
+        <span className="drag-handle" title="ドラッグして並び替え/ペアレント">
+          ⠿
+        </span>
         <input
           className="layer-name"
           value={obj.name}
@@ -86,6 +129,7 @@ export default function Outliner() {
           // dropping on empty background (not on a row, which calls stopPropagation) detaches to root
           e.preventDefault()
           const draggedId = e.dataTransfer.getData('text/plain')
+          setDragOver(null)
           if (draggedId) setParent(draggedId, null)
         }}
       >
