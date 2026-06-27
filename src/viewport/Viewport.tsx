@@ -9,9 +9,10 @@ import {
   getWorldTransform,
   getWorldTail,
   getParentWorldTransform,
+  worldPositionToLocalOffset,
 } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
-import type { Mesh, SceneObject, Vec2 } from '../scene/types'
+import type { Mesh, SceneObject, Transform, Vec2 } from '../scene/types'
 import { findFullLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
@@ -25,13 +26,22 @@ const ARROW_LENGTH_PX = 42
 type DragMode =
   | { kind: 'none' }
   | { kind: 'pan'; startClientX: number; startClientY: number; startPan: { x: number; y: number } }
-  | { kind: 'move-object'; objectId: string; startWorld: { x: number; y: number }; startTransform: { x: number; y: number } }
+  | {
+      kind: 'move-object'
+      objectId: string
+      startWorld: { x: number; y: number }
+      startWorldPos: { x: number; y: number }
+      parentWorld: Transform
+      parentTail: Vec2
+    }
   | {
       kind: 'move-object-axis'
       objectId: string
       axisDir: { x: number; y: number } // unit vector, world space
       startWorld: { x: number; y: number }
-      startTransform: { x: number; y: number }
+      startWorldPos: { x: number; y: number }
+      parentWorld: Transform
+      parentTail: Vec2
     }
   | {
       kind: 'scale-object'
@@ -1177,7 +1187,8 @@ export default function Viewport() {
 
   /** Shared geometry for the gizmo, used both for rendering and hit-testing so they stay in sync.
    *  Ring/arrow size is fixed in screen pixels (like Blender) so it doesn't balloon or shrink
-   *  with object size/rotation/zoom; only the corner scale handles follow the actual mesh bounds. */
+   *  with object size/rotation/zoom; the corner scale handles follow the actual mesh bounds,
+   *  either rotated with the object ('local') or as a world-axis-aligned AABB ('world'). */
   function getGizmoGeom(obj: SceneObject) {
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const lb = getBounds(obj.mesh)
@@ -1185,17 +1196,42 @@ export default function Viewport() {
     const pxToWorld = 1 / viewRef.current.zoom
     const ringRadius = RING_RADIUS_PX * pxToWorld
     const arrowLength = ARROW_LENGTH_PX * pxToWorld
+    // Blender-style "transform orientation", applied to both the move-gizmo axis arrows and the
+    // BBox outline/corner handles below. 'world' pins the arrows to the scene's X/Y and switches
+    // the outline to an axis-aligned bounding box (of the rotated shape) instead of one that
+    // rotates with the object; 'local' (default) follows the object's own world rotation for
+    // both. The rotate ring has no orientation concept either way.
+    const useWorldAxes = useSceneStore.getState().gizmoOrientation === 'world'
     const cos = Math.cos(worldTransform.rotation)
     const sin = Math.sin(worldTransform.rotation)
-    const axisX = { x: cos, y: sin } // local +X in world space
-    const axisY = { x: -sin, y: cos } // local +Y in world space
+    const axisX = useWorldAxes ? { x: 1, y: 0 } : { x: cos, y: sin } // local +X in world space
+    const axisY = useWorldAxes ? { x: 0, y: 1 } : { x: -sin, y: cos } // local +Y in world space
     // the four local corners, transformed into world space (follows rotation exactly)
-    const corners: Array<{ key: 'tl' | 'tr' | 'bl' | 'br'; x: number; y: number }> = [
+    const orientedCorners: Array<{ key: 'tl' | 'tr' | 'bl' | 'br'; x: number; y: number }> = [
       { key: 'bl', ...applyTransform({ x: lb.minX, y: lb.minY }, worldTransform) },
       { key: 'br', ...applyTransform({ x: lb.maxX, y: lb.minY }, worldTransform) },
       { key: 'tl', ...applyTransform({ x: lb.minX, y: lb.maxY }, worldTransform) },
       { key: 'tr', ...applyTransform({ x: lb.maxX, y: lb.maxY }, worldTransform) },
     ]
+    // in world mode, swap in the axis-aligned bounding box of those same (rotated) corners — the
+    // 'bl'/'br'/'tl'/'tr' keys are just labels for outline winding order and the scale-drag log
+    // (unused elsewhere), so relabeling them to the AABB's corners is safe
+    const corners: Array<{ key: 'tl' | 'tr' | 'bl' | 'br'; x: number; y: number }> = !useWorldAxes
+      ? orientedCorners
+      : (() => {
+          const xs = orientedCorners.map((c) => c.x)
+          const ys = orientedCorners.map((c) => c.y)
+          const minX = Math.min(...xs)
+          const maxX = Math.max(...xs)
+          const minY = Math.min(...ys)
+          const maxY = Math.max(...ys)
+          return [
+            { key: 'bl' as const, x: minX, y: minY },
+            { key: 'br' as const, x: maxX, y: minY },
+            { key: 'tl' as const, x: minX, y: maxY },
+            { key: 'tr' as const, x: maxX, y: maxY },
+          ]
+        })()
     return { localBounds: lb, center, ringRadius, arrowLength, axisX, axisY, corners }
   }
 
@@ -1805,12 +1841,15 @@ export default function Viewport() {
           const d = pxDistToSegment(world.x, world.y, center.x, center.y, tip.x, tip.y)
           if (d < GIZMO_HIT_TOLERANCE) {
             useSceneStore.getState().beginChange()
+            const { transform: parentWorld, tail: parentTail } = getParentWorldTransform(selectedObj, objects)
             dragRef.current = {
               kind: 'move-object-axis',
               objectId: selectedObj.id,
               axisDir,
               startWorld: world,
-              startTransform: { x: selectedObj.transform.x, y: selectedObj.transform.y },
+              startWorldPos: { x: selectedWorldTransform.x, y: selectedWorldTransform.y },
+              parentWorld,
+              parentTail,
             }
             return
           }
@@ -1950,11 +1989,15 @@ export default function Viewport() {
         // be silently overridden, so don't even start the drag (selection still happens above)
         if (!(obj.connected && obj.parentId !== null)) {
           useSceneStore.getState().beginChange()
+          const objWorldTransform = getWorldTransform(obj, objects)
+          const { transform: parentWorld, tail: parentTail } = getParentWorldTransform(obj, objects)
           dragRef.current = {
             kind: 'move-object',
             objectId: picked,
             startWorld: world,
-            startTransform: { x: obj.transform.x, y: obj.transform.y },
+            startWorldPos: { x: objWorldTransform.x, y: objWorldTransform.y },
+            parentWorld,
+            parentTail,
           }
         }
       }
@@ -2009,18 +2052,25 @@ export default function Viewport() {
     if (drag.kind === 'move-object') {
       const dx = world.x - drag.startWorld.x
       const dy = world.y - drag.startWorld.y
-      store.setTransform(drag.objectId, { x: drag.startTransform.x + dx, y: drag.startTransform.y + dy })
+      // the mouse delta is in world space; for a parented object `transform.x/y` is a local
+      // offset from the parent's tail (rotated/scaled by the parent's world transform), so it
+      // can't just be added directly — convert the resulting world position back to local first
+      const newWorldPos = { x: drag.startWorldPos.x + dx, y: drag.startWorldPos.y + dy }
+      const local = worldPositionToLocalOffset(newWorldPos, drag.parentWorld, drag.parentTail)
+      store.setTransform(drag.objectId, { x: local.x, y: local.y })
       return
     }
 
     if (drag.kind === 'move-object-axis') {
       const dx = world.x - drag.startWorld.x
       const dy = world.y - drag.startWorld.y
-      const along = dx * drag.axisDir.x + dy * drag.axisDir.y // project onto axis
-      store.setTransform(drag.objectId, {
-        x: drag.startTransform.x + drag.axisDir.x * along,
-        y: drag.startTransform.y + drag.axisDir.y * along,
-      })
+      const along = dx * drag.axisDir.x + dy * drag.axisDir.y // project onto axis (world space)
+      const newWorldPos = {
+        x: drag.startWorldPos.x + drag.axisDir.x * along,
+        y: drag.startWorldPos.y + drag.axisDir.y * along,
+      }
+      const local = worldPositionToLocalOffset(newWorldPos, drag.parentWorld, drag.parentTail)
+      store.setTransform(drag.objectId, { x: local.x, y: local.y })
       return
     }
 

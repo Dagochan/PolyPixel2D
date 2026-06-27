@@ -28,6 +28,8 @@ export default function Toolbar() {
   const canUndo = useSceneStore((s) => s.history.length > 0)
   const canRedo = useSceneStore((s) => s.future.length > 0)
   const setActiveTool = useSceneStore((s) => s.setActiveTool)
+  const gizmoOrientation = useSceneStore((s) => s.gizmoOrientation)
+  const setGizmoOrientation = useSceneStore((s) => s.setGizmoOrientation)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
 
   const [segX, setSegX] = useState(1)
@@ -185,6 +187,18 @@ export default function Toolbar() {
           />
         </label>
       </div>
+
+      {mode === 'object' && (
+        <div className="toolbar-group">
+          <label className="seg-input" title="移動ギズモの軸の基準（ローカル=オブジェクト自身の回転に追従、ワールド=常にシーンのXY軸）">
+            ギズモ
+            <select value={gizmoOrientation} onChange={(e) => setGizmoOrientation(e.target.value as 'world' | 'local')}>
+              <option value="local">ローカル</option>
+              <option value="world">ワールド</option>
+            </select>
+          </label>
+        </div>
+      )}
 
       <div className="toolbar-group">
         <button

@@ -78,6 +78,10 @@ interface SceneState {
   history: SceneObject[][]
   future: SceneObject[][]
   activeTool: ActiveTool
+  /** Reference frame for the object-mode move gizmo's axis arrows (Blender-style). 'local'
+   *  (default) follows the object's own world rotation; 'world' is always the scene's X/Y axes.
+   *  Doesn't affect the rotate ring (no orientation concept) or scale handles (always local). */
+  gizmoOrientation: 'world' | 'local'
   /** Edit-mode pivot, in local mesh space. `null` means "use the object's own pivot". */
   editPivot: Vec2 | null
   /** Dimensions for the primitive currently being placed (activeTool === 'place-rect'/'place-circle'). */
@@ -152,6 +156,7 @@ interface SceneState {
   /** Set the edit-mode pivot to the centroid of the vertices touched by the current selection. */
   setEditPivotFromSelection: () => void
   setActiveTool: (tool: ActiveTool) => void
+  setGizmoOrientation: (orientation: 'world' | 'local') => void
   /** Cut the quad strip running through the edge (edgeA, edgeB), at each t in `ts`. No-op if neither side is a quad. */
   applyLoopCut: (objectId: string, edgeA: number, edgeB: number, ts: number[]) => void
   /** Cut a polyline of vertex/edge-snapped points across one or more connected faces. */
@@ -230,6 +235,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   history: [],
   future: [],
   activeTool: 'select',
+  gizmoOrientation: 'local',
   editPivot: null,
   pendingPrimitive: null,
   referenceImage: null,
@@ -637,6 +643,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   setActiveTool: (activeTool) => set({ activeTool }),
+  setGizmoOrientation: (gizmoOrientation) => set({ gizmoOrientation }),
 
   applyLoopCut: (objectId, edgeA, edgeB, ts) => {
     const obj = get().objects.find((o) => o.id === objectId)
