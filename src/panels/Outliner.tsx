@@ -72,6 +72,7 @@ export default function Outliner() {
         <span className="drag-handle" title="ドラッグして並び替え/ペアレント">
           ⠿
         </span>
+        {obj.kind === 'empty' && <span title="Empty（メッシュなし）">✛</span>}
         <input
           className="layer-name"
           value={obj.name}

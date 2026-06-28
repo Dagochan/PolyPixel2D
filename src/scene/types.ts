@@ -51,6 +51,12 @@ export interface UvIslandTransform {
 export interface SceneObject {
   id: string
   name: string
+  /** 'mesh' (default, including legacy saves where this field is absent) is a normal modeled
+   *  object. 'empty' is a mesh-less hierarchy-only dummy (e.g. a rig root) — it still has the
+   *  same `transform`/`tail`/`mesh` fields (mesh always `{vertices: [], faces: []}`) so every
+   *  existing transform/hierarchy/Head-Tail code path keeps working unchanged; only edit mode and
+   *  mesh/material/UV-dependent UI are gated off by this flag. */
+  kind?: 'mesh' | 'empty'
   mesh: Mesh
   transform: Transform
   zOrder: number

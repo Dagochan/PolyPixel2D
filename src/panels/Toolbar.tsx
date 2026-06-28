@@ -16,6 +16,7 @@ export default function Toolbar() {
   const addRect = useSceneStore((s) => s.addRect)
   const addCircle = useSceneStore((s) => s.addCircle)
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
+  const addEmpty = useSceneStore((s) => s.addEmpty)
   const setPendingPrimitive = useSceneStore((s) => s.setPendingPrimitive)
   const referenceImage = useSceneStore((s) => s.referenceImage)
   const setReferenceImage = useSceneStore((s) => s.setReferenceImage)
@@ -247,6 +248,12 @@ export default function Toolbar() {
             onChange={(e) => setCircleSegs(+e.target.value)}
           />
         </label>
+      </div>
+
+      <div className="toolbar-group">
+        <button title="メッシュを持たない、階層用のダミーオブジェクトを追加" onClick={() => addEmpty()}>
+          ✛ Empty
+        </button>
       </div>
 
     </div>

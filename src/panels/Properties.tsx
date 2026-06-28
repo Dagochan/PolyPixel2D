@@ -276,7 +276,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             <NumberField label="Tail Y" value={obj.tail.y} onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })} />
           </div>
 
-          {mode === 'edit' && (
+          {mode === 'edit' && obj.kind !== 'empty' && (
             <IslandZOrderSection
               obj={obj}
               moveIslandZOrder={moveIslandZOrder}
@@ -287,80 +287,88 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             />
           )}
 
-          <div className="prop-section">マテリアル</div>
-          <div className="prop-row">
-            <label className="prop-field">
-              <span>色{obj.material.textureUrl ? '（テクスチャに乗算）' : ''}</span>
-              <input
-                type="color"
-                value={obj.material.color}
-                onChange={(e) => setMaterialColor(obj.id, e.target.value)}
-              />
-            </label>
-          </div>
-          {obj.material.textureUrl && (
-            <div className="prop-row">
-              <img src={obj.material.textureUrl} alt="テクスチャ" className="texture-thumb" />
+          {obj.kind === 'empty' ? (
+            <div className="prop-row prop-static">
+              <span>Empty（メッシュなし、階層用のダミーオブジェクト）</span>
             </div>
+          ) : (
+            <>
+              <div className="prop-section">マテリアル</div>
+              <div className="prop-row">
+                <label className="prop-field">
+                  <span>色{obj.material.textureUrl ? '（テクスチャに乗算）' : ''}</span>
+                  <input
+                    type="color"
+                    value={obj.material.color}
+                    onChange={(e) => setMaterialColor(obj.id, e.target.value)}
+                  />
+                </label>
+              </div>
+              {obj.material.textureUrl && (
+                <div className="prop-row">
+                  <img src={obj.material.textureUrl} alt="テクスチャ" className="texture-thumb" />
+                </div>
+              )}
+              <div className="prop-row">
+                <input
+                  ref={textureInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleTextureFile(obj.id, file)
+                    e.target.value = ''
+                  }}
+                />
+                <button onClick={() => textureInputRef.current?.click()}>テクスチャを設定</button>
+                {obj.material.textureUrl && (
+                  <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
+                )}
+              </div>
+
+              <div className="prop-section">UV</div>
+              <div className="prop-row">
+                <button
+                  onClick={() => {
+                    setModalOffset({ x: 0, y: 0 })
+                    setUvEditorOpen(true)
+                  }}
+                >
+                  UVを編集...
+                </button>
+                <button
+                  title="現在の形状でUVを再計算します。普段は頂点を動かしてもUVは固定されたままテクスチャが伸びますが、大きく作り直した後など、改めて展開し直したい時に使います"
+                  onClick={() => reunwrapUVs(obj.id)}
+                >
+                  UVを再展開
+                </button>
+              </div>
+              <div className="prop-row">
+                <label className="prop-field">
+                  <span>解像度</span>
+                  <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
+                    {UV_RESOLUTIONS.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button onClick={() => exportUvMap(obj, uvResolution)}>UVマップを書き出し</button>
+              </div>
+
+              <div className="prop-section">メッシュ</div>
+              <div className="prop-row prop-static">
+                <span>頂点数: {obj.mesh.vertices.length}</span>
+                <span>面数: {obj.mesh.faces.length}</span>
+              </div>
+            </>
           )}
-          <div className="prop-row">
-            <input
-              ref={textureInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) handleTextureFile(obj.id, file)
-                e.target.value = ''
-              }}
-            />
-            <button onClick={() => textureInputRef.current?.click()}>テクスチャを設定</button>
-            {obj.material.textureUrl && (
-              <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
-            )}
-          </div>
-
-          <div className="prop-section">UV</div>
-          <div className="prop-row">
-            <button
-              onClick={() => {
-                setModalOffset({ x: 0, y: 0 })
-                setUvEditorOpen(true)
-              }}
-            >
-              UVを編集...
-            </button>
-            <button
-              title="現在の形状でUVを再計算します。普段は頂点を動かしてもUVは固定されたままテクスチャが伸びますが、大きく作り直した後など、改めて展開し直したい時に使います"
-              onClick={() => reunwrapUVs(obj.id)}
-            >
-              UVを再展開
-            </button>
-          </div>
-          <div className="prop-row">
-            <label className="prop-field">
-              <span>解像度</span>
-              <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
-                {UV_RESOLUTIONS.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button onClick={() => exportUvMap(obj, uvResolution)}>UVマップを書き出し</button>
-          </div>
-
-          <div className="prop-section">メッシュ</div>
-          <div className="prop-row prop-static">
-            <span>頂点数: {obj.mesh.vertices.length}</span>
-            <span>面数: {obj.mesh.faces.length}</span>
-          </div>
         </div>
       )}
 
-      {uvEditorOpen && obj && (
+      {uvEditorOpen && obj && obj.kind !== 'empty' && (
         <div className="uv-modal-backdrop" onClick={() => setUvEditorOpen(false)}>
           <div
             className="uv-modal"

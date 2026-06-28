@@ -1,5 +1,5 @@
 import type { Mesh } from './types'
-import { edgeKey } from './meshUtils'
+import { edgeKey, parseEdgeKey } from './meshUtils'
 
 export interface LoopPath {
   /** Ordered, directed cut edges; cuts.length === quads.length + 1. Consecutive cuts bound one quad,
@@ -107,4 +107,73 @@ export function findFullLoop(mesh: Mesh, hoverA: number, hoverB: number): LoopPa
     cuts: [...bwdCutsRest, ...fwd.cuts],
     quads: [...bwdQuadsRest, ...fwd.quads],
   }
+}
+
+function buildVertexEdgeMap(mesh: Mesh): Map<number, Set<string>> {
+  const map = new Map<number, Set<string>>()
+  for (const face of mesh.faces) {
+    for (let i = 0; i < face.length; i++) {
+      const a = face[i]
+      const b = face[(i + 1) % face.length]
+      const key = edgeKey(a, b)
+      for (const v of [a, b]) {
+        const set = map.get(v)
+        if (set) set.add(key)
+        else map.set(v, new Set([key]))
+      }
+    }
+  }
+  return map
+}
+
+/** From `fromVertex`, having just arrived via `viaEdgeKey`, find the single edge that continues
+ *  "straight through" — the classic edge-loop step: at a 4-valent vertex, the four faces meeting
+ *  there pair the four edges into two opposite pairs; the continuation is whichever of the other
+ *  three edges shares no face with the edge we arrived on. Returns null at any vertex that isn't
+ *  exactly 4-valent, or where that edge isn't uniquely determined (non-manifold) — both are loop
+ *  boundaries, same as Blender's Alt+Click stopping at poles and mesh edges. */
+function stepEdgeLoop(
+  edgeFaceMap: Map<string, number[]>,
+  vertexEdgeMap: Map<number, Set<string>>,
+  fromVertex: number,
+  viaEdgeKey: string,
+): { nextVertex: number; nextEdgeKey: string } | null {
+  const incident = vertexEdgeMap.get(fromVertex)
+  if (!incident || incident.size !== 4) return null
+  const incomingFaces = new Set(edgeFaceMap.get(viaEdgeKey) ?? [])
+  let candidate: string | null = null
+  for (const ek of incident) {
+    if (ek === viaEdgeKey) continue
+    const faces = edgeFaceMap.get(ek) ?? []
+    if (faces.some((f) => incomingFaces.has(f))) continue // shares a face with the incoming edge — a "turn", not the continuation
+    if (candidate !== null) return null // more than one disjoint candidate — ambiguous, bail
+    candidate = ek
+  }
+  if (candidate === null) return null
+  const [x, y] = parseEdgeKey(candidate)
+  return { nextVertex: x === fromVertex ? y : x, nextEdgeKey: candidate }
+}
+
+/** Blender's "Edge Loop" select (Alt+Click): the chain of edges connected end-to-end through the
+ *  clicked edge, each continuing straight through a 4-valent vertex — distinct from "Edge Ring"
+ *  (`findFullLoop` above), which instead jumps across each face to its parallel opposite edge.
+ *  Returns the edge keys in the loop, including the starting edge. */
+export function findEdgeLoop(mesh: Mesh, startA: number, startB: number): string[] {
+  const edgeFaceMap = buildEdgeFaceMap(mesh)
+  const vertexEdgeMap = buildVertexEdgeMap(mesh)
+  const startKey = edgeKey(startA, startB)
+  const loop = new Set<string>([startKey])
+
+  for (const startVertex of [startB, startA]) {
+    let vertex = startVertex
+    let edge = startKey
+    for (let guard = 0; guard < mesh.vertices.length + 1; guard++) {
+      const step = stepEdgeLoop(edgeFaceMap, vertexEdgeMap, vertex, edge)
+      if (!step || loop.has(step.nextEdgeKey)) break // boundary/pole, or the loop closed on itself
+      loop.add(step.nextEdgeKey)
+      vertex = step.nextVertex
+      edge = step.nextEdgeKey
+    }
+  }
+  return [...loop]
 }

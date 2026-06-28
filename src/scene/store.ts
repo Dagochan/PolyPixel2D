@@ -101,6 +101,8 @@ interface SceneState {
   addRect: (width: number, height: number, segX: number, segY: number) => void
   addCircle: (radius: number, segments: number) => void
   addImportedMesh: (mesh: Mesh, name: string) => void
+  /** Adds a mesh-less hierarchy-only dummy object (e.g. a rig root), positioned at the origin. */
+  addEmpty: () => void
   /** Merge a rect/circle into the given object's mesh as a new disconnected island, instead of
    *  creating a separate object — used when adding a primitive while already in edit mode. */
   addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
@@ -171,6 +173,9 @@ interface SceneState {
   dissolveSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
+  /** Invert the selection within the active editElementType — selected become unselected and
+   *  vice versa, like Blender's Select Inverse (Ctrl+I). */
+  invertSelection: () => void
   /** Expand the current selection to every vertex/edge/face in the same island(s) (topologically
    *  connected component) as anything already selected — like Blender's "Select Linked". No-op
    *  if nothing is selected. */
@@ -335,6 +340,25 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(prunedMesh, undefined),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addEmpty: () => {
+    get().beginChange()
+    const objects = get().objects
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Empty_${objects.length + 1}`,
+      kind: 'empty',
+      mesh: { vertices: [], faces: [] },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
       tail: { x: 0, y: 0 },
       parentId: null,
       connected: true,
@@ -607,14 +631,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     })
   },
 
-  setMode: (mode) =>
+  setMode: (mode) => {
+    // an Empty has no mesh to edit — block entering edit mode for one (pivot mode, which only
+    // touches transform.head/tail, is still allowed)
+    if (mode === 'edit') {
+      const obj = get().objects.find((o) => o.id === get().selectedObjectId)
+      if (obj?.kind === 'empty') return
+    }
     set({
       mode,
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
       editPivot: null,
-    }),
+    })
+  },
   setEditElementType: (editElementType) =>
     set({ editElementType, selectedVertices: new Set(), selectedEdges: new Set(), selectedFaces: new Set() }),
   setSelectedVertices: (selectedVertices) => set({ selectedVertices }),
@@ -813,6 +844,22 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       set({ selectedEdges: new Set(getEdges(obj.mesh).map(([a, b]) => edgeKey(a, b))) })
     } else {
       set({ selectedFaces: new Set(obj.mesh.faces.map((_, i) => i)) })
+    }
+  },
+
+  invertSelection: () => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+    if (!obj) return
+    if (s.editElementType === 'vertex') {
+      const next = new Set(obj.mesh.vertices.map((_, i) => i).filter((i) => !s.selectedVertices.has(i)))
+      set({ selectedVertices: next })
+    } else if (s.editElementType === 'edge') {
+      const allKeys = getEdges(obj.mesh).map(([a, b]) => edgeKey(a, b))
+      set({ selectedEdges: new Set(allKeys.filter((k) => !s.selectedEdges.has(k))) })
+    } else {
+      const next = new Set(obj.mesh.faces.map((_, i) => i).filter((i) => !s.selectedFaces.has(i)))
+      set({ selectedFaces: next })
     }
   },
 

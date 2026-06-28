@@ -1,5 +1,5 @@
 import type { Mesh } from './types'
-import { edgeKey, parseEdgeKey, pruneOrphanVertices } from './meshUtils'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices } from './meshUtils'
 
 function rotateStartingAt(arr: number[], value: number): number[] {
   const idx = arr.indexOf(value)
@@ -142,6 +142,7 @@ export function dissolveVertices(mesh: Mesh, vertexIndices: number[]): Mesh {
  *  merge into and is left as-is, matching Blender's dissolve-edge behavior. */
 export function dissolveEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
   let faces = mesh.faces.map((f) => [...f])
+  const touchedVertices = new Set<number>()
   for (const key of edgeKeys) {
     const [a, b] = parseEdgeKey(key)
     const matches: { fi: number; dir: 'ab' | 'ba' }[] = []
@@ -161,6 +162,27 @@ export function dissolveEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
     const merged = mergeFacesAcrossEdge(faces[abMatch.fi], faces[baMatch.fi], a, b)
     faces = faces.filter((_, fi) => fi !== abMatch.fi && fi !== baMatch.fi)
     faces.push(merged)
+    touchedVertices.add(a)
+    touchedVertices.add(b)
   }
+
+  // a dissolved edge's endpoint can be left with only two edges total — a redundant pass-through
+  // point on the merged face's boundary (e.g. dissolving a chain of "spoke" edges in a fan of
+  // quads leaves their shared rim vertices just sitting on an otherwise-straight run of the new
+  // ngon). Blender's "Dissolve Edges" cleans these up too, so drop them from whichever face still
+  // lists them, as long as that doesn't collapse the face below a triangle. Only vertices the
+  // dissolve actually touched are considered — unrelated degree-2 corners elsewhere are left alone.
+  if (touchedVertices.size > 0) {
+    const degree = new Map<number, number>()
+    for (const [x, y] of getEdges({ vertices: mesh.vertices, faces })) {
+      degree.set(x, (degree.get(x) ?? 0) + 1)
+      degree.set(y, (degree.get(y) ?? 0) + 1)
+    }
+    for (const v of touchedVertices) {
+      if (degree.get(v) !== 2) continue
+      faces = faces.map((face) => (face.length > 3 && face.includes(v) ? face.filter((i) => i !== v) : face))
+    }
+  }
+
   return pruneOrphanVertices({ vertices: mesh.vertices.map((v) => ({ ...v })), faces })
 }

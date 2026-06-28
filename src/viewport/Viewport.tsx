@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
-import { triangulate, triangulatePolygon, getEdges, edgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
+import { triangulate, triangulatePolygon, getEdges, edgeKey, parseEdgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
 import {
   applyTransform,
   inverseTransform,
@@ -13,7 +13,7 @@ import {
 } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { Mesh, SceneObject, Transform, Vec2 } from '../scene/types'
-import { findFullLoop, type LoopPath } from '../scene/loopPath'
+import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 
@@ -22,6 +22,8 @@ const VERTEX_HIT_RADIUS = 8 // px
 const GIZMO_HIT_TOLERANCE = 7 // px
 const RING_RADIUS_PX = 56 // fixed screen size, like Blender's gizmo (doesn't scale with object size)
 const ARROW_LENGTH_PX = 42
+const EMPTY_GIZMO_SIZE = 12 // world units; stand-in "bounds" half-size for a mesh-less Empty
+const EMPTY_HIT_RADIUS_PX = 10 // click hit-test radius for picking an Empty in the viewport
 
 type DragMode =
   | { kind: 'none' }
@@ -141,6 +143,9 @@ export default function Viewport() {
   const dragRef = useRef<DragMode>({ kind: 'none' })
   const loopCutHoverRef = useRef<LoopCutHover | null>(null)
   const loopCutCountRef = useRef(1)
+  // Shift, while loop-cutting a single cut, snaps it to the exact edge midpoint instead of
+  // following the cursor — there's no other way to land exactly on t=0.5 by hand
+  const loopCutSnapMidRef = useRef(false)
   const knifePathRef = useRef<KnifeCutPoint[]>([])
   const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
   const elementModalRef = useRef<ElementModal | null>(null)
@@ -512,7 +517,7 @@ export default function Viewport() {
     const count = loopCutCountRef.current
     const hover = loopCutHoverRef.current
     if (!hover) return []
-    if (count <= 1) return [hover.t]
+    if (count <= 1) return [loopCutSnapMidRef.current ? 0.5 : hover.t]
     return Array.from({ length: count }, (_, i) => (i + 1) / (count + 1))
   }
 
@@ -674,11 +679,15 @@ export default function Viewport() {
       if (e.key === 'Alt' && moveModal && moveModal.kind === 'vertex-slide') {
         updateElementModal(e.ctrlKey, true)
       }
+      // same idea for the loop-cut midpoint snap: take effect the instant Shift goes down,
+      // even if the cursor hasn't moved since
+      if (e.key === 'Shift') loopCutSnapMidRef.current = true
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Alt' && elementModalRef.current?.kind === 'vertex-slide') {
         updateElementModal(e.ctrlKey, false)
       }
+      if (e.key === 'Shift') loopCutSnapMidRef.current = false
     }
     const onDblClick = () => {
       if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
@@ -756,6 +765,12 @@ export default function Viewport() {
       group.position.z = depthIndex
       const isSelected = obj.id === selectedObjectId
       const worldTransform = getWorldTransform(obj, objects)
+
+      if (obj.kind === 'empty') {
+        addEmptyGizmo(group, worldTransform, isSelected)
+        scene.add(group)
+        return
+      }
 
       // THREE's Object3D position/rotation/scale always pivots about the local origin, but our
       // objects can have an arbitrary head — so bake the head offset into the geometry itself
@@ -1190,7 +1205,12 @@ export default function Viewport() {
    *  either rotated with the object ('local') or as a world-axis-aligned AABB ('world'). */
   function getGizmoGeom(obj: SceneObject) {
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
-    const lb = getBounds(obj.mesh)
+    // an Empty has no vertices, so getBounds would return +/-Infinity — fall back to a small
+    // fixed box around its head so the gizmo still renders at a sane, finite size
+    const lb =
+      obj.mesh.vertices.length > 0
+        ? getBounds(obj.mesh)
+        : { minX: -EMPTY_GIZMO_SIZE, maxX: EMPTY_GIZMO_SIZE, minY: -EMPTY_GIZMO_SIZE, maxY: EMPTY_GIZMO_SIZE }
     const center = { x: worldTransform.x, y: worldTransform.y }
     const pxToWorld = 1 / viewRef.current.zoom
     const ringRadius = RING_RADIUS_PX * pxToWorld
@@ -1506,6 +1526,26 @@ export default function Viewport() {
   /** Pivot-mode-only overlay: head (white) and tail (magenta) dots, draggable here only — see
    *  the `mode === 'pivot'` hit-tests in handlePointerDown. Kept out of the object-mode BBox
    *  gizmo so head/tail can't be relocated by accident while just moving/rotating an object. */
+  /** Renders a mesh-less Empty as a small screen-space-constant cross, always visible (not just
+   *  when selected) since it has no silhouette of its own to click on otherwise. */
+  function addEmptyGizmo(group: THREE.Group, worldTransform: ReturnType<typeof getWorldTransform>, isSelected: boolean) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const size = EMPTY_GIZMO_SIZE * pxToWorld
+    const color = isSelected ? 0xffaa33 : 0x4ea1ff
+    const positions = [-size, 0, 0, size, 0, 0, 0, -size, 0, 0, size, 0]
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    const mat = new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true })
+    const cross = new THREE.LineSegments(geom, mat)
+    cross.position.set(worldTransform.x, worldTransform.y, 0.5)
+    group.add(cross)
+
+    const ringGeom = new THREE.RingGeometry(size * 0.3, size * 0.4, 16)
+    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }))
+    ring.position.set(worldTransform.x, worldTransform.y, 0.5)
+    group.add(ring)
+  }
+
   function addPivotHandles(scene: THREE.Scene, obj: SceneObject) {
     const { center } = getGizmoGeom(obj)
     const pxToWorld = 1 / viewRef.current.zoom
@@ -1722,10 +1762,9 @@ export default function Viewport() {
   }
 
   function handlePointerDown(e: PointerEvent) {
-    // Alt+click normally pans the camera, but Alt is repurposed during vertex-slide (to unclamp
-    // the rail) — without this exception, clicking to confirm the slide while still holding Alt
-    // would hijack the click into a pan instead of confirming
-    if (e.button === 1 || (e.altKey && elementModalRef.current?.kind !== 'vertex-slide')) {
+    // middle-click (the wheel button) drags to pan; Alt is free for other uses (e.g. Blender-
+    // style edge-loop select in edge mode, or unclamping the rail during vertex-slide)
+    if (e.button === 1) {
       e.preventDefault() // stop native middle-click auto-scroll from hijacking pointer events
       dragRef.current = {
         kind: 'pan',
@@ -1834,7 +1873,14 @@ export default function Viewport() {
       // forced to the parent's tail, so moving it via these handles would be silently overridden;
       // skip starting the drag entirely rather than leaving the handle visually live but inert.
       const isConnectedChild = selectedObj.connected && selectedObj.parentId !== null
-      if (!isConnectedChild) {
+      // an Empty has no silhouette of its own to free-drag from, so its entire "body" is this
+      // tiny gizmo, which the arrows pass straight through — without this, every click near it
+      // would be swallowed by the axis-arrow hit test below and free (both-axis) dragging would
+      // be practically impossible. Mesh objects don't need this: their much larger face area
+      // already gives plenty of room to click away from the arrows for a free drag.
+      const nearEmptyCenter =
+        selectedObj.kind === 'empty' && distFromCenter < EMPTY_HIT_RADIUS_PX
+      if (!isConnectedChild && !nearEmptyCenter) {
         for (const axisDir of [axisX, axisY]) {
           const tip = { x: center.x + axisDir.x * arrowLength, y: center.y + axisDir.y * arrowLength }
           const d = pxDistToSegment(world.x, world.y, center.x, center.y, tip.x, tip.y)
@@ -1888,11 +1934,11 @@ export default function Viewport() {
       const threshold = (VERTEX_HIT_RADIUS) ** 2
       if (hitIndex >= 0 && bestDist < threshold) {
         const store = useSceneStore.getState()
-        const already = store.selectedVertices.has(hitIndex)
-        // clicking an already-selected vertex (no shift) keeps the whole multi-selection so it
-        // can be dragged as a group; shift toggles membership; clicking a new one resets to it alone
-        const next = e.shiftKey || already ? new Set(store.selectedVertices) : new Set<number>()
-        if (e.shiftKey && already) next.delete(hitIndex)
+        // shift toggles membership in the existing selection; a plain click always narrows to
+        // just this vertex, even if it was already part of a multi-selection (matches edge/face
+        // select below, and Blender's plain-click behavior)
+        const next = e.shiftKey ? new Set(store.selectedVertices) : new Set<number>()
+        if (e.shiftKey && store.selectedVertices.has(hitIndex)) next.delete(hitIndex)
         else next.add(hitIndex)
         store.setSelectedVertices(next)
         dragRef.current = { kind: 'none' }
@@ -1926,6 +1972,23 @@ export default function Viewport() {
       }
       if (hitKey && bestDist < VERTEX_HIT_RADIUS) {
         const store = useSceneStore.getState()
+        // Blender-style Alt+click: select the whole edge loop running through the clicked edge
+        // (findFullLoop already walks exactly that strip, opposite-edge by opposite-edge — see
+        // its doc comment — so its `cuts` are precisely the loop's edges, not new cut targets)
+        // Cmd/Ctrl+click instead selects the true Blender "Edge Loop" — edges connected end-to-
+        // end through 4-valent vertices, which for an ordinary grid runs along the clicked edge's
+        // own direction rather than across it.
+        if (e.altKey || e.ctrlKey || e.metaKey) {
+          const [ha, hb] = parseEdgeKey(hitKey)
+          const loopKeys = e.altKey
+            ? (findFullLoop(selectedObj.mesh, ha, hb)?.cuts.map(([x, y]) => edgeKey(x, y)) ?? [hitKey])
+            : findEdgeLoop(selectedObj.mesh, ha, hb)
+          const next = e.shiftKey ? new Set(store.selectedEdges) : new Set<string>()
+          for (const k of loopKeys) next.add(k)
+          store.setSelectedEdges(next)
+          dragRef.current = { kind: 'none' }
+          return
+        }
         const already = store.selectedEdges.has(hitKey)
         const next = e.shiftKey ? new Set(store.selectedEdges) : new Set<string>()
         if (e.shiftKey && already) next.delete(hitKey)
@@ -2008,7 +2071,15 @@ export default function Viewport() {
     const sorted = [...objects].filter((o) => o.visible).sort((a, b) => b.zOrder - a.zOrder)
     const world = getWorldPos(e)
     for (const obj of sorted) {
-      const local = inverseTransform(world, getWorldTransform(obj, objects))
+      const worldTransform = getWorldTransform(obj, objects)
+      if (obj.kind === 'empty') {
+        const hitRadius = EMPTY_HIT_RADIUS_PX / viewRef.current.zoom
+        const dx = world.x - worldTransform.x
+        const dy = world.y - worldTransform.y
+        if (dx * dx + dy * dy <= hitRadius * hitRadius) return obj.id
+        continue
+      }
+      const local = inverseTransform(world, worldTransform)
       if (pointInPolygonFaces(local, obj)) return obj.id
     }
     return null
