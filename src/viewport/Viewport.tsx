@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
-import { triangulate, getEdges, edgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
+import { triangulate, triangulatePolygon, getEdges, edgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
 import {
   applyTransform,
   inverseTransform,
@@ -900,8 +900,7 @@ export default function Viewport() {
             if (!selectedFaces.has(fi)) return
             const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
             const positions = pts.flatMap((p) => [p.x, p.y, 0])
-            const indices: number[] = []
-            for (let i = 1; i < pts.length - 1; i++) indices.push(0, i, i + 1)
+            const indices = triangulatePolygon(pts)
             const geom = new THREE.BufferGeometry()
             geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
             geom.setIndex(indices)

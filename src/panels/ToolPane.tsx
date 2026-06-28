@@ -9,6 +9,7 @@ import {
   LoopCutIcon,
   KnifeIcon,
   ExtrudeIcon,
+  DissolveIcon,
 } from './icons'
 
 /** Narrow, icon-only vertical tool palette along the left edge of the viewport (Blender-style
@@ -27,6 +28,7 @@ export default function ToolPane() {
   const selectedEdgesCount = selectedEdges.size
   const selectedVerticesCount = selectedVertices.size
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
+  const dissolveSelection = useSceneStore((s) => s.dissolveSelection)
 
   return (
     <div className="tool-pane">
@@ -108,6 +110,17 @@ export default function ToolPane() {
               onClick={() => extrudeSelection()}
             >
               <ExtrudeIcon />
+            </button>
+            <button
+              disabled={
+                (editElementType === 'edge' && selectedEdgesCount === 0) ||
+                (editElementType === 'vertex' && selectedVerticesCount === 0) ||
+                editElementType === 'face'
+              }
+              title="選択した頂点/辺をディゾルブ（周囲の面を1つに結合してから削除。Ctrl+X）"
+              onClick={() => dissolveSelection()}
+            >
+              <DissolveIcon />
             </button>
           </div>
         </>

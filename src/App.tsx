@@ -121,6 +121,16 @@ export default function App() {
         return
       }
 
+      // Blender's literal Ctrl+X (not Cmd+X on Mac, which stays the OS "Cut" shortcut) for
+      // dissolve — merges the faces around the selection instead of deleting them outright
+      if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'x') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit') return
+        e.preventDefault()
+        store.dissolveSelection()
+        return
+      }
+
       if (e.key === '1' || e.key === '2' || e.key === '3') {
         const store = useSceneStore.getState()
         if (store.mode !== 'edit') return

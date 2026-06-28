@@ -26,12 +26,84 @@ export function getEdges(mesh: Mesh): [number, number][] {
   return edges
 }
 
-/** Fan-triangulates each face (faces are expected to be convex, true for primitives). */
+/** Ear-clipping triangulation of a single simple polygon (convex or concave, no holes or
+ *  self-intersections). Returns triangles as indices into `points` itself (0..points.length-1),
+ *  not into any outer vertex array — callers map these back to real indices as needed. */
+export function triangulatePolygon(points: Vec2[]): number[] {
+  const n = points.length
+  if (n < 3) return []
+  if (n === 3) return [0, 1, 2]
+
+  // signed area's sign gives the polygon's winding, so "convex at this vertex" can be tested
+  // consistently regardless of whether the face happens to be CW or CCW
+  let area = 0
+  for (let i = 0; i < n; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % n]
+    area += a.x * b.y - b.x * a.y
+  }
+  const ccw = area > 0
+
+  const cross = (o: Vec2, a: Vec2, b: Vec2) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+  const isConvexVertex = (prev: Vec2, curr: Vec2, next: Vec2) => {
+    const c = cross(prev, curr, next)
+    return ccw ? c > 0 : c < 0
+  }
+  const pointInTriangle = (p: Vec2, a: Vec2, b: Vec2, c: Vec2) => {
+    const d1 = cross(a, b, p)
+    const d2 = cross(b, c, p)
+    const d3 = cross(c, a, p)
+    const hasNeg = d1 < 0 || d2 < 0 || d3 < 0
+    const hasPos = d1 > 0 || d2 > 0 || d3 > 0
+    return !(hasNeg && hasPos)
+  }
+
+  const remaining = Array.from({ length: n }, (_, i) => i)
+  const triangles: number[] = []
+  let guard = 0
+  while (remaining.length > 3 && guard++ < n * n) {
+    let clipped = false
+    for (let i = 0; i < remaining.length; i++) {
+      const prevI = remaining[(i - 1 + remaining.length) % remaining.length]
+      const currI = remaining[i]
+      const nextI = remaining[(i + 1) % remaining.length]
+      const prev = points[prevI]
+      const curr = points[currI]
+      const next = points[nextI]
+      if (!isConvexVertex(prev, curr, next)) continue
+      const containsOther = remaining.some(
+        (otherI) =>
+          otherI !== prevI && otherI !== currI && otherI !== nextI && pointInTriangle(points[otherI], prev, curr, next),
+      )
+      if (containsOther) continue
+      triangles.push(prevI, currI, nextI)
+      remaining.splice(i, 1)
+      clipped = true
+      break
+    }
+    if (!clipped) {
+      // degenerate or self-intersecting input — fan the rest from the first remaining vertex
+      // rather than loop forever or silently drop part of the polygon
+      for (let i = 1; i < remaining.length - 1; i++) {
+        triangles.push(remaining[0], remaining[i], remaining[i + 1])
+      }
+      remaining.length = 0
+      break
+    }
+  }
+  if (remaining.length === 3) triangles.push(remaining[0], remaining[1], remaining[2])
+  return triangles
+}
+
+/** Triangulates every face of a mesh (convex or concave, via `triangulatePolygon`), returning
+ *  flat triangle indices into `mesh.vertices`. */
 export function triangulate(mesh: Mesh): number[] {
   const indices: number[] = []
   for (const face of mesh.faces) {
-    for (let i = 1; i < face.length - 1; i++) {
-      indices.push(face[0], face[i], face[i + 1])
+    const pts = face.map((i) => mesh.vertices[i])
+    const tris = triangulatePolygon(pts)
+    for (let k = 0; k < tris.length; k += 3) {
+      indices.push(face[tris[k]], face[tris[k + 1]], face[tris[k + 2]])
     }
   }
   return indices

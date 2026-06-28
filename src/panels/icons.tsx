@@ -131,6 +131,15 @@ export function ObjImportIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function DissolveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M4,12L9,12M15,12L20,12" />
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
 export function ReferenceImageIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">

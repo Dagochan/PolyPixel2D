@@ -14,6 +14,7 @@ import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
+import { dissolveVertices, dissolveEdges } from './dissolve'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland, clampToMesh } from './meshUtils'
@@ -165,6 +166,9 @@ interface SceneState {
   extrudeSelection: () => boolean
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
   deleteSelection: () => void
+  /** Dissolve the current vertex/edge selection: merges the faces around each selected element
+   *  into one instead of deleting them outright. No-op in face mode or with nothing selected. */
+  dissolveSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
   /** Expand the current selection to every vertex/edge/face in the same island(s) (topologically
@@ -738,6 +742,47 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     get().beginChange()
     // an object with no faces renders nothing and (without a vertex/face-building tool)
     // can't be made useful again, so remove it outright rather than leaving an empty husk
+    if (mesh.faces.length === 0) {
+      set((st) => ({
+        objects: st.objects.filter((o) => o.id !== objectId),
+        selectedObjectId: null,
+        mode: 'object',
+        selectedVertices: new Set(),
+        selectedEdges: new Set(),
+        selectedFaces: new Set(),
+      }))
+      return
+    }
+
+    set((st) => ({
+      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  dissolveSelection: () => {
+    const s = get()
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+
+    let mesh: Mesh
+    if (s.editElementType === 'vertex') {
+      if (s.selectedVertices.size === 0) return
+      mesh = dissolveVertices(obj.mesh, Array.from(s.selectedVertices))
+    } else if (s.editElementType === 'edge') {
+      if (s.selectedEdges.size === 0) return
+      mesh = dissolveEdges(obj.mesh, Array.from(s.selectedEdges))
+    } else {
+      return // dissolve has no distinct meaning in face mode — use delete instead
+    }
+
+    get().beginChange()
+    // an object with no faces renders nothing and (without a vertex/face-building tool) can't
+    // be made useful again, so remove it outright rather than leaving an empty husk
     if (mesh.faces.length === 0) {
       set((st) => ({
         objects: st.objects.filter((o) => o.id !== objectId),
