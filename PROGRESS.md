@@ -4,7 +4,7 @@
 > このファイルは「今、何が実装済みで、何が未実装か」を追うための進捗まとめ。随時更新する。
 > FlaFlo2D（前身アプリ、`git@github.com:Dagochan/2D_DCC_Tool` で開発継続中）のコードをベースに分岐し、不要機能を削った上で新規要素を追加している。
 
-最終更新: 2026-06-27
+最終更新: 2026-06-28
 
 ## 技術スタック
 
@@ -17,7 +17,8 @@
 - `src/scene/types.ts` — `Mesh`（vertices + faces）、`Transform`（位置・回転・スケール・Head）、`SceneObject`（`tail`・`parentId`・`connected`・`islandZOrders`・`islandNames`・`showIslandNames`を含む）の型定義
 - `src/scene/store.ts` — シーン全体の状態（オブジェクト一覧、選択状態、モード、Undo/Redo履歴）と全操作のアクション
 - `src/scene/transformUtils.ts` — ローカル座標⇔ワールド座標の変換（`getWorldTransform`/`getParentWorldTransform`で親子チェーンを再帰的に解決。ルートオブジェクトは従来通り`obj.transform`そのまま）
-- `src/scene/meshUtils.ts` — 辺・三角形分割などの基本ユーティリティに加え、`clampToMesh`（メッシュ輪郭への点のクランプ）、`localBoundsCenter`（アイランドのBBox中心）を追加
+- `src/scene/meshUtils.ts` — 辺・三角形分割（`triangulatePolygon`、イヤークリッピングで凹形Ngon対応）などの基本ユーティリティに加え、`clampToMesh`（メッシュ輪郭への点のクランプ）、`localBoundsCenter`（アイランドのBBox中心）を追加
+- `src/scene/dissolve.ts` — `dissolveVertices`/`dissolveEdges`（周囲の面を1つに結合してから削除）
 - `src/scene/uv.ts` — `findIslands`でメッシュを連結成分（アイランド）に分割。`computeSplitUVIslands`でアイランドごとに個別のメッシュ+UVを生成し、`computeSplitUVs`はそれを結合するだけの薄いラッパー
 - `src/scene/primitives.ts` / `objImport.ts` — 矩形・円の生成、OBJファイル読み込み
 - `src/scene/extrude.ts` / `loopCut.ts` / `loopPath.ts` / `deleteElements.ts` — 編集操作のメッシュ変換ロジック
@@ -33,7 +34,8 @@
 - [x] 頂点・辺・面の選択編集（クリック選択、Shift複数選択、矩形選択）
 - [x] 頂点・辺・面の移動（Gキー、Blender風モーダル操作）
 - [x] 押し出し（Eキー）、ループカット（Cmd/Ctrl+R）、ナイフツール（Kキー）
-- [x] 削除（Delete/Backspace）、頂点マージ（Mキー）、面の穴埋め（Fキー）
+- [x] 削除（Delete/Backspace、面を含めて消える）、ディゾルブ（Ctrl+X、周囲の面を1つに結合してから削除。`src/scene/dissolve.ts`）、頂点マージ（Mキー）、面の穴埋め（Fキー）
+- [x] 面の三角形分割はイヤークリッピング方式（`triangulatePolygon`、凹形Ngonにも対応。メッシュ本体の塗りと面選択ハイライトの両方がこれを使用）
 - [x] 編集モードでの要素の回転・拡大（R/Sキー、編集モード専用ピボット）
 - [x] UVマッピング（アイランド単位の自動展開、ミニUVエディタでのドラッグ調整、テクセル密度一致機能）
 - [x] テクスチャ貼り付け、トレース用リファレンス画像、プロジェクトの保存/読み込み（`.fltd`、JSON）
@@ -56,6 +58,11 @@
 - [x] プロパティパネルの「アイランド」セクション（編集モード限定で表示、マテリアルセクションより上）— ▲▼で重なり順入れ替え、◎ボタンで該当アイランドを選択（編集モードに切替）、名前は直接編集可能（IME変換確定のEnterと誤反応しないよう対応、空にして確定すると自動でデフォルト名に戻る）
 - [x] 「名前を表示」トグル（オブジェクト単位の一括ON/OFF）で、各アイランドのBBox中心より少し下にラベル表示。フォントはUIと同じシステムフォント、背景は角丸でビューポート背景に近いグレー
 - [x] `selectLinked`（Ctrl/Cmd+L、Blenderの「Select Linked」相当）— 選択中の頂点/辺/面が属するアイランド全体に選択を拡張
+
+### オブジェクトモードの操作性（新規）
+- [x] World/Localギズモ基準切替（ツールバーの「ギズモ」ドロップダウン、オブジェクトモード限定）。ローカル（デフォルト）はオブジェクト自身の回転に追従、ワールドは常にシーンのXY軸基準。移動の軸矢印・BBoxアウトライン・スケールハンドルの位置が対象（回転リングは向きの概念がないので対象外）
+- [x] 親に回転・スケールがあるオブジェクトを移動/回転させた時の「ぴょこっと」ジャンプ・ズレを修正（ワールド差分をそのままローカルtransformに代入していたバグ。`worldPositionToLocalOffset`で正しく変換するよう修正）
+- [x] アウトライナーのドラッグ&ドロップを改善: 行の上端/下端＝同じ階層内で並び替え（zOrder、`reorder`アクション）、中央＝子としてペアレント、と判定。各行に専用のドラッグハンドル（⠿）を追加し、名前編集フォームとの誤操作を防止
 
 ### 削除した機能（仕様により今回不要と判断）
 - [x] SDS（サブディビジョンサーフィス）と関連のクリース（エッジ/頂点重み）を完全削除
@@ -96,5 +103,5 @@
 - アイランドの順序（`islandZOrders`/`islandNames`のインデックス）は`findIslands`が返す配列順（face探索順）に依存するため、トポロジーが変わる編集（頂点削除・マージなど）をすると対応がずれる可能性がある。`uvIslandTransforms`など既存のUV機能も同じ制約を持っており、それを引き継いだ形
 - Head/Tailのクランプはメッシュの「現在の頂点位置」に対する最近接点を使うため、凹形メッシュや複数アイランドをまたぐ移動では一番近い境界に飛ぶことがある（意図した挙動）
 - `connected`はルートオブジェクト（`parentId === null`）には意味を持たないが、フィールドとしてはデフォルトtrueのまま存在する。`getParentWorldTransform`は祖先を辿る際に`ancestor.parentId !== null`も同時に確認しており、ルート祖先のconnectedフラグが誤って子の位置計算に影響しないようにしている（過去に発生したバグの修正済み）
-- 面の三角形分割は先頭頂点からの扇形分割のみ。凹形（コンケーブ）ポリゴンは描画が崩れる可能性がある（FlaFlo2Dから継承の制約）
+- ~~面の三角形分割は先頭頂点からの扇形分割のみ。凹形（コンケーブ）ポリゴンは描画が崩れる可能性がある~~ → イヤークリッピング方式への変更により解消済み（ディゾルブが凹形Ngonを作りやすいことを契機に修正）
 - アイランド名ラベルはフレームごとに新しい`CanvasTexture`を生成するため、`disposeSceneContents`で明示的に破棄している（他のテクスチャはキャッシュ・再利用される前提のため、この特殊扱いが必要）
