@@ -48,6 +48,20 @@ export interface UvIslandTransform {
   excludeFromDensityMatch?: boolean
 }
 
+/** A reservation, within an object's own island Z-order stack, for some *other* object to be
+ *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
+ *  it in rank order. Lets render order cross object boundaries without splitting a mesh purely
+ *  to fight Z-order (e.g. a neck object needing to sit between a collar's front and back islands). */
+export interface InsertSlot {
+  id: string
+  /** Same ranking space as `islandZOrders` (which defaults an absent island to its own index) —
+   *  typically a fractional value like 0.5 so the slot sits between two integer-ranked islands
+   *  without needing to renumber them. */
+  rank: number
+  /** The `slotName` of the object to render here. Empty = reserved but unfilled placeholder. */
+  targetSlotName: string
+}
+
 export interface SceneObject {
   id: string
   name: string
@@ -95,6 +109,14 @@ export interface SceneObject {
    *  `islandZOrders`). An island absent from this map is visible (default true). A hidden
    *  island draws nothing at all — fill, wireframe, and edit-mode overlays alike. */
   islandVisible?: Record<number, boolean>
+  /** Unique-per-scene name another object's `InsertSlot.targetSlotName` can reference, to render
+   *  this object sandwiched into that object's island stack instead of in normal document order.
+   *  Setting it (Properties panel) steals it from whichever other object currently holds it, so
+   *  it can never collide. */
+  slotName?: string
+  /** Reserved positions in this object's own island Z-order stack for other objects to be
+   *  inserted into (see `InsertSlot`). */
+  insertSlots?: InsertSlot[]
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

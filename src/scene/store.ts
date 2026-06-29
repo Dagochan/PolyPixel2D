@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   AppMode,
   EditElementType,
+  InsertSlot,
   Mesh,
   ReferenceImage,
   SceneObject,
@@ -164,6 +165,17 @@ interface SceneState {
   /** Toggle one island's visibility (by `findIslands` order) — hidden draws nothing at all
    *  (fill, wireframe, edit overlays). */
   toggleIslandVisible: (id: string, islandIndex: number) => void
+  /** Set this object's unique slot name — stealing it from whichever other object currently
+   *  holds it, so the same name is never held by two objects at once. */
+  setSlotName: (id: string, slotName: string) => void
+  /** Add a new reserved insert slot to the end of this object's island/slot Z-order stack
+   *  (unfilled — use `setInsertSlotTarget` to point it at a `slotName`). */
+  addInsertSlot: (id: string) => void
+  removeInsertSlot: (id: string, slotId: string) => void
+  setInsertSlotTarget: (id: string, slotId: string, targetSlotName: string) => void
+  /** Swap an insert slot's rank with whichever island or other slot is immediately in front
+   *  of/behind it in the combined order (direction 1 = forward/up, -1 = back/down). */
+  moveInsertSlotRank: (id: string, slotId: string, direction: 1 | -1) => void
   /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
    *  a post-extrude grab confirms, so the new geometry's UV reflects where it ended up. */
   freezeUvBaseVertices: (id: string, indices: number[]) => void
@@ -536,19 +548,30 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const obj = get().objects.find((o) => o.id === id)
     if (!obj) return
     const islandCount = findIslands(obj.mesh).length
-    const rankOf = (i: number) => obj.islandZOrders?.[i] ?? i
-    const order = Array.from({ length: islandCount }, (_, i) => i).sort((a, b) => rankOf(a) - rankOf(b))
-    const pos = order.indexOf(islandIndex)
+    // islands swap ranks with whichever neighbor is adjacent in the *combined* island+insert-slot
+    // order, not just other islands — otherwise an island next to an insert slot in the displayed
+    // list wouldn't actually be swappable with it
+    type Entry = { kind: 'island'; index: number; rank: number } | { kind: 'slot'; slotId: string; rank: number }
+    const entries: Entry[] = [
+      ...Array.from({ length: islandCount }, (_, i) => ({ kind: 'island' as const, index: i, rank: obj.islandZOrders?.[i] ?? i })),
+      ...(obj.insertSlots ?? []).map((s) => ({ kind: 'slot' as const, slotId: s.id, rank: s.rank })),
+    ]
+    entries.sort((a, b) => a.rank - b.rank)
+    const pos = entries.findIndex((e) => e.kind === 'island' && e.index === islandIndex)
     const swapWith = pos + direction
-    if (pos === -1 || swapWith < 0 || swapWith >= order.length) return
-    const other = order[swapWith]
+    if (pos === -1 || swapWith < 0 || swapWith >= entries.length) return
+    const self = entries[pos]
+    const other = entries[swapWith]
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) =>
-        o.id === id
-          ? { ...o, islandZOrders: { ...o.islandZOrders, [islandIndex]: rankOf(other), [other]: rankOf(islandIndex) } }
-          : o,
-      ),
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const islandZOrders =
+          other.kind === 'island' ? { ...o.islandZOrders, [islandIndex]: other.rank, [other.index]: self.rank } : { ...o.islandZOrders, [islandIndex]: other.rank }
+        const insertSlots =
+          other.kind === 'slot' ? (o.insertSlots ?? []).map((sl) => (sl.id === other.slotId ? { ...sl, rank: self.rank } : sl)) : o.insertSlots
+        return { ...o, islandZOrders, insertSlots }
+      }),
     }))
   },
 
@@ -590,6 +613,81 @@ export const useSceneStore = create<SceneState>((set, get) => ({
           ? { ...o, islandVisible: { ...o.islandVisible, [islandIndex]: !(o.islandVisible?.[islandIndex] ?? true) } }
           : o,
       ),
+    }))
+  },
+
+  setSlotName: (id, slotName) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id === id) return { ...o, slotName }
+        if (slotName && o.slotName === slotName) return { ...o, slotName: '' }
+        return o
+      }),
+    }))
+  },
+
+  addInsertSlot: (id) => {
+    const obj = get().objects.find((o) => o.id === id)
+    if (!obj) return
+    const islandCount = findIslands(obj.mesh).length
+    const islandRanks = Array.from({ length: islandCount }, (_, i) => obj.islandZOrders?.[i] ?? i)
+    const slotRanks = (obj.insertSlots ?? []).map((s) => s.rank)
+    const maxRank = Math.max(-1, ...islandRanks, ...slotRanks)
+    const newSlot: InsertSlot = { id: genId('slot'), rank: maxRank + 1, targetSlotName: '' }
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, insertSlots: [...(o.insertSlots ?? []), newSlot] } : o)),
+    }))
+  },
+
+  removeInsertSlot: (id, slotId) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? { ...o, insertSlots: (o.insertSlots ?? []).filter((slot) => slot.id !== slotId) } : o,
+      ),
+    }))
+  },
+
+  setInsertSlotTarget: (id, slotId, targetSlotName) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, insertSlots: (o.insertSlots ?? []).map((slot) => (slot.id === slotId ? { ...slot, targetSlotName } : slot)) }
+          : o,
+      ),
+    }))
+  },
+
+  moveInsertSlotRank: (id, slotId, direction) => {
+    const obj = get().objects.find((o) => o.id === id)
+    if (!obj) return
+    const islandCount = findIslands(obj.mesh).length
+    type Entry = { kind: 'island'; index: number; rank: number } | { kind: 'slot'; slotId: string; rank: number }
+    const entries: Entry[] = [
+      ...Array.from({ length: islandCount }, (_, i) => ({ kind: 'island' as const, index: i, rank: obj.islandZOrders?.[i] ?? i })),
+      ...(obj.insertSlots ?? []).map((s) => ({ kind: 'slot' as const, slotId: s.id, rank: s.rank })),
+    ]
+    entries.sort((a, b) => a.rank - b.rank)
+    const pos = entries.findIndex((e) => e.kind === 'slot' && e.slotId === slotId)
+    const swapWith = pos + direction
+    if (pos === -1 || swapWith < 0 || swapWith >= entries.length) return
+    const self = entries[pos]
+    const other = entries[swapWith]
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const islandZOrders = other.kind === 'island' ? { ...o.islandZOrders, [other.index]: self.rank } : o.islandZOrders
+        const insertSlots = (o.insertSlots ?? []).map((sl) => {
+          if (sl.id === slotId) return { ...sl, rank: other.rank }
+          if (other.kind === 'slot' && sl.id === other.slotId) return { ...sl, rank: self.rank }
+          return sl
+        })
+        return { ...o, islandZOrders, insertSlots }
+      }),
     }))
   },
 

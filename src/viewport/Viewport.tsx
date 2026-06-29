@@ -17,6 +17,7 @@ import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
+import { resolveInsertSlots } from '../scene/insertSlots'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -789,6 +790,72 @@ export default function Viewport() {
     })
   }
 
+  function buildFillMaterialFor(targetObj: SceneObject): THREE.MeshBasicMaterial {
+    let texture: THREE.Texture | undefined
+    if (targetObj.material.textureUrl) {
+      texture = textureCacheRef.current.get(targetObj.material.textureUrl)
+      if (!texture) {
+        texture = textureLoaderRef.current.load(targetObj.material.textureUrl)
+        texture.colorSpace = THREE.SRGBColorSpace
+        textureCacheRef.current.set(targetObj.material.textureUrl, texture)
+      }
+    }
+    const { meshOpacity } = useSceneStore.getState()
+    return new THREE.MeshBasicMaterial({
+      color: targetObj.material.color,
+      map: texture,
+      side: THREE.DoubleSide,
+      transparent: meshOpacity < 1 || !!texture,
+      opacity: meshOpacity,
+    })
+  }
+
+  function buildIslandMesh(
+    targetObj: SceneObject,
+    perIsland: { mesh: Mesh; uvs: Vec2[] }[],
+    islandIdx: number,
+    material: THREE.MeshBasicMaterial,
+    pivot: Vec2,
+    worldTransform: Transform,
+    z: number,
+  ): THREE.Mesh {
+    const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
+    const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
+    geom.setIndex(triangulate(islandMesh))
+    const mesh = new THREE.Mesh(geom, material)
+    mesh.position.set(worldTransform.x, worldTransform.y, z)
+    mesh.rotation.z = worldTransform.rotation
+    mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
+    return mesh
+  }
+
+  /** Draws every visible island of an object inserted into another's slot, nested into the
+   *  host's own `THREE.Group` (which already carries the host's `depthIndex` as its Z) at
+   *  `baseZ` + a finer `microStep` per island — the inserted object keeps its own transform and
+   *  material, only its render depth is borrowed from the host's island stack position. */
+  function drawNestedObjectFill(
+    hostGroup: THREE.Group,
+    targetObj: SceneObject,
+    objects: SceneObject[],
+    baseZ: number,
+    microStep: number,
+  ) {
+    const targetWorldTransform = getWorldTransform(targetObj, objects)
+    const pivot = targetWorldTransform.head
+    const perIsland = computeSplitUVIslands(targetObj.mesh, targetObj.uvIslandTransforms, targetObj.uvBaseVertices)
+    const material = buildFillMaterialFor(targetObj)
+    const islandOrder = perIsland
+      .map((_, i) => i)
+      .sort((a, b) => (targetObj.islandZOrders?.[a] ?? a) - (targetObj.islandZOrders?.[b] ?? b))
+    islandOrder.forEach((islandIdx, i) => {
+      if (targetObj.islandVisible?.[islandIdx] === false) return
+      hostGroup.add(buildIslandMesh(targetObj, perIsland, islandIdx, material, pivot, targetWorldTransform, baseZ + i * microStep))
+    })
+  }
+
   function rebuildScene() {
     const scene = sceneRef.current
     disposeSceneContents(scene)
@@ -810,6 +877,7 @@ export default function Viewport() {
     if (referenceImage) addReferenceImage(scene, referenceImage)
     addGrid(scene)
 
+    const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
 
     sorted.forEach((obj, depthIndex) => {
@@ -869,25 +937,42 @@ export default function Viewport() {
 
       // one draw call per island, stacked in rank order (`islandZOrders`, default = natural
       // island order) via a tiny per-island Z offset — small enough to never cross into a
-      // neighboring object's `depthIndex` slot, which are spaced 1 apart.
+      // neighboring object's `depthIndex` slot, which are spaced 1 apart. An object consumed by
+      // another's insert slot draws its fill nested over there instead (see below) — everything
+      // else here (wireframe, edit overlays, labels) still runs normally so it stays editable.
       const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
-      const islandOrder = perIsland
-        .map((_, i) => i)
-        .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
-      islandOrder.forEach((islandIdx, depthWithinObject) => {
-        if (obj.islandVisible?.[islandIdx] === false) return
-        const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
-        const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
-        const geom = new THREE.BufferGeometry()
-        geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-        geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
-        geom.setIndex(triangulate(islandMesh))
-        const mesh = new THREE.Mesh(geom, mat)
-        mesh.position.set(worldTransform.x, worldTransform.y, depthWithinObject * 0.001)
-        mesh.rotation.z = worldTransform.rotation
-        mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
-        group.add(mesh)
-      })
+      if (!consumedIds.has(obj.id)) {
+        const inserts = insertsByHost.get(obj.id) ?? []
+        if (inserts.length === 0) {
+          const islandOrder = perIsland
+            .map((_, i) => i)
+            .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
+          islandOrder.forEach((islandIdx, depthWithinObject) => {
+            if (obj.islandVisible?.[islandIdx] === false) return
+            group.add(buildIslandMesh(obj, perIsland, islandIdx, mat, pivot, worldTransform, depthWithinObject * 0.001))
+          })
+        } else {
+          // this host has a filled insert slot — islands and inserted objects must be interleaved
+          // by rank so an insert sandwiched between two islands actually renders between them
+          type Entry =
+            | { kind: 'island'; islandIdx: number; rank: number }
+            | { kind: 'insert'; object: SceneObject; rank: number }
+          const entries: Entry[] = [
+            ...perIsland.map((_, i) => ({ kind: 'island' as const, islandIdx: i, rank: obj.islandZOrders?.[i] ?? i })),
+            ...inserts.map((ins) => ({ kind: 'insert' as const, object: ins.object, rank: ins.rank })),
+          ]
+          entries.sort((a, b) => a.rank - b.rank)
+          entries.forEach((entry, i) => {
+            const z = i * 0.001
+            if (entry.kind === 'island') {
+              if (obj.islandVisible?.[entry.islandIdx] === false) return
+              group.add(buildIslandMesh(obj, perIsland, entry.islandIdx, mat, pivot, worldTransform, z))
+            } else if (entry.object.visible) {
+              drawNestedObjectFill(group, entry.object, objects, z, 0.0001)
+            }
+          })
+        }
+      }
 
       if (obj.showIslandNames && islands) {
         const labelPxToWorld = 1 / viewRef.current.zoom
@@ -915,7 +1000,7 @@ export default function Viewport() {
       edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
       const edgeMat = new THREE.LineBasicMaterial({ color: isSelected ? 0xffffff : 0x000000, opacity: 0.6, transparent: true })
       const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
-      edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (islandOrder.length - 1) * 0.001)
+      edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (perIsland.length - 1) * 0.001)
       edgeLines.rotation.z = worldTransform.rotation
       edgeLines.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
       group.add(edgeLines)

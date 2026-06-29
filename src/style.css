@@ -492,6 +492,13 @@ input[type='range']:disabled {
   gap: 8px;
 }
 
+.insert-slot-label {
+  font-size: 11px;
+  color: #aaa;
+  white-space: nowrap;
+  align-self: center;
+}
+
 .prop-row.prop-static {
   font-size: 12px;
   color: #aaa;

@@ -5,6 +5,8 @@ import { triangulate } from '../scene/meshUtils'
 import { getWorldTransform, worldBounds } from '../scene/transformUtils'
 import { computeSplitUVIslands } from '../scene/uv'
 import { quantizeImageData } from '../scene/quantize'
+import { resolveInsertSlots } from '../scene/insertSlots'
+import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 
 /** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
  *  small WebGL canvas at the target dot-art resolution, auto-framed to fit all visible objects.
@@ -194,6 +196,81 @@ function disposeSceneContents(scene: THREE.Scene) {
   })
 }
 
+function buildFillMaterial(
+  obj: SceneObject,
+  textureCache: Map<string, THREE.Texture>,
+  textureLoader: THREE.TextureLoader,
+): THREE.MeshBasicMaterial {
+  let texture: THREE.Texture | undefined
+  if (obj.material.textureUrl) {
+    texture = textureCache.get(obj.material.textureUrl)
+    if (!texture) {
+      texture = textureLoader.load(obj.material.textureUrl)
+      texture.colorSpace = THREE.SRGBColorSpace
+      // sample texels as hard blocks rather than blending — matches the canvas's own
+      // nearest-neighbor upscale, so the dot-art look applies to fill color too, not just silhouette
+      texture.magFilter = THREE.NearestFilter
+      texture.minFilter = THREE.NearestFilter
+      textureCache.set(obj.material.textureUrl, texture)
+    }
+  }
+  return new THREE.MeshBasicMaterial({
+    color: obj.material.color,
+    map: texture,
+    side: THREE.DoubleSide,
+    // a texture's own alpha channel (e.g. a baked/transparent PNG) must be respected, or fully
+    // transparent areas render as whatever opaque RGB they happen to store underneath
+    transparent: !!texture,
+  })
+}
+
+function drawIsland(
+  scene: THREE.Scene,
+  obj: SceneObject,
+  objects: SceneObject[],
+  perIsland: { mesh: Mesh; uvs: Vec2[] }[],
+  material: THREE.MeshBasicMaterial,
+  islandIdx: number,
+  z: number,
+) {
+  const worldTransform = getWorldTransform(obj, objects)
+  const pivot = worldTransform.head
+  const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
+  const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+  const geom = new THREE.BufferGeometry()
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
+  geom.setIndex(triangulate(islandMesh))
+  const mesh = new THREE.Mesh(geom, material)
+  mesh.position.set(worldTransform.x, worldTransform.y, z)
+  mesh.rotation.z = worldTransform.rotation
+  mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
+  scene.add(mesh)
+}
+
+/** Draws every visible island of `obj` (in its own Z-order), spaced `microStep` apart starting
+ *  at `baseZ` — used both for a plain top-level object and for an object nested into a host's
+ *  insert slot (with a finer `microStep` so it stays within the slot's single position). */
+function drawAllIslands(
+  scene: THREE.Scene,
+  obj: SceneObject,
+  objects: SceneObject[],
+  baseZ: number,
+  microStep: number,
+  textureCache: Map<string, THREE.Texture>,
+  textureLoader: THREE.TextureLoader,
+) {
+  const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+  const material = buildFillMaterial(obj, textureCache, textureLoader)
+  const islandOrder = perIsland
+    .map((_, i) => i)
+    .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
+  islandOrder.forEach((islandIdx, i) => {
+    if (obj.islandVisible?.[islandIdx] === false) return
+    drawIsland(scene, obj, objects, perIsland, material, islandIdx, baseZ + i * microStep)
+  })
+}
+
 function rebuildScene(
   scene: THREE.Scene,
   objects: ReturnType<typeof useSceneStore.getState>['objects'],
@@ -203,51 +280,37 @@ function rebuildScene(
   disposeSceneContents(scene)
   scene.clear()
 
-  const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
+  const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
+  const sorted = [...objects].filter((o) => !consumedIds.has(o.id)).sort((a, b) => a.zOrder - b.zOrder)
+
   sorted.forEach((obj, depthIndex) => {
     if (!obj.visible || obj.kind === 'empty') return
-    const worldTransform = getWorldTransform(obj, objects)
-    const { head: pivot } = worldTransform
-
-    let texture: THREE.Texture | undefined
-    if (obj.material.textureUrl) {
-      texture = textureCache.get(obj.material.textureUrl)
-      if (!texture) {
-        texture = textureLoader.load(obj.material.textureUrl)
-        texture.colorSpace = THREE.SRGBColorSpace
-        // sample texels as hard blocks rather than blending — matches the canvas's own
-        // nearest-neighbor upscale, so the dot-art look applies to fill color too, not just silhouette
-        texture.magFilter = THREE.NearestFilter
-        texture.minFilter = THREE.NearestFilter
-        textureCache.set(obj.material.textureUrl, texture)
-      }
+    const inserts = insertsByHost.get(obj.id) ?? []
+    if (inserts.length === 0) {
+      drawAllIslands(scene, obj, objects, depthIndex, 0.001, textureCache, textureLoader)
+      return
     }
-    const mat = new THREE.MeshBasicMaterial({
-      color: obj.material.color,
-      map: texture,
-      side: THREE.DoubleSide,
-      // a texture's own alpha channel (e.g. a baked/transparent PNG) must be respected, or fully
-      // transparent areas render as whatever opaque RGB they happen to store underneath
-      transparent: !!texture,
-    })
 
+    // this host has at least one filled insert slot — islands and inserted objects must be
+    // interleaved by rank so an insert sandwiched between two islands actually renders between them
     const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
-    const islandOrder = perIsland
-      .map((_, i) => i)
-      .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
-    islandOrder.forEach((islandIdx, depthWithinObject) => {
-      if (obj.islandVisible?.[islandIdx] === false) return
-      const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
-      const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
-      const geom = new THREE.BufferGeometry()
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-      geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
-      geom.setIndex(triangulate(islandMesh))
-      const mesh = new THREE.Mesh(geom, mat)
-      mesh.position.set(worldTransform.x, worldTransform.y, depthIndex + depthWithinObject * 0.001)
-      mesh.rotation.z = worldTransform.rotation
-      mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
-      scene.add(mesh)
+    const material = buildFillMaterial(obj, textureCache, textureLoader)
+    type Entry =
+      | { kind: 'island'; islandIdx: number; rank: number }
+      | { kind: 'insert'; object: SceneObject; rank: number }
+    const entries: Entry[] = [
+      ...perIsland.map((_, i) => ({ kind: 'island' as const, islandIdx: i, rank: obj.islandZOrders?.[i] ?? i })),
+      ...inserts.map((ins) => ({ kind: 'insert' as const, object: ins.object, rank: ins.rank })),
+    ]
+    entries.sort((a, b) => a.rank - b.rank)
+    entries.forEach((entry, i) => {
+      const z = depthIndex + i * 0.001
+      if (entry.kind === 'island') {
+        if (obj.islandVisible?.[entry.islandIdx] === false) return
+        drawIsland(scene, obj, objects, perIsland, material, entry.islandIdx, z)
+      } else if (entry.object.visible) {
+        drawAllIslands(scene, entry.object, objects, z, 0.0001, textureCache, textureLoader)
+      }
     })
   })
 }

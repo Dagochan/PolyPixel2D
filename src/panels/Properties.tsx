@@ -3,7 +3,7 @@ import { useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
-import type { SceneObject } from '../scene/types'
+import type { InsertSlot, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon } from './icons'
 
@@ -72,34 +72,50 @@ function exportUvMap(obj: SceneObject, resolution: number) {
   downloadDataUrl(canvas.toDataURL('image/png'), `${obj.name}_uv.png`)
 }
 
-/** Only shown for an object whose mesh has 2+ disconnected islands — lets the user pick which
- *  island draws in front of which when they overlap on screen (the spec calls for per-island
- *  Z stacking within a single object's mesh, since one object can hold multiple islands). Listed
- *  front-most first, with up/down buttons swapping rank with the neighboring island. */
+/** Shown for any object with at least one island, or with reserved insert slots — lets the user
+ *  pick which island draws in front of which when they overlap on screen, and also reserve
+ *  "INSERT OBJECT" slots in that same stack so another object (matched by `slotName`) renders
+ *  sandwiched in at that position. Listed front-most first; up/down swap rank with whichever
+ *  island or slot is adjacent in this combined order. */
 function IslandZOrderSection({
   obj,
+  objects,
   moveIslandZOrder,
   selectIsland,
   setIslandName,
   clearIslandNameIfEmpty,
   setShowIslandNames,
   toggleIslandVisible,
+  addInsertSlot,
+  removeInsertSlot,
+  setInsertSlotTarget,
+  moveInsertSlotRank,
 }: {
   obj: SceneObject
+  objects: SceneObject[]
   moveIslandZOrder: (id: string, islandIndex: number, direction: 1 | -1) => void
   selectIsland: (islandIndex: number) => void
   setIslandName: (id: string, islandIndex: number, name: string) => void
   clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
   setShowIslandNames: (id: string, show: boolean) => void
   toggleIslandVisible: (id: string, islandIndex: number) => void
+  addInsertSlot: (id: string) => void
+  removeInsertSlot: (id: string, slotId: string) => void
+  setInsertSlotTarget: (id: string, slotId: string, targetSlotName: string) => void
+  moveInsertSlotRank: (id: string, slotId: string, direction: 1 | -1) => void
 }) {
   const islandCount = findIslands(obj.mesh).length
-  if (islandCount < 2) return null
+  const insertSlots = obj.insertSlots ?? []
+  if (islandCount < 1 && insertSlots.length === 0) return null
 
-  const order = Array.from({ length: islandCount }, (_, i) => i).sort(
-    (a, b) => (obj.islandZOrders?.[b] ?? b) - (obj.islandZOrders?.[a] ?? a),
-  )
+  type Entry = { kind: 'island'; islandIdx: number; rank: number } | { kind: 'slot'; slot: InsertSlot; rank: number }
+  const entries: Entry[] = [
+    ...Array.from({ length: islandCount }, (_, i) => ({ kind: 'island' as const, islandIdx: i, rank: obj.islandZOrders?.[i] ?? i })),
+    ...insertSlots.map((slot) => ({ kind: 'slot' as const, slot, rank: slot.rank })),
+  ]
+  entries.sort((a, b) => b.rank - a.rank)
   const showNames = obj.showIslandNames ?? false
+  const availableSlotNames = Array.from(new Set(objects.map((o) => o.slotName).filter((n): n is string => !!n)))
 
   return (
     <>
@@ -116,49 +132,85 @@ function IslandZOrderSection({
           🏷 名前を表示
         </button>
       </div>
-      {order.map((islandIdx, pos) => {
-        const visible = obj.islandVisible?.[islandIdx] ?? true
+      {entries.map((entry, pos) => {
+        if (entry.kind === 'island') {
+          const islandIdx = entry.islandIdx
+          const visible = obj.islandVisible?.[islandIdx] ?? true
+          return (
+            <div className="prop-row" key={`island-${islandIdx}`}>
+              <button
+                className="icon-btn"
+                title="このアイランドを選択（編集モードに切り替えます）"
+                onClick={() => selectIsland(islandIdx)}
+              >
+                <IslandSelectIcon size={18} />
+              </button>
+              <button
+                className="icon-btn"
+                title={visible ? 'このアイランドを非表示' : 'このアイランドを表示'}
+                onClick={() => toggleIslandVisible(obj.id, islandIdx)}
+              >
+                {visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
+              </button>
+              <input
+                className="layer-name"
+                value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
+                onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
+                onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
+                onKeyDown={(e) => {
+                  // ignore the Enter that confirms an IME conversion (isComposing) — only a "real"
+                  // Enter after that should commit the name and blur, otherwise blurring mid-
+                  // composition lets the IME re-commit the same text a second time
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
+                }}
+              />
+              <button className="zorder-btn" disabled={pos === 0} onClick={() => moveIslandZOrder(obj.id, islandIdx, 1)}>
+                ▲
+              </button>
+              <button
+                className="zorder-btn"
+                disabled={pos === entries.length - 1}
+                onClick={() => moveIslandZOrder(obj.id, islandIdx, -1)}
+              >
+                ▼
+              </button>
+            </div>
+          )
+        }
+        const slot = entry.slot
         return (
-          <div className="prop-row" key={islandIdx}>
-            <button
-              className="icon-btn"
-              title="このアイランドを選択（編集モードに切り替えます）"
-              onClick={() => selectIsland(islandIdx)}
+          <div className="prop-row" key={`slot-${slot.id}`}>
+            <span className="insert-slot-label">INSERT OBJECT:</span>
+            <select
+              value={slot.targetSlotName}
+              onChange={(e) => setInsertSlotTarget(obj.id, slot.id, e.target.value)}
             >
-              <IslandSelectIcon size={18} />
-            </button>
-            <button
-              className="icon-btn"
-              title={visible ? 'このアイランドを非表示' : 'このアイランドを表示'}
-              onClick={() => toggleIslandVisible(obj.id, islandIdx)}
-            >
-              {visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
-            </button>
-            <input
-              className="layer-name"
-              value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
-              onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
-              onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
-              onKeyDown={(e) => {
-                // ignore the Enter that confirms an IME conversion (isComposing) — only a "real"
-                // Enter after that should commit the name and blur, otherwise blurring mid-
-                // composition lets the IME re-commit the same text a second time
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
-              }}
-            />
-            <button className="zorder-btn" disabled={pos === 0} onClick={() => moveIslandZOrder(obj.id, islandIdx, 1)}>
+              <option value="">EMPTY</option>
+              {availableSlotNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button className="zorder-btn" disabled={pos === 0} onClick={() => moveInsertSlotRank(obj.id, slot.id, 1)}>
               ▲
             </button>
             <button
               className="zorder-btn"
-              disabled={pos === order.length - 1}
-              onClick={() => moveIslandZOrder(obj.id, islandIdx, -1)}
+              disabled={pos === entries.length - 1}
+              onClick={() => moveInsertSlotRank(obj.id, slot.id, -1)}
             >
               ▼
+            </button>
+            <button className="icon-btn" title="このスロットを削除" onClick={() => removeInsertSlot(obj.id, slot.id)}>
+              🗑
             </button>
           </div>
         )
       })}
+      <div className="prop-row">
+        <button onClick={() => addInsertSlot(obj.id)}>+ INSERT OBJECTを追加</button>
+      </div>
     </>
   )
 }
@@ -181,6 +233,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const clearIslandNameIfEmpty = useSceneStore((s) => s.clearIslandNameIfEmpty)
   const setShowIslandNames = useSceneStore((s) => s.setShowIslandNames)
   const toggleIslandVisible = useSceneStore((s) => s.toggleIslandVisible)
+  const setSlotName = useSceneStore((s) => s.setSlotName)
+  const addInsertSlot = useSceneStore((s) => s.addInsertSlot)
+  const removeInsertSlot = useSceneStore((s) => s.removeInsertSlot)
+  const setInsertSlotTarget = useSceneStore((s) => s.setInsertSlotTarget)
+  const moveInsertSlotRank = useSceneStore((s) => s.moveInsertSlotRank)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
@@ -231,6 +288,17 @@ export default function Properties({ style }: { style?: CSSProperties }) {
         <div className="empty-hint">オブジェクトが選択されていません</div>
       ) : (
         <div className="prop-body">
+          <div className="prop-section">スロット名</div>
+          <div className="prop-row">
+            <input
+              className="layer-name"
+              placeholder="(なし)"
+              title="他のオブジェクトのINSERT OBJECTスロットから参照できる、シーン内で一意の名前。同じ名前を別のオブジェクトに設定すると、前の持ち主からは外れます"
+              value={obj.slotName ?? ''}
+              onChange={(e) => setSlotName(obj.id, e.target.value)}
+            />
+          </div>
+
           <div className="prop-section">階層</div>
           {obj.parentId !== null ? (
             <>
@@ -315,12 +383,17 @@ export default function Properties({ style }: { style?: CSSProperties }) {
           {mode === 'edit' && obj.kind !== 'empty' && (
             <IslandZOrderSection
               obj={obj}
+              objects={objects}
               moveIslandZOrder={moveIslandZOrder}
               selectIsland={selectIsland}
               setIslandName={setIslandName}
               clearIslandNameIfEmpty={clearIslandNameIfEmpty}
               setShowIslandNames={setShowIslandNames}
               toggleIslandVisible={toggleIslandVisible}
+              addInsertSlot={addInsertSlot}
+              removeInsertSlot={removeInsertSlot}
+              setInsertSlotTarget={setInsertSlotTarget}
+              moveInsertSlotRank={moveInsertSlotRank}
             />
           )}
 
