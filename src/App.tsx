@@ -230,7 +230,7 @@ export default function App() {
           <Properties style={{ height: propertiesHeight }} />
         </div>
         {awaitingMerge && (
-          <div className="merge-hint">マージ: 1=最初の頂点　2=最後の頂点　3=中間位置　(Escまたは右クリックでキャンセル)</div>
+          <div className="merge-hint">Merge: 1=first vertex 2=last vertex 3=midpoint (Esc or right-click to cancel)</div>
         )}
       </div>
     </div>

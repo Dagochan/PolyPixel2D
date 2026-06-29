@@ -20,10 +20,10 @@ export function parseProjectFile(json: string): ProjectFile {
   try {
     data = JSON.parse(json)
   } catch {
-    throw new Error('JSONとして読み込めませんでした。')
+    throw new Error('Could not parse the file as JSON.')
   }
   if (typeof data !== 'object' || data === null || !Array.isArray((data as ProjectFile).objects)) {
-    throw new Error('不正なファイル形式です。')
+    throw new Error('Invalid file format.')
   }
   const d = data as Partial<ProjectFile>
   return {

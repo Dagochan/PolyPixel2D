@@ -119,17 +119,17 @@ function IslandZOrderSection({
 
   return (
     <>
-      <div className="prop-section">アイランド（重なり順）</div>
+      <div className="prop-section">Islands (Z-order)</div>
       <div className="prop-row prop-static">
-        <span>前面が上、背面が下。左のボタンで選択、名前は編集可能</span>
+        <span>Front on top, back on bottom. Select with the left button, names are editable</span>
       </div>
       <div className="prop-row">
         <button
           className={'icon-btn' + (showNames ? ' active' : '')}
-          title="ビューポートに全アイランドの名前を表示"
+          title="Show all island names in the viewport"
           onClick={() => setShowIslandNames(obj.id, !showNames)}
         >
-          🏷 名前を表示
+          🏷 Show names
         </button>
       </div>
       {entries.map((entry, pos) => {
@@ -140,21 +140,21 @@ function IslandZOrderSection({
             <div className="prop-row" key={`island-${islandIdx}`}>
               <button
                 className="icon-btn"
-                title="このアイランドを選択（編集モードに切り替えます）"
+                title="Select this island (switches to edit mode)"
                 onClick={() => selectIsland(islandIdx)}
               >
                 <IslandSelectIcon size={18} />
               </button>
               <button
                 className="icon-btn"
-                title={visible ? 'このアイランドを非表示' : 'このアイランドを表示'}
+                title={visible ? 'Hide this island' : 'Show this island'}
                 onClick={() => toggleIslandVisible(obj.id, islandIdx)}
               >
                 {visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
               </button>
               <input
                 className="layer-name"
-                value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
+                value={obj.islandNames?.[islandIdx] ?? `Island ${islandIdx + 1}`}
                 onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
                 onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
                 onKeyDown={(e) => {
@@ -202,14 +202,14 @@ function IslandZOrderSection({
             >
               ▼
             </button>
-            <button className="icon-btn" title="このスロットを削除" onClick={() => removeInsertSlot(obj.id, slot.id)}>
+            <button className="icon-btn" title="Remove this slot" onClick={() => removeInsertSlot(obj.id, slot.id)}>
               🗑
             </button>
           </div>
         )
       })}
       <div className="prop-row">
-        <button onClick={() => addInsertSlot(obj.id)}>+ INSERT OBJECTを追加</button>
+        <button onClick={() => addInsertSlot(obj.id)}>+ Add INSERT OBJECT</button>
       </div>
     </>
   )
@@ -283,30 +283,30 @@ export default function Properties({ style }: { style?: CSSProperties }) {
 
   return (
     <div className="panel properties" style={style}>
-      <div className="panel-title">プロパティ</div>
+      <div className="panel-title">Properties</div>
       {!obj ? (
-        <div className="empty-hint">オブジェクトが選択されていません</div>
+        <div className="empty-hint">No object selected</div>
       ) : (
         <div className="prop-body">
-          <div className="prop-section">スロット名</div>
+          <div className="prop-section">Slot name</div>
           <div className="prop-row">
             <input
               className="layer-name"
-              placeholder="(なし)"
-              title="他のオブジェクトのINSERT OBJECTスロットから参照できる、シーン内で一意の名前。同じ名前を別のオブジェクトに設定すると、前の持ち主からは外れます"
+              placeholder="(none)"
+              title="A name unique within the scene that other objects' INSERT OBJECT slots can reference. Setting the same name on another object removes it from the previous owner"
               value={obj.slotName ?? ''}
               onChange={(e) => setSlotName(obj.id, e.target.value)}
             />
           </div>
 
-          <div className="prop-section">階層</div>
+          <div className="prop-section">Hierarchy</div>
           {obj.parentId !== null ? (
             <>
               <div className="prop-row prop-static">
-                <span>親: {objects.find((o) => o.id === obj.parentId)?.name ?? '(不明)'}</span>
+                <span>Parent: {objects.find((o) => o.id === obj.parentId)?.name ?? '(unknown)'}</span>
               </div>
               <div className="prop-row">
-                <button onClick={() => setParent(obj.id, null)}>親を解除</button>
+                <button onClick={() => setParent(obj.id, null)}>Unparent</button>
               </div>
               <div className="prop-row">
                 <label className="uv-hint uv-density-toggle">
@@ -315,26 +315,26 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                     checked={obj.connected}
                     onChange={(e) => setConnected(obj.id, e.target.checked)}
                   />
-                  親のTailに接続
+                  Connect to parent's Tail
                 </label>
               </div>
             </>
           ) : (
             <div className="prop-row prop-static">
-              <span>親オブジェクトなし（アウトライナーでドラッグして設定）</span>
+              <span>No parent object (drag in the outliner to set one)</span>
             </div>
           )}
 
-          <div className="prop-section">トランスフォーム</div>
+          <div className="prop-section">Transform</div>
           <div className="prop-row">
             <NumberField
-              label="位置 X"
+              label="Position X"
               value={obj.transform.x}
               disabled={obj.connected && obj.parentId !== null}
               onChange={(v) => setTransform(obj.id, { x: v })}
             />
             <NumberField
-              label="位置 Y"
+              label="Position Y"
               value={obj.transform.y}
               disabled={obj.connected && obj.parentId !== null}
               onChange={(v) => setTransform(obj.id, { y: v })}
@@ -342,27 +342,27 @@ export default function Properties({ style }: { style?: CSSProperties }) {
           </div>
           <div className="prop-row">
             <NumberField
-              label="回転(°)"
+              label="Rotation (°)"
               value={(obj.transform.rotation * 180) / Math.PI}
               onChange={(v) => setTransform(obj.id, { rotation: (v * Math.PI) / 180 })}
             />
           </div>
           <div className="prop-row">
             <NumberField
-              label="スケール X"
+              label="Scale X"
               value={obj.transform.scaleX}
               step={0.1}
               onChange={(v) => setTransform(obj.id, { scaleX: v })}
             />
             <NumberField
-              label="スケール Y"
+              label="Scale Y"
               value={obj.transform.scaleY}
               step={0.1}
               onChange={(v) => setTransform(obj.id, { scaleY: v })}
             />
           </div>
 
-          <div className="prop-section">Head（ローカル座標）</div>
+          <div className="prop-section">Head (local coordinates)</div>
           <div className="prop-row">
             <NumberField
               label="Head X"
@@ -399,14 +399,14 @@ export default function Properties({ style }: { style?: CSSProperties }) {
 
           {obj.kind === 'empty' ? (
             <div className="prop-row prop-static">
-              <span>Empty（メッシュなし、階層用のダミーオブジェクト）</span>
+              <span>Empty (no mesh, a dummy object for hierarchy)</span>
             </div>
           ) : (
             <>
-              <div className="prop-section">マテリアル</div>
+              <div className="prop-section">Material</div>
               <div className="prop-row">
                 <label className="prop-field">
-                  <span>色{obj.material.textureUrl ? '（テクスチャに乗算）' : ''}</span>
+                  <span>Color{obj.material.textureUrl ? ' (multiplied with texture)' : ''}</span>
                   <input
                     type="color"
                     value={obj.material.color}
@@ -416,7 +416,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               </div>
               {obj.material.textureUrl && (
                 <div className="prop-row">
-                  <img src={obj.material.textureUrl} alt="テクスチャ" className="texture-thumb" />
+                  <img src={obj.material.textureUrl} alt="Texture" className="texture-thumb" />
                 </div>
               )}
               <div className="prop-row">
@@ -431,14 +431,14 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                     e.target.value = ''
                   }}
                 />
-                <button onClick={() => textureInputRef.current?.click()}>テクスチャを設定</button>
+                <button onClick={() => textureInputRef.current?.click()}>Set texture</button>
                 {obj.material.textureUrl && (
                   <>
-                    <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
+                    <button onClick={() => setMaterialTexture(obj.id, undefined)}>Remove texture</button>
                     <button
                       onClick={() => downloadDataUrl(obj.material.textureUrl!, `${obj.name}_texture.png`)}
                     >
-                      テクスチャを書き出し
+                      Export texture
                     </button>
                   </>
                 )}
@@ -452,27 +452,27 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                     setUvEditorOpen(true)
                   }}
                 >
-                  UVを編集...
+                  Edit UVs...
                 </button>
                 <button
-                  title="現在の形状でUVを再計算します。普段は頂点を動かしてもUVは固定されたままテクスチャが伸びますが、大きく作り直した後など、改めて展開し直したい時に使います"
+                  title="Recompute UVs from the current shape. Normally moving vertices keeps UVs fixed and stretches the texture instead — use this after a major reshape when you want to re-unwrap"
                   onClick={() => reunwrapUVs(obj.id)}
                 >
-                  UVを再展開
+                  Re-unwrap UVs
                 </button>
                 {referenceImage && (
                   <button
-                    title="下絵をこのオブジェクトのUVレイアウトに合わせてテクスチャとして書き出し、そのまま貼り付けます"
+                    title="Bake the reference image into a texture matching this object's UV layout, and apply it directly"
                     disabled={baking}
                     onClick={() => handleBakeReference(obj)}
                   >
-                    {baking ? 'ベイク中…' : '下絵をベイク'}
+                    {baking ? 'Baking…' : 'Bake reference image'}
                   </button>
                 )}
               </div>
               <div className="prop-row">
                 <label className="prop-field">
-                  <span>解像度</span>
+                  <span>Resolution</span>
                   <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
                     {UV_RESOLUTIONS.map((r) => (
                       <option key={r} value={r}>
@@ -481,13 +481,13 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                     ))}
                   </select>
                 </label>
-                <button onClick={() => exportUvMap(obj, uvResolution)}>UVマップを書き出し</button>
+                <button onClick={() => exportUvMap(obj, uvResolution)}>Export UV map</button>
               </div>
 
-              <div className="prop-section">メッシュ</div>
+              <div className="prop-section">Mesh</div>
               <div className="prop-row prop-static">
-                <span>頂点数: {obj.mesh.vertices.length}</span>
-                <span>面数: {obj.mesh.faces.length}</span>
+                <span>Vertices: {obj.mesh.vertices.length}</span>
+                <span>Faces: {obj.mesh.faces.length}</span>
               </div>
             </>
           )}
@@ -507,9 +507,9 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               onPointerMove={handleModalHeaderPointerMove}
               onPointerUp={handleModalHeaderPointerUp}
             >
-              <span>UVエディタ — {obj.name}</span>
+              <span>UV Editor — {obj.name}</span>
               <button onPointerDown={(e) => e.stopPropagation()} onClick={() => setUvEditorOpen(false)}>
-                閉じる
+                Close
               </button>
             </div>
             <UvEditor
@@ -525,11 +525,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 checked={matchTexelDensity}
                 onChange={(e) => setMatchTexelDensity(e.target.checked)}
               />
-              テクセル密度を一致させる（1つの島をスケールすると他も比率を保って追従）
+              Match texel density (scaling one island keeps the others' ratio in sync)
             </label>
             {obj.material.textureUrl && (
               <label className="uv-hint uv-density-toggle">
-                テクスチャ不透明度
+                Texture opacity
                 <input
                   type="range"
                   min={0}
@@ -540,7 +540,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 />
               </label>
             )}
-            <div className="uv-hint">ドラッグで移動、右上の角を引いて拡大縮小、左下の鍵アイコンで密度一致の対象から除外</div>
+            <div className="uv-hint">Drag to move, pull the top-right corner to scale, the bottom-left lock icon excludes it from density matching</div>
           </div>
         </div>
       )}

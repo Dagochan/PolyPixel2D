@@ -36,14 +36,14 @@ export default function ToolPane() {
       <div className="tool-pane-group mode-group">
         <button
           className={mode === 'object' ? 'active' : ''}
-          title="オブジェクトモード"
+          title="Object mode"
           onClick={() => setMode('object')}
         >
           <ObjectModeIcon />
         </button>
         <button
           className={mode === 'edit' ? 'active' : ''}
-          title="編集モード"
+          title="Edit mode"
           onClick={() => setMode('edit')}
         >
           <EditModeIcon />
@@ -51,7 +51,7 @@ export default function ToolPane() {
         <button
           className={mode === 'pivot' ? 'active' : ''}
           disabled={!selectedObj}
-          title="ピボットモード（Head/Tailの位置をドラッグで編集）"
+          title="Pivot mode (drag to edit the Head/Tail position)"
           onClick={() => setMode('pivot')}
         >
           <PivotModeIcon />
@@ -63,21 +63,21 @@ export default function ToolPane() {
           <div className="tool-pane-group">
             <button
               className={editElementType === 'vertex' ? 'active' : ''}
-              title="頂点"
+              title="Vertex"
               onClick={() => setEditElementType('vertex')}
             >
               <VertexIcon />
             </button>
             <button
               className={editElementType === 'edge' ? 'active' : ''}
-              title="辺"
+              title="Edge"
               onClick={() => setEditElementType('edge')}
             >
               <EdgeIcon />
             </button>
             <button
               className={editElementType === 'face' ? 'active' : ''}
-              title="面"
+              title="Face"
               onClick={() => setEditElementType('face')}
             >
               <FaceIcon />
@@ -88,7 +88,7 @@ export default function ToolPane() {
             <button
               className={activeTool === 'loopcut' ? 'active' : ''}
               disabled={!selectedObj}
-              title="ループカット（四角面が連なっている部分にカーソルを合わせてください）"
+              title="Loop cut (hover over a run of connected quad faces)"
               onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
             >
               <LoopCutIcon />
@@ -96,7 +96,7 @@ export default function ToolPane() {
             <button
               className={activeTool === 'ringcut' ? 'active' : ''}
               disabled={!selectedObj}
-              title="リングカット（Cmd/Ctrl+Shift+R。三角形ファン、例: 円プリミティブの放射状の辺にカーソルを合わせてください）"
+              title="Ring cut (Cmd/Ctrl+Shift+R. Hover over a radial edge of a triangle fan, e.g. a circle primitive)"
               onClick={() => setActiveTool(activeTool === 'ringcut' ? 'select' : 'ringcut')}
             >
               <RingCutIcon />
@@ -104,7 +104,7 @@ export default function ToolPane() {
             <button
               className={activeTool === 'knife' ? 'active' : ''}
               disabled={!selectedObj}
-              title="ナイフ（辺/頂点をクリックして連結。Enter/ダブルクリックで確定、Esc/右クリックでパスをキャンセル）"
+              title="Knife (click edges/vertices to connect them. Enter/double-click to confirm, Esc/right-click to cancel the path)"
               onClick={() => setActiveTool(activeTool === 'knife' ? 'select' : 'knife')}
             >
               <KnifeIcon />
@@ -115,7 +115,7 @@ export default function ToolPane() {
                 (editElementType === 'vertex' && selectedVerticesCount < 2) ||
                 editElementType === 'face'
               }
-              title="選択した辺（または頂点間の既存の辺）を押し出します"
+              title="Extrude the selected edges (or the existing edge between selected vertices)"
               onClick={() => extrudeSelection()}
             >
               <ExtrudeIcon />
@@ -126,7 +126,7 @@ export default function ToolPane() {
                 (editElementType === 'vertex' && selectedVerticesCount === 0) ||
                 editElementType === 'face'
               }
-              title="選択した頂点/辺をディゾルブ（周囲の面を1つに結合してから削除。Ctrl+X）"
+              title="Dissolve the selected vertices/edges (merges the surrounding faces into one, then removes it. Ctrl+X)"
               onClick={() => dissolveSelection()}
             >
               <DissolveIcon />

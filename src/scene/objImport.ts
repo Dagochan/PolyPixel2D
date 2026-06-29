@@ -31,7 +31,7 @@ export function parseObjToMesh(text: string): Mesh {
   }
 
   if (raw.length === 0 || faces.length === 0) {
-    throw new Error('OBJファイルから頂点または面を読み取れませんでした。')
+    throw new Error('Could not read any vertices or faces from the OBJ file.')
   }
 
   const range = (vals: number[]) => Math.max(...vals) - Math.min(...vals)

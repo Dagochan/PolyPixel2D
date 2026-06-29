@@ -83,13 +83,13 @@ export default function Outliner() {
         onDragEnd={() => setDragOver(null)}
         onClick={() => selectObject(obj.id)}
       >
-        <span className="drag-handle" title="ドラッグして並び替え/ペアレント">
+        <span className="drag-handle" title="Drag to reorder/reparent">
           ⠿
         </span>
         {children.length > 0 ? (
           <button
             className="icon-btn collapse-toggle"
-            title={isCollapsed ? '展開' : '折りたたむ'}
+            title={isCollapsed ? 'Expand' : 'Collapse'}
             onClick={(e) => {
               e.stopPropagation()
               toggleCollapsed(obj.id)
@@ -100,7 +100,7 @@ export default function Outliner() {
         ) : (
           <span className="collapse-toggle-spacer" />
         )}
-        {obj.kind === 'empty' && <span title="Empty（メッシュなし）">✛</span>}
+        {obj.kind === 'empty' && <span title="Empty (no mesh)">✛</span>}
         <input
           className="layer-name"
           value={obj.name}
@@ -110,7 +110,7 @@ export default function Outliner() {
         {obj.parentId !== null && (
           <button
             className="icon-btn"
-            title="親を解除"
+            title="Unparent"
             onClick={(e) => {
               e.stopPropagation()
               setParent(obj.id, null)
@@ -121,7 +121,7 @@ export default function Outliner() {
         )}
         <button
           className="icon-btn"
-          title="表示切替"
+          title="Toggle visibility"
           onClick={(e) => {
             e.stopPropagation()
             toggleVisibility(obj.id)
@@ -131,7 +131,7 @@ export default function Outliner() {
         </button>
         <button
           className="icon-btn"
-          title="削除"
+          title="Delete"
           onClick={(e) => {
             e.stopPropagation()
             removeObject(obj.id)
@@ -151,7 +151,7 @@ export default function Outliner() {
 
   return (
     <div className="panel outliner">
-      <div className="panel-title">アウトライナー</div>
+      <div className="panel-title">Outliner</div>
       <ul
         className="layer-list"
         onDragOver={(e) => e.preventDefault()}
@@ -164,7 +164,7 @@ export default function Outliner() {
         }}
       >
         {roots.map((obj) => renderRow(obj, 0))}
-        {roots.length === 0 && <li className="empty-hint">オブジェクトがありません</li>}
+        {roots.length === 0 && <li className="empty-hint">No objects</li>}
       </ul>
     </div>
   )

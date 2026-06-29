@@ -979,7 +979,7 @@ export default function Viewport() {
         const labelPxToWorld = 1 / viewRef.current.zoom
         islands.forEach((island, islandIdx) => {
           if (obj.islandVisible?.[islandIdx] === false) return
-          const label = obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`
+          const label = obj.islandNames?.[islandIdx] ?? `Island ${islandIdx + 1}`
           const localCenter = localBoundsCenter(obj.mesh, island.vertices)
           const worldCenter = applyTransform(localCenter, worldTransform)
           // offset in screen space (not local mesh space) so the label stays legibly "below"

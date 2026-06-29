@@ -137,9 +137,9 @@ export default function PixelPreview() {
         onPointerMove={handleHeaderPointerMove}
         onPointerUp={handleHeaderPointerUp}
       >
-        <span>ピクセルプレビュー</span>
+        <span>Pixel preview</span>
         <label onPointerDown={(e) => e.stopPropagation()}>
-          解像度
+          Resolution
           <input
             type="number"
             min={16}
@@ -151,7 +151,7 @@ export default function PixelPreview() {
         </label>
         <button
           className="icon-btn"
-          title="閉じる"
+          title="Close"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => setEnabled(false)}
         >
@@ -165,10 +165,10 @@ export default function PixelPreview() {
             checked={paletteEnabled}
             onChange={(e) => setPaletteEnabled(e.target.checked)}
           />
-          パレット量子化
+          Palette quantization
         </label>
         <label>
-          色数
+          Colors
           <input
             type="number"
             min={2}
