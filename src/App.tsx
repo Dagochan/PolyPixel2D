@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import Viewport from './viewport/Viewport'
+import PixelPreview from './viewport/PixelPreview'
 import Outliner from './panels/Outliner'
 import Properties from './panels/Properties'
 import Toolbar from './panels/Toolbar'
@@ -15,9 +16,10 @@ export default function App() {
   const [awaitingMerge, setAwaitingMerge] = useState(false)
   const awaitingMergeRef = useRef(false)
   const [sidebarWidth, setSidebarWidth] = useState(240)
-  const [propertiesHeight, setPropertiesHeight] = useState(260)
+  const [propertiesHeight, setPropertiesHeight] = useState(540)
   const resizingRef = useRef(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
+  const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -220,6 +222,7 @@ export default function App() {
       <div className="main-area">
         <ToolPane />
         <Viewport />
+        {pixelPreviewEnabled && <PixelPreview />}
         <div className="sidebar-resizer" onPointerDown={startSidebarResize} />
         <div className="sidebar" ref={sidebarRef} style={{ width: sidebarWidth }}>
           <Outliner />

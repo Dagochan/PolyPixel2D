@@ -25,6 +25,16 @@ export default function Outliner() {
   const setParent = useSceneStore((s) => s.setParent)
   const reorder = useSceneStore((s) => s.reorder)
   const [dragOver, setDragOver] = useState<{ id: string; zone: DropZone } | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  const toggleCollapsed = (id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const childrenOf = (parentId: string | null) =>
     objects.filter((o) => o.parentId === parentId).sort((a, b) => b.zOrder - a.zOrder)
@@ -50,7 +60,10 @@ export default function Outliner() {
     }
   }
 
-  const renderRow = (obj: SceneObject, depth: number) => (
+  const renderRow = (obj: SceneObject, depth: number) => {
+    const children = childrenOf(obj.id)
+    const isCollapsed = collapsed.has(obj.id)
+    return (
     <li key={obj.id}>
       <div
         className={
@@ -73,6 +86,20 @@ export default function Outliner() {
         <span className="drag-handle" title="ドラッグして並び替え/ペアレント">
           ⠿
         </span>
+        {children.length > 0 ? (
+          <button
+            className="icon-btn collapse-toggle"
+            title={isCollapsed ? '展開' : '折りたたむ'}
+            onClick={(e) => {
+              e.stopPropagation()
+              toggleCollapsed(obj.id)
+            }}
+          >
+            {isCollapsed ? '▶' : '▼'}
+          </button>
+        ) : (
+          <span className="collapse-toggle-spacer" />
+        )}
         {obj.kind === 'empty' && <span title="Empty（メッシュなし）">✛</span>}
         <input
           className="layer-name"
@@ -113,11 +140,12 @@ export default function Outliner() {
           🗑
         </button>
       </div>
-      {childrenOf(obj.id).length > 0 && (
-        <ul className="layer-list-nested">{childrenOf(obj.id).map((child) => renderRow(child, depth + 1))}</ul>
+      {children.length > 0 && !isCollapsed && (
+        <ul className="layer-list-nested">{children.map((child) => renderRow(child, depth + 1))}</ul>
       )}
     </li>
-  )
+    )
+  }
 
   const roots = childrenOf(null)
 

@@ -99,6 +99,15 @@ interface SceneState {
   /** Persistent "Grid Snap" toggle (Blender-style) — while on, moves snap to the grid by default;
    *  holding Ctrl temporarily inverts it (off while held), and vice versa while this is off. */
   gridSnapEnabled: boolean
+  /** Whether the pixel preview panel (low-res, nearest-neighbor render simulating the final
+   *  dot-art output) is shown. */
+  pixelPreviewEnabled: boolean
+  /** Target resolution (in "pixels") of the pixel preview's render — the long edge of the
+   *  framed scene is scaled to fit this, the short edge follows the aspect ratio. */
+  pixelPreviewResolution: number
+  /** Drag offset (from its default docked position) of the pixel preview panel, persisted across
+   *  hide/show so reopening it doesn't reset where the user dragged it. */
+  pixelPreviewOffset: { x: number; y: number }
 
   beginChange: () => void
   undo: () => void
@@ -121,6 +130,9 @@ interface SceneState {
   setMeshOpacity: (opacity: number) => void
   setGridSubdivisions: (n: number) => void
   setGridSnapEnabled: (enabled: boolean) => void
+  setPixelPreviewEnabled: (enabled: boolean) => void
+  setPixelPreviewResolution: (n: number) => void
+  setPixelPreviewOffset: (offset: { x: number; y: number }) => void
   /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
   loadProject: (project: { objects: SceneObject[]; referenceImage: ReferenceImage | null; meshOpacity: number }) => void
   selectObject: (id: string | null) => void
@@ -268,6 +280,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   meshOpacity: 1,
   gridSubdivisions: 10,
   gridSnapEnabled: false,
+  pixelPreviewEnabled: false,
+  pixelPreviewResolution: 64,
+  pixelPreviewOffset: { x: 0, y: 0 },
 
   beginChange: () =>
     set((s) => ({
@@ -414,6 +429,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setMeshOpacity: (opacity) => set({ meshOpacity: Math.max(0, Math.min(1, opacity)) }),
   setGridSubdivisions: (n) => set({ gridSubdivisions: Math.max(1, Math.min(100, Math.round(n))) }),
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
+  setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
+  setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(512, Math.round(n / 8) * 8)) }),
+  setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
 
   loadProject: (project) => {
     bumpNextIdPast(project.objects)
@@ -472,7 +490,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setMaterialTexture: (id, textureUrl) => {
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === id ? { ...o, material: { ...o.material, textureUrl } } : o)),
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        // the default tint multiplies the texture and visibly discolors it — switch to white
+        // the first time a texture is applied, but leave an intentionally customized color alone
+        const color = textureUrl && o.material.color === DEFAULT_MATERIAL_COLOR ? '#FFFFFF' : o.material.color
+        return { ...o, material: { ...o.material, color, textureUrl } }
+      }),
     }))
   },
 

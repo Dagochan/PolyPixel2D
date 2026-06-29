@@ -35,6 +35,8 @@ export default function Toolbar() {
   const setActiveTool = useSceneStore((s) => s.setActiveTool)
   const gizmoOrientation = useSceneStore((s) => s.gizmoOrientation)
   const setGizmoOrientation = useSceneStore((s) => s.setGizmoOrientation)
+  const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
+  const setPixelPreviewEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
 
   const [segX, setSegX] = useState(1)
@@ -278,6 +280,16 @@ export default function Toolbar() {
       <div className="toolbar-group">
         <button title="メッシュを持たない、階層用のダミーオブジェクトを追加" onClick={() => addEmpty()}>
           ✛ Empty
+        </button>
+      </div>
+
+      <div className="toolbar-group">
+        <button
+          className={pixelPreviewEnabled ? 'active' : ''}
+          title="低解像度・ニアレストネイバーで最終的なドット絵の見た目をプレビューします"
+          onClick={() => setPixelPreviewEnabled(!pixelPreviewEnabled)}
+        >
+          ▦ ピクセルプレビュー
         </button>
       </div>
 

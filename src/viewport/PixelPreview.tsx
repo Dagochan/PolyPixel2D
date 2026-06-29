@@ -1,0 +1,205 @@
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import * as THREE from 'three'
+import { useSceneStore } from '../scene/store'
+import { triangulate } from '../scene/meshUtils'
+import { getWorldTransform, worldBounds } from '../scene/transformUtils'
+import { computeSplitUVIslands } from '../scene/uv'
+
+/** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
+ *  small WebGL canvas at the target dot-art resolution, auto-framed to fit all visible objects.
+ *  The canvas itself is kept at that low pixel resolution and stretched via CSS with
+ *  `image-rendering: pixelated`, so the browser's own upscaling gives the crisp nearest-neighbor
+ *  look — no render-target readback or second draw pass needed. */
+export default function PixelPreview() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const sceneRef = useRef(new THREE.Scene())
+  const resolution = useSceneStore((s) => s.pixelPreviewResolution)
+  const setResolution = useSceneStore((s) => s.setPixelPreviewResolution)
+  const setEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
+  const textureCacheRef = useRef(new Map<string, THREE.Texture>())
+  const textureLoaderRef = useRef(new THREE.TextureLoader())
+  const offset = useSceneStore((s) => s.pixelPreviewOffset)
+  const setOffset = useSceneStore((s) => s.setPixelPreviewOffset)
+  const dragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number } | null>(null)
+
+  const handleHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: offset.x, startOffsetY: offset.y }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const handleHeaderPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (!d) return
+    setOffset({ x: d.startOffsetX + (e.clientX - d.startX), y: d.startOffsetY + (e.clientY - d.startY) })
+  }
+  const handleHeaderPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    dragRef.current = null
+    e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  useEffect(() => {
+    const container = containerRef.current!
+    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
+    renderer.setPixelRatio(1)
+    container.appendChild(renderer.domElement)
+    rendererRef.current = renderer
+
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000)
+    camera.position.z = 100
+
+    let raf = 0
+    const tick = () => {
+      const { objects } = useSceneStore.getState()
+      const res = useSceneStore.getState().pixelPreviewResolution
+
+      // auto-fit: frame the bounding box of every visible, non-empty object's world-space mesh
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const obj of objects) {
+        if (!obj.visible || obj.kind === 'empty' || obj.mesh.length === 0) continue
+        const t = getWorldTransform(obj, objects)
+        const b = worldBounds(obj.mesh.vertices, t)
+        if (b.minX < minX) minX = b.minX
+        if (b.minY < minY) minY = b.minY
+        if (b.maxX > maxX) maxX = b.maxX
+        if (b.maxY > maxY) maxY = b.maxY
+      }
+      const hasContent = minX <= maxX
+      const w = hasContent ? maxX - minX : 1
+      const h = hasContent ? maxY - minY : 1
+      const cx = hasContent ? (minX + maxX) / 2 : 0
+      const cy = hasContent ? (minY + maxY) / 2 : 0
+      // 10% margin around the content so silhouettes don't touch the frame edge
+      const margin = 1.1
+      const longEdge = Math.max(w, h) * margin
+      const canvasW = w >= h ? res : Math.max(1, Math.round((res * w) / h))
+      const canvasH = h > w ? res : Math.max(1, Math.round((res * h) / w))
+
+      camera.left = cx - longEdge / 2
+      camera.right = cx + longEdge / 2
+      camera.top = cy + longEdge / 2
+      camera.bottom = cy - longEdge / 2
+      camera.updateProjectionMatrix()
+
+      renderer.setSize(canvasW, canvasH, false)
+      // display scale is fixed (independent of `res`) so the on-screen panel size doesn't
+      // jump around as the user tweaks the resolution input — only the crispness changes
+      const DISPLAY_MAX = 256
+      const displayScale = DISPLAY_MAX / Math.max(canvasW, canvasH)
+      renderer.domElement.style.width = `${canvasW * displayScale}px`
+      renderer.domElement.style.height = `${canvasH * displayScale}px`
+
+      rebuildScene(sceneRef.current, objects, textureCacheRef.current, textureLoaderRef.current)
+      renderer.render(sceneRef.current, camera)
+      raf = requestAnimationFrame(tick)
+    }
+    tick()
+
+    return () => {
+      cancelAnimationFrame(raf)
+      disposeSceneContents(sceneRef.current)
+      sceneRef.current.clear()
+      container.removeChild(renderer.domElement)
+      renderer.dispose()
+      for (const tex of textureCacheRef.current.values()) tex.dispose()
+      textureCacheRef.current.clear()
+    }
+  }, [])
+
+  return (
+    <div className="pixel-preview" style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}>
+      <div
+        className="pixel-preview-header"
+        onPointerDown={handleHeaderPointerDown}
+        onPointerMove={handleHeaderPointerMove}
+        onPointerUp={handleHeaderPointerUp}
+      >
+        <span>ピクセルプレビュー</span>
+        <label onPointerDown={(e) => e.stopPropagation()}>
+          解像度
+          <input
+            type="number"
+            min={16}
+            max={512}
+            step={8}
+            value={resolution}
+            onChange={(e) => setResolution(Number(e.target.value))}
+          />
+        </label>
+        <button
+          className="icon-btn"
+          title="閉じる"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setEnabled(false)}
+        >
+          ✕
+        </button>
+      </div>
+      <div className="pixel-preview-canvas" ref={containerRef} />
+    </div>
+  )
+}
+
+function disposeSceneContents(scene: THREE.Scene) {
+  scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    mesh.geometry?.dispose()
+    const material = mesh.material
+    if (Array.isArray(material)) material.forEach((m) => m.dispose())
+    else material?.dispose()
+  })
+}
+
+function rebuildScene(
+  scene: THREE.Scene,
+  objects: ReturnType<typeof useSceneStore.getState>['objects'],
+  textureCache: Map<string, THREE.Texture>,
+  textureLoader: THREE.TextureLoader,
+) {
+  disposeSceneContents(scene)
+  scene.clear()
+
+  const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
+  sorted.forEach((obj, depthIndex) => {
+    if (!obj.visible || obj.kind === 'empty') return
+    const worldTransform = getWorldTransform(obj, objects)
+    const { head: pivot } = worldTransform
+
+    let texture: THREE.Texture | undefined
+    if (obj.material.textureUrl) {
+      texture = textureCache.get(obj.material.textureUrl)
+      if (!texture) {
+        texture = textureLoader.load(obj.material.textureUrl)
+        texture.colorSpace = THREE.SRGBColorSpace
+        // sample texels as hard blocks rather than blending — matches the canvas's own
+        // nearest-neighbor upscale, so the dot-art look applies to fill color too, not just silhouette
+        texture.magFilter = THREE.NearestFilter
+        texture.minFilter = THREE.NearestFilter
+        textureCache.set(obj.material.textureUrl, texture)
+      }
+    }
+    const mat = new THREE.MeshBasicMaterial({
+      color: obj.material.color,
+      map: texture,
+      side: THREE.DoubleSide,
+    })
+
+    const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+    const islandOrder = perIsland
+      .map((_, i) => i)
+      .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
+    islandOrder.forEach((islandIdx, depthWithinObject) => {
+      if (obj.islandVisible?.[islandIdx] === false) return
+      const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
+      const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
+      geom.setIndex(triangulate(islandMesh))
+      const mesh = new THREE.Mesh(geom, mat)
+      mesh.position.set(worldTransform.x, worldTransform.y, depthIndex + depthWithinObject * 0.001)
+      mesh.rotation.z = worldTransform.rotation
+      mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
+      scene.add(mesh)
+    })
+  })
+}
