@@ -373,6 +373,9 @@ input[type='range']:disabled {
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .icon-btn.active {
@@ -482,3 +485,8 @@ input[type='range']:disabled {
 }
 
 .properties button:hover { filter: brightness(1.15); }
+
+.properties .zorder-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+}

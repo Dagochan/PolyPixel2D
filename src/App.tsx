@@ -65,7 +65,11 @@ export default function App() {
         const store = useSceneStore.getState()
         if (store.mode !== 'edit' || !store.selectedObjectId) return
         e.preventDefault()
-        store.setActiveTool(store.activeTool === 'loopcut' ? 'select' : 'loopcut')
+        if (e.shiftKey) {
+          store.setActiveTool(store.activeTool === 'ringcut' ? 'select' : 'ringcut')
+        } else {
+          store.setActiveTool(store.activeTool === 'loopcut' ? 'select' : 'loopcut')
+        }
         return
       }
 

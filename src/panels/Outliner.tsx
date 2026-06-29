@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
+import { VisibleTrueIcon, VisibleFalseIcon } from './icons'
 
 /** Where a drag-over point falls within a row: near the top/bottom edge reorders this object as
  *  a sibling immediately before/after the hovered row (adopting its parent); the middle band
@@ -99,7 +100,7 @@ export default function Outliner() {
             toggleVisibility(obj.id)
           }}
         >
-          {obj.visible ? '👁' : '🚫'}
+          {obj.visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
         </button>
         <button
           className="icon-btn"

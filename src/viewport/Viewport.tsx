@@ -14,6 +14,7 @@ import {
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { Mesh, SceneObject, Transform, Vec2 } from '../scene/types'
 import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
+import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 
@@ -77,6 +78,13 @@ interface LoopCutHover {
   edgeB: number
   t: number
   path: LoopPath
+}
+
+interface RingCutHover {
+  center: number
+  hoverRim: number
+  t: number
+  path: FanPath
 }
 
 /** Blender-style modal transform: started by R/S, follows the mouse with no button held,
@@ -146,6 +154,10 @@ export default function Viewport() {
   // Shift, while loop-cutting a single cut, snaps it to the exact edge midpoint instead of
   // following the cursor — there's no other way to land exactly on t=0.5 by hand
   const loopCutSnapMidRef = useRef(false)
+  const ringCutHoverRef = useRef<RingCutHover | null>(null)
+  const ringCutCountRef = useRef(1)
+  // same idea as loopCutSnapMidRef, for a single ring cut
+  const ringCutSnapMidRef = useRef(false)
   const knifePathRef = useRef<KnifeCutPoint[]>([])
   const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
   const elementModalRef = useRef<ElementModal | null>(null)
@@ -340,6 +352,22 @@ export default function Viewport() {
       let dy = world.y - modal.startWorld.y
       if (modal.axisLock === 'x') dy = 0
       if (modal.axisLock === 'y') dx = 0
+      // Grid Snap (toggle, Ctrl flips it) snaps the selection's pivot (median of its start
+      // positions) to an absolute grid intersection, then applies that exact offset to every
+      // vertex — keeps the selection rigid (no shape distortion) while still landing it precisely
+      // on the grid even when it started at an arbitrary, non-grid-aligned position (snapping the
+      // raw delta alone wouldn't: the result would just be grid-increments away from that same
+      // arbitrary offset).
+      if (shouldGridSnap(ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        const medianLocal = {
+          x: modal.startPositions.reduce((sum, p) => sum + p.x, 0) / modal.startPositions.length,
+          y: modal.startPositions.reduce((sum, p) => sum + p.y, 0) / modal.startPositions.length,
+        }
+        const medianWorld = applyTransform(medianLocal, worldTransform)
+        if (modal.axisLock !== 'y') dx = snapToIncrement(medianWorld.x + dx, inc) - medianWorld.x
+        if (modal.axisLock !== 'x') dy = snapToIncrement(medianWorld.y + dy, inc) - medianWorld.y
+      }
       // world-space delta -> local mesh space, undoing the object's rotation/scale
       const cos = Math.cos(-worldTransform.rotation)
       const sin = Math.sin(-worldTransform.rotation)
@@ -521,6 +549,14 @@ export default function Viewport() {
     return Array.from({ length: count }, (_, i) => (i + 1) / (count + 1))
   }
 
+  function ringCutTs(): number[] {
+    const count = ringCutCountRef.current
+    const hover = ringCutHoverRef.current
+    if (!hover) return []
+    if (count <= 1) return [ringCutSnapMidRef.current ? 0.5 : hover.t]
+    return Array.from({ length: count }, (_, i) => (i + 1) / (count + 1))
+  }
+
   useEffect(() => {
     const container = containerRef.current!
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
@@ -560,6 +596,12 @@ export default function Viewport() {
         loopCutCountRef.current = Math.max(1, Math.min(20, loopCutCountRef.current + delta))
         return
       }
+      // same idea for ring-cut, hovering a spoke of a triangle fan
+      if (ringCutHoverRef.current) {
+        const delta = e.deltaY < 0 ? 1 : -1
+        ringCutCountRef.current = Math.max(1, Math.min(20, ringCutCountRef.current + delta))
+        return
+      }
       const r = container.getBoundingClientRect()
       const before = screenToWorld(e.clientX, e.clientY, r, viewRef.current)
       const factor = Math.exp(-e.deltaY * 0.001)
@@ -579,6 +621,10 @@ export default function Viewport() {
       if (useSceneStore.getState().activeTool === 'loopcut') {
         useSceneStore.getState().setActiveTool('select')
         loopCutHoverRef.current = null
+      }
+      if (useSceneStore.getState().activeTool === 'ringcut') {
+        useSceneStore.getState().setActiveTool('select')
+        ringCutHoverRef.current = null
       }
       if (useSceneStore.getState().activeTool === 'knife') {
         // discard the in-progress path only — stay in knife mode (press K again to exit)
@@ -630,6 +676,7 @@ export default function Viewport() {
         return
       }
       updateLoopCutHover(e)
+      updateRingCutHover(e)
       updateKnifeHover(e)
       updatePlacePreview(e)
       handlePointerMove(e)
@@ -679,15 +726,21 @@ export default function Viewport() {
       if (e.key === 'Alt' && moveModal && moveModal.kind === 'vertex-slide') {
         updateElementModal(e.ctrlKey, true)
       }
-      // same idea for the loop-cut midpoint snap: take effect the instant Shift goes down,
-      // even if the cursor hasn't moved since
-      if (e.key === 'Shift') loopCutSnapMidRef.current = true
+      // same idea for the loop-cut/ring-cut midpoint snap: take effect the instant Shift goes
+      // down, even if the cursor hasn't moved since
+      if (e.key === 'Shift') {
+        loopCutSnapMidRef.current = true
+        ringCutSnapMidRef.current = true
+      }
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Alt' && elementModalRef.current?.kind === 'vertex-slide') {
         updateElementModal(e.ctrlKey, false)
       }
-      if (e.key === 'Shift') loopCutSnapMidRef.current = false
+      if (e.key === 'Shift') {
+        loopCutSnapMidRef.current = false
+        ringCutSnapMidRef.current = false
+      }
     }
     const onDblClick = () => {
       if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
@@ -796,6 +849,22 @@ export default function Viewport() {
         opacity: meshOpacity,
       })
 
+      // a hidden island (per-island eye toggle in the Properties panel) draws nothing at all —
+      // fill, wireframe, and edit-mode overlays alike — so collect its vertex/face indices once
+      // up front; islands partition the mesh, so any edge or face is entirely in one island or
+      // the other, never split between a hidden and a visible one
+      const hiddenVertices = new Set<number>()
+      const hiddenFaces = new Set<number>()
+      const islands = obj.showIslandNames || obj.islandVisible ? findIslands(obj.mesh) : null
+      if (islands && obj.islandVisible) {
+        islands.forEach((island, islandIdx) => {
+          if (obj.islandVisible?.[islandIdx] === false) {
+            island.vertices.forEach((v) => hiddenVertices.add(v))
+            island.faces.forEach((f) => hiddenFaces.add(f))
+          }
+        })
+      }
+
       // one draw call per island, stacked in rank order (`islandZOrders`, default = natural
       // island order) via a tiny per-island Z offset — small enough to never cross into a
       // neighboring object's `depthIndex` slot, which are spaced 1 apart.
@@ -804,6 +873,7 @@ export default function Viewport() {
         .map((_, i) => i)
         .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
       islandOrder.forEach((islandIdx, depthWithinObject) => {
+        if (obj.islandVisible?.[islandIdx] === false) return
         const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
         const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
         const geom = new THREE.BufferGeometry()
@@ -817,10 +887,10 @@ export default function Viewport() {
         group.add(mesh)
       })
 
-      if (obj.showIslandNames) {
-        const islands = findIslands(obj.mesh)
+      if (obj.showIslandNames && islands) {
         const labelPxToWorld = 1 / viewRef.current.zoom
         islands.forEach((island, islandIdx) => {
+          if (obj.islandVisible?.[islandIdx] === false) return
           const label = obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`
           const localCenter = localBoundsCenter(obj.mesh, island.vertices)
           const worldCenter = applyTransform(localCenter, worldTransform)
@@ -834,6 +904,7 @@ export default function Viewport() {
       const wireMesh = obj.mesh
       const edgePositions: number[] = []
       for (const [a, b] of getEdges(wireMesh)) {
+        if (hiddenVertices.has(a)) continue // an edge's endpoints are always in the same island
         const va = wireMesh.vertices[a]
         const vb = wireMesh.vertices[b]
         edgePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
@@ -851,6 +922,7 @@ export default function Viewport() {
       if (mode === 'edit' && isSelected) {
         if (editElementType === 'vertex') {
           obj.mesh.vertices.forEach((v, i) => {
+            if (hiddenVertices.has(i)) return
             const p = applyTransform(v, worldTransform)
             const selected = selectedVertices.has(i)
             // unselected dots are deliberately smaller than selected ones, to stay legible at
@@ -870,6 +942,7 @@ export default function Viewport() {
 
         if (editElementType === 'edge') {
           for (const [a, b] of getEdges(obj.mesh)) {
+            if (hiddenVertices.has(a)) continue
             if (!selectedEdges.has(edgeKey(a, b))) continue
             const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
             const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
@@ -912,6 +985,7 @@ export default function Viewport() {
 
         if (editElementType === 'face') {
           obj.mesh.faces.forEach((face, fi) => {
+            if (hiddenFaces.has(fi)) return
             if (!selectedFaces.has(fi)) return
             const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
             const positions = pts.flatMap((p) => [p.x, p.y, 0])
@@ -984,6 +1058,15 @@ export default function Viewport() {
       if (obj) {
         const hover = loopCutHoverRef.current
         for (const t of loopCutTs()) addLoopCutPreview(scene, obj, hover.path, t)
+      }
+    }
+
+    // ring-cut preview (one concentric ring per pending cut, around the hovered fan's center)
+    if (mode === 'edit' && activeTool === 'ringcut' && ringCutHoverRef.current) {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) {
+        const hover = ringCutHoverRef.current
+        for (const t of ringCutTs()) addRingCutPreview(scene, obj, hover.path, t)
       }
     }
 
@@ -1123,6 +1206,38 @@ export default function Viewport() {
     }
   }
 
+  function addRingCutPreview(scene: THREE.Scene, obj: SceneObject, path: FanPath, t: number) {
+    const { mesh } = obj
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const centerV = mesh.vertices[path.center]
+    const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+    })
+
+    const points = path.rim.map((r) => applyTransform(lerp(centerV, mesh.vertices[r], t), worldTransform))
+
+    const positions: number[] = []
+    const segCount = path.closed ? points.length : points.length - 1
+    for (let i = 0; i < segCount; i++) {
+      const j = path.closed ? (i + 1) % points.length : i + 1
+      positions.push(points[i].x, points[i].y, 0.7, points[j].x, points[j].y, 0.7)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    scene.add(
+      new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true })),
+    )
+
+    const pxToWorld = 1 / viewRef.current.zoom
+    for (const p of points) {
+      const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 12)
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
+      dot.position.set(p.x, p.y, 0.7)
+      scene.add(dot)
+    }
+  }
+
   /** Trace-over reference image, drawn behind the grid and every object. */
   function addReferenceImage(scene: THREE.Scene, ref: ReferenceImage) {
     let texture = textureCacheRef.current.get(ref.url)
@@ -1150,6 +1265,34 @@ export default function Viewport() {
     scene.add(mesh)
   }
 
+  /** The adaptive major grid spacing for the current zoom (world units) — lines stay ~60px apart
+   *  on screen regardless of zoom. Shared by `addGrid` and grid-snap, so snapping always matches
+   *  whatever spacing is actually on screen. */
+  function getMajorGridSpacing(zoom: number): number {
+    const targetPx = 60
+    const rawSpacing = targetPx / zoom
+    const pow = Math.pow(10, Math.floor(Math.log10(rawSpacing)))
+    const candidates = [1, 2, 5, 10].map((m) => m * pow)
+    return candidates.find((c) => c >= rawSpacing) ?? candidates[candidates.length - 1]
+  }
+
+  /** Grid-snap increment (world units) — one sub-grid cell, the same lines drawn by `addGrid`. */
+  function getGridSnapIncrement(): number {
+    const { gridSubdivisions } = useSceneStore.getState()
+    return getMajorGridSpacing(viewRef.current.zoom) / gridSubdivisions
+  }
+
+  function snapToIncrement(value: number, increment: number): number {
+    return Math.round(value / increment) * increment
+  }
+
+  /** Whether a move should grid-snap right now: the persistent "Grid Snap" toggle, with Ctrl
+   *  held temporarily flipping it (Blender-style) — so leaving the toggle on means continuous
+   *  snapping with no key to hold, while Ctrl is still there for the rare one-off override. */
+  function shouldGridSnap(ctrlKey: boolean): boolean {
+    return useSceneStore.getState().gridSnapEnabled !== ctrlKey
+  }
+
   function addGrid(scene: THREE.Scene) {
     const view = viewRef.current
     const rect = containerRef.current?.getBoundingClientRect()
@@ -1157,12 +1300,7 @@ export default function Viewport() {
     const halfW = rect.width / 2 / view.zoom
     const halfH = rect.height / 2 / view.zoom
 
-    // pick a grid spacing so lines stay ~40-80px apart on screen
-    const targetPx = 60
-    const rawSpacing = targetPx / view.zoom
-    const pow = Math.pow(10, Math.floor(Math.log10(rawSpacing)))
-    const candidates = [1, 2, 5, 10].map((m) => m * pow)
-    const spacing = candidates.find((c) => c >= rawSpacing) ?? candidates[candidates.length - 1]
+    const spacing = getMajorGridSpacing(view.zoom)
 
     const minX = Math.floor((view.panX - halfW) / spacing) * spacing
     const maxX = Math.ceil((view.panX + halfW) / spacing) * spacing
@@ -1179,6 +1317,48 @@ export default function Viewport() {
     for (let y = minY; y <= maxY; y += spacing) {
       if (Math.abs(y) < spacing / 2) xAxisPositions = [minX, y, -10, maxX, y, -10]
       else minorPositions.push(minX, y, -10, maxX, y, -10)
+    }
+
+    // sub-grid: finer lines within each major cell, dividing it into `gridSubdivisions` parts —
+    // also doubles as the increment grid-snap will snap to, so it stays user-configurable rather
+    // than a fixed fraction. Skipped once the lines would land closer than a few px apart (e.g.
+    // zoomed out, or a high subdivision count), where they'd just be visual noise.
+    const { gridSubdivisions } = useSceneStore.getState()
+    const subSpacing = spacing / gridSubdivisions
+    const subPositions: number[] = []
+    if (subSpacing * view.zoom >= 6) {
+      const subMinX = Math.floor(minX / subSpacing) * subSpacing
+      const subMaxX = Math.ceil(maxX / subSpacing) * subSpacing
+      const subMinY = Math.floor(minY / subSpacing) * subSpacing
+      const subMaxY = Math.ceil(maxY / subSpacing) * subSpacing
+      const mod = (n: number, m: number) => ((n % m) + m) % m
+      // z is a hair in front of the major grid's -10 — sharing the exact same depth let the
+      // dashed line's fragments lose the depth test to the (earlier-drawn, opaque) major grid
+      // lines at floating-point-precision boundaries, making the dashes flicker out entirely
+      for (let x = subMinX; x <= subMaxX; x += subSpacing) {
+        const r = mod(x, spacing)
+        if (r < subSpacing / 2 || spacing - r < subSpacing / 2) continue // coincides with a major line
+        subPositions.push(x, subMinY, -9.99, x, subMaxY, -9.99)
+      }
+      for (let y = subMinY; y <= subMaxY; y += subSpacing) {
+        const r = mod(y, spacing)
+        if (r < subSpacing / 2 || spacing - r < subSpacing / 2) continue
+        subPositions.push(subMinX, y, -9.99, subMaxX, y, -9.99)
+      }
+    }
+    if (subPositions.length > 0) {
+      const pxToWorld = 1 / view.zoom
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(subPositions, 3))
+      const mat = new THREE.LineDashedMaterial({
+        color: 0x545454,
+        dashSize: 2 * pxToWorld,
+        gapSize: 2 * pxToWorld,
+        transparent: true,
+      })
+      const subLines = new THREE.LineSegments(geom, mat)
+      subLines.computeLineDistances()
+      scene.add(subLines)
     }
 
     if (minorPositions.length > 0) {
@@ -1703,6 +1883,62 @@ export default function Viewport() {
     loopCutHoverRef.current = next
   }
 
+  /** Find the nearest spoke (center-to-rim edge) of a triangle fan to the cursor, and trace the
+   *  full fan it belongs to. A "spoke" is identified by degree alone — the fan center has one
+   *  edge per surrounding triangle (much higher degree than an ordinary rim vertex's 3), so an
+   *  edge whose two endpoints have equal degree is a rim-to-rim boundary edge, not a spoke, and
+   *  is skipped. */
+  function updateRingCutHover(e: PointerEvent) {
+    const store = useSceneStore.getState()
+    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+    if (store.mode !== 'edit' || store.activeTool !== 'ringcut' || !obj) {
+      ringCutHoverRef.current = null
+      return
+    }
+    const worldTransform = getWorldTransform(obj, store.objects)
+    const world = getWorldPos(e)
+    const edges = getEdges(obj.mesh)
+    const degree = new Map<number, number>()
+    for (const [a, b] of edges) {
+      degree.set(a, (degree.get(a) ?? 0) + 1)
+      degree.set(b, (degree.get(b) ?? 0) + 1)
+    }
+
+    let bestCenter = -1
+    let bestRim = -1
+    let bestDist = Infinity
+    for (const [a, b] of edges) {
+      const da = degree.get(a) ?? 0
+      const db = degree.get(b) ?? 0
+      if (da === db) continue // rim-to-rim boundary edge, not a spoke
+      const [center, rim] = da > db ? [a, b] : [b, a]
+      const va = applyTransform(obj.mesh.vertices[center], worldTransform)
+      const vb = applyTransform(obj.mesh.vertices[rim], worldTransform)
+      const dist = pxDistToSegment(world.x, world.y, va.x, va.y, vb.x, vb.y)
+      if (dist < bestDist) {
+        bestDist = dist
+        bestCenter = center
+        bestRim = rim
+      }
+    }
+
+    const prev = ringCutHoverRef.current
+    let next: RingCutHover | null = null
+    if (bestDist < 40) {
+      const path = findFan(obj.mesh, bestCenter, bestRim)
+      if (path) {
+        const vCenter = applyTransform(obj.mesh.vertices[bestCenter], worldTransform)
+        const vRim = applyTransform(obj.mesh.vertices[bestRim], worldTransform)
+        const { t } = pxDistToSegmentWithT(world.x, world.y, vCenter.x, vCenter.y, vRim.x, vRim.y)
+        next = { center: bestCenter, hoverRim: bestRim, t, path }
+      }
+    }
+    if (!next || !prev || next.center !== prev.center) {
+      ringCutCountRef.current = 1
+    }
+    ringCutHoverRef.current = next
+  }
+
   /** Find the nearest existing vertex, falling back to the nearest point on an existing edge. */
   function updateKnifeHover(e: PointerEvent) {
     const store = useSceneStore.getState()
@@ -1822,6 +2058,16 @@ export default function Viewport() {
         store0.setActiveTool('select')
         loopCutHoverRef.current = null
         loopCutCountRef.current = 1
+      }
+      return
+    }
+    if (store0.mode === 'edit' && store0.activeTool === 'ringcut') {
+      const hover = ringCutHoverRef.current
+      if (hover && store0.selectedObjectId) {
+        store0.applyRingCut(store0.selectedObjectId, hover.center, hover.hoverRim, ringCutTs())
+        store0.setActiveTool('select')
+        ringCutHoverRef.current = null
+        ringCutCountRef.current = 1
       }
       return
     }
@@ -2126,6 +2372,11 @@ export default function Viewport() {
       // offset from the parent's tail (rotated/scaled by the parent's world transform), so it
       // can't just be added directly — convert the resulting world position back to local first
       const newWorldPos = { x: drag.startWorldPos.x + dx, y: drag.startWorldPos.y + dy }
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        newWorldPos.x = snapToIncrement(newWorldPos.x, inc)
+        newWorldPos.y = snapToIncrement(newWorldPos.y, inc)
+      }
       const local = worldPositionToLocalOffset(newWorldPos, drag.parentWorld, drag.parentTail)
       store.setTransform(drag.objectId, { x: local.x, y: local.y })
       return
@@ -2134,7 +2385,8 @@ export default function Viewport() {
     if (drag.kind === 'move-object-axis') {
       const dx = world.x - drag.startWorld.x
       const dy = world.y - drag.startWorld.y
-      const along = dx * drag.axisDir.x + dy * drag.axisDir.y // project onto axis (world space)
+      let along = dx * drag.axisDir.x + dy * drag.axisDir.y // project onto axis (world space)
+      if (shouldGridSnap(e.ctrlKey)) along = snapToIncrement(along, getGridSnapIncrement())
       const newWorldPos = {
         x: drag.startWorldPos.x + drag.axisDir.x * along,
         y: drag.startWorldPos.y + drag.axisDir.y * along,

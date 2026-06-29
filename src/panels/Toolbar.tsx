@@ -23,6 +23,10 @@ export default function Toolbar() {
   const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
   const meshOpacity = useSceneStore((s) => s.meshOpacity)
   const setMeshOpacity = useSceneStore((s) => s.setMeshOpacity)
+  const gridSubdivisions = useSceneStore((s) => s.gridSubdivisions)
+  const setGridSubdivisions = useSceneStore((s) => s.setGridSubdivisions)
+  const gridSnapEnabled = useSceneStore((s) => s.gridSnapEnabled)
+  const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
   const loadProject = useSceneStore((s) => s.loadProject)
   const undo = useSceneStore((s) => s.undo)
   const redo = useSceneStore((s) => s.redo)
@@ -186,6 +190,27 @@ export default function Toolbar() {
             value={meshOpacity}
             onChange={(e) => setMeshOpacity(+e.target.value)}
           />
+        </label>
+      </div>
+
+      <div className="toolbar-group">
+        <label className="seg-input" title="主グリッドの1セルを何分割のサブグリッドにするか（グリッドスナップの間隔にもなります）">
+          サブグリッド
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={gridSubdivisions}
+            onChange={(e) => setGridSubdivisions(+e.target.value)}
+          />
+        </label>
+        <label className="seg-input" title="移動時に常にグリッドへスナップします（Ctrlキーで一時的に反転できます）">
+          <input
+            type="checkbox"
+            checked={gridSnapEnabled}
+            onChange={(e) => setGridSnapEnabled(e.target.checked)}
+          />
+          グリッドスナップ
         </label>
       </div>
 

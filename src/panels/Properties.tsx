@@ -4,6 +4,7 @@ import { computeSplitUVs, findIslands } from '../scene/uv'
 import { getEdges } from '../scene/meshUtils'
 import type { SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
+import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon } from './icons'
 
 function NumberField({
   label,
@@ -77,6 +78,7 @@ function IslandZOrderSection({
   setIslandName,
   clearIslandNameIfEmpty,
   setShowIslandNames,
+  toggleIslandVisible,
 }: {
   obj: SceneObject
   moveIslandZOrder: (id: string, islandIndex: number, direction: 1 | -1) => void
@@ -84,6 +86,7 @@ function IslandZOrderSection({
   setIslandName: (id: string, islandIndex: number, name: string) => void
   clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
   setShowIslandNames: (id: string, show: boolean) => void
+  toggleIslandVisible: (id: string, islandIndex: number) => void
 }) {
   const islandCount = findIslands(obj.mesh).length
   if (islandCount < 2) return null
@@ -108,35 +111,49 @@ function IslandZOrderSection({
           🏷 名前を表示
         </button>
       </div>
-      {order.map((islandIdx, pos) => (
-        <div className="prop-row" key={islandIdx}>
-          <button
-            className="icon-btn"
-            title="このアイランドを選択（編集モードに切り替えます）"
-            onClick={() => selectIsland(islandIdx)}
-          >
-            ◎
-          </button>
-          <input
-            className="layer-name"
-            value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
-            onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
-            onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
-            onKeyDown={(e) => {
-              // ignore the Enter that confirms an IME conversion (isComposing) — only a "real"
-              // Enter after that should commit the name and blur, otherwise blurring mid-
-              // composition lets the IME re-commit the same text a second time
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
-            }}
-          />
-          <button disabled={pos === 0} onClick={() => moveIslandZOrder(obj.id, islandIdx, 1)}>
-            ▲
-          </button>
-          <button disabled={pos === order.length - 1} onClick={() => moveIslandZOrder(obj.id, islandIdx, -1)}>
-            ▼
-          </button>
-        </div>
-      ))}
+      {order.map((islandIdx, pos) => {
+        const visible = obj.islandVisible?.[islandIdx] ?? true
+        return (
+          <div className="prop-row" key={islandIdx}>
+            <button
+              className="icon-btn"
+              title="このアイランドを選択（編集モードに切り替えます）"
+              onClick={() => selectIsland(islandIdx)}
+            >
+              <IslandSelectIcon size={18} />
+            </button>
+            <button
+              className="icon-btn"
+              title={visible ? 'このアイランドを非表示' : 'このアイランドを表示'}
+              onClick={() => toggleIslandVisible(obj.id, islandIdx)}
+            >
+              {visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
+            </button>
+            <input
+              className="layer-name"
+              value={obj.islandNames?.[islandIdx] ?? `アイランド ${islandIdx + 1}`}
+              onChange={(e) => setIslandName(obj.id, islandIdx, e.target.value)}
+              onBlur={() => clearIslandNameIfEmpty(obj.id, islandIdx)}
+              onKeyDown={(e) => {
+                // ignore the Enter that confirms an IME conversion (isComposing) — only a "real"
+                // Enter after that should commit the name and blur, otherwise blurring mid-
+                // composition lets the IME re-commit the same text a second time
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) e.currentTarget.blur()
+              }}
+            />
+            <button className="zorder-btn" disabled={pos === 0} onClick={() => moveIslandZOrder(obj.id, islandIdx, 1)}>
+              ▲
+            </button>
+            <button
+              className="zorder-btn"
+              disabled={pos === order.length - 1}
+              onClick={() => moveIslandZOrder(obj.id, islandIdx, -1)}
+            >
+              ▼
+            </button>
+          </div>
+        )
+      })}
     </>
   )
 }
@@ -157,6 +174,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setIslandName = useSceneStore((s) => s.setIslandName)
   const clearIslandNameIfEmpty = useSceneStore((s) => s.clearIslandNameIfEmpty)
   const setShowIslandNames = useSceneStore((s) => s.setShowIslandNames)
+  const toggleIslandVisible = useSceneStore((s) => s.toggleIslandVisible)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
@@ -284,6 +302,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               setIslandName={setIslandName}
               clearIslandNameIfEmpty={clearIslandNameIfEmpty}
               setShowIslandNames={setShowIslandNames}
+              toggleIslandVisible={toggleIslandVisible}
             />
           )}
 

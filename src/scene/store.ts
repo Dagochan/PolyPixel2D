@@ -11,6 +11,7 @@ import type {
 } from './types'
 import { createCircleMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
+import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
 import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
@@ -20,7 +21,7 @@ import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knif
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland, clampToMesh } from './meshUtils'
 import { findIslands, type Island } from './uv'
 
-export type ActiveTool = 'select' | 'loopcut' | 'knife' | 'place-rect' | 'place-circle'
+export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle'
 
 export type { ReferenceImage }
 
@@ -91,6 +92,13 @@ interface SceneState {
   referenceImage: ReferenceImage | null
   /** Global opacity (0..1) applied to every object's material, so you can see a reference image through them. */
   meshOpacity: number
+  /** How many sub-grid divisions per major grid cell (viewport display, and the basis for grid
+   *  snapping's increment). User-configurable rather than fixed, so different project scales can
+   *  pick a finer or coarser snap granularity. */
+  gridSubdivisions: number
+  /** Persistent "Grid Snap" toggle (Blender-style) — while on, moves snap to the grid by default;
+   *  holding Ctrl temporarily inverts it (off while held), and vice versa while this is off. */
+  gridSnapEnabled: boolean
 
   beginChange: () => void
   undo: () => void
@@ -111,6 +119,8 @@ interface SceneState {
   setReferenceImage: (url: string | null) => void
   setReferenceImageTransform: (transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'opacity'>>) => void
   setMeshOpacity: (opacity: number) => void
+  setGridSubdivisions: (n: number) => void
+  setGridSnapEnabled: (enabled: boolean) => void
   /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
   loadProject: (project: { objects: SceneObject[]; referenceImage: ReferenceImage | null; meshOpacity: number }) => void
   selectObject: (id: string | null) => void
@@ -131,6 +141,9 @@ interface SceneState {
   clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
   /** Toggle showing every island's name in the viewport, just below its bounding-box center. */
   setShowIslandNames: (id: string, show: boolean) => void
+  /** Toggle one island's visibility (by `findIslands` order) — hidden draws nothing at all
+   *  (fill, wireframe, edit overlays). */
+  toggleIslandVisible: (id: string, islandIndex: number) => void
   /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
    *  a post-extrude grab confirms, so the new geometry's UV reflects where it ended up. */
   freezeUvBaseVertices: (id: string, indices: number[]) => void
@@ -162,6 +175,10 @@ interface SceneState {
   setGizmoOrientation: (orientation: 'world' | 'local') => void
   /** Cut the quad strip running through the edge (edgeA, edgeB), at each t in `ts`. No-op if neither side is a quad. */
   applyLoopCut: (objectId: string, edgeA: number, edgeB: number, ts: number[]) => void
+  /** Cut one or more concentric rings into the triangle fan around `center` (e.g. a circle
+   *  primitive), through the spoke (center, hoverRim), at each t (fraction from center to rim)
+   *  in `ts`. No-op if (center, hoverRim) isn't a spoke of any triangle. */
+  applyRingCut: (objectId: string, center: number, hoverRim: number, ts: number[]) => void
   /** Cut a polyline of vertex/edge-snapped points across one or more connected faces. */
   applyKnifeCut: (objectId: string, path: KnifeCutPoint[]) => void
   /** Extrude the current edge/face selection on the selected object. No-op (returns false) otherwise. */
@@ -249,6 +266,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   pendingPrimitive: null,
   referenceImage: null,
   meshOpacity: 1,
+  gridSubdivisions: 10,
+  gridSnapEnabled: false,
 
   beginChange: () =>
     set((s) => ({
@@ -393,6 +412,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => (s.referenceImage ? { referenceImage: { ...s.referenceImage, ...transform } } : {})),
 
   setMeshOpacity: (opacity) => set({ meshOpacity: Math.max(0, Math.min(1, opacity)) }),
+  setGridSubdivisions: (n) => set({ gridSubdivisions: Math.max(1, Math.min(100, Math.round(n))) }),
+  setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
 
   loadProject: (project) => {
     bumpNextIdPast(project.objects)
@@ -522,6 +543,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setShowIslandNames: (id, show) => {
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? { ...o, showIslandNames: show } : o)),
+    }))
+  },
+
+  toggleIslandVisible: (id, islandIndex) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, islandVisible: { ...o.islandVisible, [islandIndex]: !(o.islandVisible?.[islandIndex] ?? true) } }
+          : o,
+      ),
     }))
   },
 
@@ -686,6 +718,24 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const path = findFullLoop(obj.mesh, edgeA, edgeB)
     if (!path) return
     const result = applyLoopCutToMesh(obj.mesh, path, ts)
+    const mesh = pruneOrphanVertices(result.mesh)
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
+
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  applyRingCut: (objectId, center, hoverRim, ts) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const path = findFan(obj.mesh, center, hoverRim)
+    if (!path) return
+    const result = applyRingCutToMesh(obj.mesh, path, ts)
     const mesh = pruneOrphanVertices(result.mesh)
     const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
 

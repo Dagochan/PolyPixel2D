@@ -55,10 +55,75 @@ export function FaceIcon({ size = 16 }: IconProps) {
   )
 }
 
+/** Four small corner brackets touching all four edges of the 24x24 viewBox — shared by the
+ *  "framed" icon set (visibility, island-select) so every icon in that set shares the exact same
+ *  ink bounding box regardless of what its own inner glyph looks like, and so they all line up
+ *  pixel-for-pixel at any shared `size`. */
+function CornerBrackets() {
+  return (
+    <>
+      <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      <g transform="matrix(0,1,-1,0,24,0)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(-1,0,-0,-1,24,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(0,-1,1,0,0,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+    </>
+  )
+}
+
+export function VisibleTrueIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...base}>
+      <g transform="matrix(1,0,0,0.5,0,6)">
+        <path d="M18.784,6.614C20.761,9.236 22,12 22,12C22,12 17.519,22 12,22C6.481,22 2,12 2,12C2,12 3.239,9.236 5.216,6.614L3.884,2L5.616,0L6.945,4.602C8.157,3.388 9.532,2.421 11,2.108L11,-2.402L13,-2.402L13,2.108C14.468,2.421 15.843,3.388 17.055,4.602L18.384,0L20.116,2L18.784,6.614ZM12,5C7.585,5 4,12 4,12C4,12 7.585,19 12,19C16.415,19 20,12 20,12C20,12 16.415,5 12,5Z" />
+      </g>
+      <circle cx="12" cy="12" r="4" />
+      <CornerBrackets />
+    </svg>
+  )
+}
+
+export function VisibleFalseIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...base}>
+      <g transform="matrix(1,0,0,-0.5,0,18)">
+        <path d="M2,12C2,12 3.239,9.236 5.216,6.614L3.884,2L5.616,0L6.945,4.602C8.157,3.388 9.532,2.421 11,2.108L11,-2.402L13,-2.402L13,2.108C14.468,2.421 15.843,3.388 17.055,4.602L18.384,0L20.116,2L18.784,6.614C20.761,9.236 22,12 22,12L20,12C20,12 16.415,5 12,5C7.585,5 4,12 4,12L2,12Z" />
+      </g>
+      <CornerBrackets />
+    </svg>
+  )
+}
+
+export function IslandSelectIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...base}>
+      <CornerBrackets />
+      <g transform="matrix(1.06066,-1.06066,0.785674,0.785674,-8.073976,10.446839)">
+        <path d="M7,8L7,14.3L14.333,14.3L14.333,17L5,17L5,8L7,8Z" />
+      </g>
+    </svg>
+  )
+}
+
 export function LoopCutIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} {...base}>
       <path d="M16,21L3,21L3,8L8,3L21,3L21,16L16,21ZM13,4L8.5,4L4.5,8L9,8L13,4ZM9,9L4,9L4,20L9,20L9,9ZM10,20L15,20L15,9L10,9L10,20ZM10.5,8L15,8L19,4L14.5,4L10.5,8ZM16,9L16,19.5L20,15.5L20,5L16,9Z" />
+    </svg>
+  )
+}
+
+export function RingCutIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <circle cx="12" cy="12" r="9.5" strokeWidth="1.6" />
+      <circle cx="12" cy="12" r="5.5" strokeWidth="1.6" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
     </svg>
   )
 }

@@ -91,6 +91,10 @@ export interface SceneObject {
   /** One toggle for the whole object: show every island's name in the viewport, just below its
    *  bounding-box center. Default false (hidden). */
   showIslandNames?: boolean
+  /** Per-island visibility (indexed by island order from `findIslands` — same caveat as
+   *  `islandZOrders`). An island absent from this map is visible (default true). A hidden
+   *  island draws nothing at all — fill, wireframe, and edit-mode overlays alike. */
+  islandVisible?: Record<number, boolean>
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

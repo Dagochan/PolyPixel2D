@@ -7,6 +7,7 @@ import {
   EdgeIcon,
   FaceIcon,
   LoopCutIcon,
+  RingCutIcon,
   KnifeIcon,
   ExtrudeIcon,
   DissolveIcon,
@@ -91,6 +92,14 @@ export default function ToolPane() {
               onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
             >
               <LoopCutIcon />
+            </button>
+            <button
+              className={activeTool === 'ringcut' ? 'active' : ''}
+              disabled={!selectedObj}
+              title="リングカット（Cmd/Ctrl+Shift+R。三角形ファン、例: 円プリミティブの放射状の辺にカーソルを合わせてください）"
+              onClick={() => setActiveTool(activeTool === 'ringcut' ? 'select' : 'ringcut')}
+            >
+              <RingCutIcon />
             </button>
             <button
               className={activeTool === 'knife' ? 'active' : ''}
