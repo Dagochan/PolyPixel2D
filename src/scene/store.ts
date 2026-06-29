@@ -100,6 +100,9 @@ interface SceneState {
   /** Persistent "Grid Snap" toggle (Blender-style) — while on, moves snap to the grid by default;
    *  holding Ctrl temporarily inverts it (off while held), and vice versa while this is off. */
   gridSnapEnabled: boolean
+  /** Whether the background grid (major + sub-grid lines) is drawn in the viewport. Purely
+   *  visual — independent of `gridSnapEnabled`, which keeps working even while the grid is hidden. */
+  gridVisible: boolean
   /** Whether the pixel preview panel (low-res, nearest-neighbor render simulating the final
    *  dot-art output) is shown. */
   pixelPreviewEnabled: boolean
@@ -137,6 +140,7 @@ interface SceneState {
   setMeshOpacity: (opacity: number) => void
   setGridSubdivisions: (n: number) => void
   setGridSnapEnabled: (enabled: boolean) => void
+  setGridVisible: (visible: boolean) => void
   setPixelPreviewEnabled: (enabled: boolean) => void
   setPixelPreviewResolution: (n: number) => void
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
@@ -300,6 +304,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   meshOpacity: 1,
   gridSubdivisions: 10,
   gridSnapEnabled: false,
+  gridVisible: true,
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
@@ -451,6 +456,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setMeshOpacity: (opacity) => set({ meshOpacity: Math.max(0, Math.min(1, opacity)) }),
   setGridSubdivisions: (n) => set({ gridSubdivisions: Math.max(1, Math.min(100, Math.round(n))) }),
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
+  setGridVisible: (visible) => set({ gridVisible: visible }),
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
   setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(512, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),

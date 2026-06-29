@@ -872,10 +872,11 @@ export default function Viewport() {
       selectedFaces,
       referenceImage,
       meshOpacity,
+      gridVisible,
     } = useSceneStore.getState()
 
     if (referenceImage) addReferenceImage(scene, referenceImage)
-    addGrid(scene)
+    if (gridVisible) addGrid(scene)
 
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)

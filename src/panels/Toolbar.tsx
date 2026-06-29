@@ -27,6 +27,8 @@ export default function Toolbar() {
   const setGridSubdivisions = useSceneStore((s) => s.setGridSubdivisions)
   const gridSnapEnabled = useSceneStore((s) => s.gridSnapEnabled)
   const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
+  const gridVisible = useSceneStore((s) => s.gridVisible)
+  const setGridVisible = useSceneStore((s) => s.setGridVisible)
   const loadProject = useSceneStore((s) => s.loadProject)
   const undo = useSceneStore((s) => s.undo)
   const redo = useSceneStore((s) => s.redo)
@@ -213,6 +215,10 @@ export default function Toolbar() {
             onChange={(e) => setGridSnapEnabled(e.target.checked)}
           />
           グリッドスナップ
+        </label>
+        <label className="seg-input" title="ビューポートのグリッド表示を切り替えます（グリッドスナップ自体は表示と無関係に効きます）">
+          <input type="checkbox" checked={gridVisible} onChange={(e) => setGridVisible(e.target.checked)} />
+          グリッド表示
         </label>
       </div>
 
