@@ -108,6 +108,12 @@ interface SceneState {
   /** Drag offset (from its default docked position) of the pixel preview panel, persisted across
    *  hide/show so reopening it doesn't reset where the user dragged it. */
   pixelPreviewOffset: { x: number; y: number }
+  /** Whether the pixel preview also quantizes its render to a limited, auto-extracted palette
+   *  (median-cut over the rendered pixels) — the "real" dot-art color-count look, on top of the
+   *  nearest-neighbor resolution/silhouette effect. */
+  pixelPreviewPaletteEnabled: boolean
+  /** Max number of colors the auto-extracted palette may use. */
+  pixelPreviewPaletteSize: number
 
   beginChange: () => void
   undo: () => void
@@ -133,6 +139,8 @@ interface SceneState {
   setPixelPreviewEnabled: (enabled: boolean) => void
   setPixelPreviewResolution: (n: number) => void
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
+  setPixelPreviewPaletteEnabled: (enabled: boolean) => void
+  setPixelPreviewPaletteSize: (n: number) => void
   /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
   loadProject: (project: { objects: SceneObject[]; referenceImage: ReferenceImage | null; meshOpacity: number }) => void
   selectObject: (id: string | null) => void
@@ -283,6 +291,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
+  pixelPreviewPaletteEnabled: false,
+  pixelPreviewPaletteSize: 16,
 
   beginChange: () =>
     set((s) => ({
@@ -432,6 +442,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
   setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(512, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
+  setPixelPreviewPaletteEnabled: (enabled) => set({ pixelPreviewPaletteEnabled: enabled }),
+  setPixelPreviewPaletteSize: (n) => set({ pixelPreviewPaletteSize: Math.max(2, Math.min(64, Math.round(n))) }),
 
   loadProject: (project) => {
     bumpNextIdPast(project.objects)

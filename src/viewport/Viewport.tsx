@@ -845,7 +845,9 @@ export default function Viewport() {
         color: obj.material.color,
         map: texture,
         side: THREE.DoubleSide,
-        transparent: meshOpacity < 1,
+        // also on whenever there's a texture, not just when opacity<1 — the texture's own alpha
+        // channel (e.g. a baked/transparent PNG) needs respecting regardless of the opacity slider
+        transparent: meshOpacity < 1 || !!texture,
         opacity: meshOpacity,
       })
 

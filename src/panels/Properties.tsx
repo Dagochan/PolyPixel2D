@@ -1,6 +1,7 @@
 import { useRef, useState, type CSSProperties } from 'react'
 import { useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
+import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
 import type { SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
@@ -42,6 +43,13 @@ function round(v: number) {
 
 const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
 
+function downloadDataUrl(dataUrl: string, filename: string) {
+  const link = document.createElement('a')
+  link.href = dataUrl
+  link.download = filename
+  link.click()
+}
+
 /** Draw the mesh's UV wireframe (UV 0,0 = bottom-left, image 0,0 = top-left) and trigger a PNG download. */
 function exportUvMap(obj: SceneObject, resolution: number) {
   const { mesh: splitMesh, uvs } = computeSplitUVs(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
@@ -61,10 +69,7 @@ function exportUvMap(obj: SceneObject, resolution: number) {
     ctx.lineTo(pb.x * resolution, (1 - pb.y) * resolution)
     ctx.stroke()
   }
-  const link = document.createElement('a')
-  link.href = canvas.toDataURL('image/png')
-  link.download = `${obj.name}_uv.png`
-  link.click()
+  downloadDataUrl(canvas.toDataURL('image/png'), `${obj.name}_uv.png`)
 }
 
 /** Only shown for an object whose mesh has 2+ disconnected islands — lets the user pick which
@@ -168,6 +173,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setConnected = useSceneStore((s) => s.setConnected)
   const setMaterialColor = useSceneStore((s) => s.setMaterialColor)
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
+  const referenceImage = useSceneStore((s) => s.referenceImage)
   const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
   const moveIslandZOrder = useSceneStore((s) => s.moveIslandZOrder)
   const selectIsland = useSceneStore((s) => s.selectIsland)
@@ -185,6 +191,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
     null,
   )
   const textureInputRef = useRef<HTMLInputElement>(null)
+  const [baking, setBaking] = useState(false)
 
   const handleModalHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     modalDragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: modalOffset.x, startOffsetY: modalOffset.y }
@@ -204,6 +211,17 @@ export default function Properties({ style }: { style?: CSSProperties }) {
     const reader = new FileReader()
     reader.onload = () => setMaterialTexture(objId, reader.result as string)
     reader.readAsDataURL(file)
+  }
+
+  const handleBakeReference = async (target: SceneObject) => {
+    if (!referenceImage) return
+    setBaking(true)
+    try {
+      const dataUrl = await bakeReferenceToTexture(target, objects, referenceImage, uvResolution)
+      setMaterialTexture(target.id, dataUrl)
+    } finally {
+      setBaking(false)
+    }
   }
 
   return (
@@ -342,7 +360,14 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 />
                 <button onClick={() => textureInputRef.current?.click()}>テクスチャを設定</button>
                 {obj.material.textureUrl && (
-                  <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
+                  <>
+                    <button onClick={() => setMaterialTexture(obj.id, undefined)}>テクスチャを削除</button>
+                    <button
+                      onClick={() => downloadDataUrl(obj.material.textureUrl!, `${obj.name}_texture.png`)}
+                    >
+                      テクスチャを書き出し
+                    </button>
+                  </>
                 )}
               </div>
 
@@ -362,6 +387,15 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 >
                   UVを再展開
                 </button>
+                {referenceImage && (
+                  <button
+                    title="下絵をこのオブジェクトのUVレイアウトに合わせてテクスチャとして書き出し、そのまま貼り付けます"
+                    disabled={baking}
+                    onClick={() => handleBakeReference(obj)}
+                  >
+                    {baking ? 'ベイク中…' : '下絵をベイク'}
+                  </button>
+                )}
               </div>
               <div className="prop-row">
                 <label className="prop-field">

@@ -4,6 +4,7 @@ import { useSceneStore } from '../scene/store'
 import { triangulate } from '../scene/meshUtils'
 import { getWorldTransform, worldBounds } from '../scene/transformUtils'
 import { computeSplitUVIslands } from '../scene/uv'
+import { quantizeImageData } from '../scene/quantize'
 
 /** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
  *  small WebGL canvas at the target dot-art resolution, auto-framed to fit all visible objects.
@@ -11,7 +12,7 @@ import { computeSplitUVIslands } from '../scene/uv'
  *  `image-rendering: pixelated`, so the browser's own upscaling gives the crisp nearest-neighbor
  *  look — no render-target readback or second draw pass needed. */
 export default function PixelPreview() {
-  const containerRef = useRef<HTMLDivElement>(null)
+  const displayCanvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const sceneRef = useRef(new THREE.Scene())
   const resolution = useSceneStore((s) => s.pixelPreviewResolution)
@@ -22,6 +23,10 @@ export default function PixelPreview() {
   const offset = useSceneStore((s) => s.pixelPreviewOffset)
   const setOffset = useSceneStore((s) => s.setPixelPreviewOffset)
   const dragRef = useRef<{ startX: number; startY: number; startOffsetX: number; startOffsetY: number } | null>(null)
+  const paletteEnabled = useSceneStore((s) => s.pixelPreviewPaletteEnabled)
+  const setPaletteEnabled = useSceneStore((s) => s.setPixelPreviewPaletteEnabled)
+  const paletteSize = useSceneStore((s) => s.pixelPreviewPaletteSize)
+  const setPaletteSize = useSceneStore((s) => s.setPixelPreviewPaletteSize)
 
   const handleHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     dragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: offset.x, startOffsetY: offset.y }
@@ -38,10 +43,13 @@ export default function PixelPreview() {
   }
 
   useEffect(() => {
-    const container = containerRef.current!
-    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true })
+    const displayCanvas = displayCanvasRef.current!
+    const displayCtx = displayCanvas.getContext('2d')!
+    // the WebGL canvas itself is never attached to the DOM — it's only an offscreen source that
+    // gets drawn (and optionally palette-quantized) onto the visible 2D canvas each frame, since
+    // quantization needs pixel readback that a displayed WebGL canvas doesn't offer directly
+    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true })
     renderer.setPixelRatio(1)
-    container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000)
@@ -55,7 +63,7 @@ export default function PixelPreview() {
       // auto-fit: frame the bounding box of every visible, non-empty object's world-space mesh
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
       for (const obj of objects) {
-        if (!obj.visible || obj.kind === 'empty' || obj.mesh.length === 0) continue
+        if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
         const t = getWorldTransform(obj, objects)
         const b = worldBounds(obj.mesh.vertices, t)
         if (b.minX < minX) minX = b.minX
@@ -70,14 +78,16 @@ export default function PixelPreview() {
       const cy = hasContent ? (minY + maxY) / 2 : 0
       // 10% margin around the content so silhouettes don't touch the frame edge
       const margin = 1.1
-      const longEdge = Math.max(w, h) * margin
       const canvasW = w >= h ? res : Math.max(1, Math.round((res * w) / h))
       const canvasH = h > w ? res : Math.max(1, Math.round((res * h) / w))
 
-      camera.left = cx - longEdge / 2
-      camera.right = cx + longEdge / 2
-      camera.top = cy + longEdge / 2
-      camera.bottom = cy - longEdge / 2
+      // the frustum's aspect ratio must match the canvas's, or the content gets stretched to
+      // fit a differently-shaped viewport — so each axis gets its own span (content size +
+      // margin) rather than both sharing one square span sized off the longer edge
+      camera.left = cx - (w * margin) / 2
+      camera.right = cx + (w * margin) / 2
+      camera.top = cy + (h * margin) / 2
+      camera.bottom = cy - (h * margin) / 2
       camera.updateProjectionMatrix()
 
       renderer.setSize(canvasW, canvasH, false)
@@ -85,11 +95,24 @@ export default function PixelPreview() {
       // jump around as the user tweaks the resolution input — only the crispness changes
       const DISPLAY_MAX = 256
       const displayScale = DISPLAY_MAX / Math.max(canvasW, canvasH)
-      renderer.domElement.style.width = `${canvasW * displayScale}px`
-      renderer.domElement.style.height = `${canvasH * displayScale}px`
+      displayCanvas.style.width = `${canvasW * displayScale}px`
+      displayCanvas.style.height = `${canvasH * displayScale}px`
 
       rebuildScene(sceneRef.current, objects, textureCacheRef.current, textureLoaderRef.current)
       renderer.render(sceneRef.current, camera)
+
+      if (displayCanvas.width !== canvasW) displayCanvas.width = canvasW
+      if (displayCanvas.height !== canvasH) displayCanvas.height = canvasH
+      displayCtx.clearRect(0, 0, canvasW, canvasH)
+      displayCtx.drawImage(renderer.domElement, 0, 0)
+
+      const { pixelPreviewPaletteEnabled, pixelPreviewPaletteSize } = useSceneStore.getState()
+      if (pixelPreviewPaletteEnabled) {
+        const imageData = displayCtx.getImageData(0, 0, canvasW, canvasH)
+        quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+        displayCtx.putImageData(imageData, 0, 0)
+      }
+
       raf = requestAnimationFrame(tick)
     }
     tick()
@@ -98,7 +121,6 @@ export default function PixelPreview() {
       cancelAnimationFrame(raf)
       disposeSceneContents(sceneRef.current)
       sceneRef.current.clear()
-      container.removeChild(renderer.domElement)
       renderer.dispose()
       for (const tex of textureCacheRef.current.values()) tex.dispose()
       textureCacheRef.current.clear()
@@ -134,7 +156,30 @@ export default function PixelPreview() {
           ✕
         </button>
       </div>
-      <div className="pixel-preview-canvas" ref={containerRef} />
+      <div className="pixel-preview-controls">
+        <label>
+          <input
+            type="checkbox"
+            checked={paletteEnabled}
+            onChange={(e) => setPaletteEnabled(e.target.checked)}
+          />
+          パレット量子化
+        </label>
+        <label>
+          色数
+          <input
+            type="number"
+            min={2}
+            max={64}
+            value={paletteSize}
+            disabled={!paletteEnabled}
+            onChange={(e) => setPaletteSize(Number(e.target.value))}
+          />
+        </label>
+      </div>
+      <div className="pixel-preview-canvas">
+        <canvas ref={displayCanvasRef} />
+      </div>
     </div>
   )
 }
@@ -181,6 +226,9 @@ function rebuildScene(
       color: obj.material.color,
       map: texture,
       side: THREE.DoubleSide,
+      // a texture's own alpha channel (e.g. a baked/transparent PNG) must be respected, or fully
+      // transparent areas render as whatever opaque RGB they happen to store underneath
+      transparent: !!texture,
     })
 
     const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)

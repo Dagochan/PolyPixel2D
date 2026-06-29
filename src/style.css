@@ -270,6 +270,24 @@ input[type='range']:disabled {
   width: 56px;
 }
 
+.pixel-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #ddd;
+}
+
+.pixel-preview-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pixel-preview-controls input[type='number'] {
+  width: 48px;
+}
+
 .pixel-preview-canvas {
   display: flex;
   align-items: center;
