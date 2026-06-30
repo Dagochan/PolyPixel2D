@@ -82,7 +82,13 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
       if (last !== null) {
         const dt = (now - last) / 1000
         rawTimeRef.current += dt
-        setPlayhead(rawTimeRef.current)
+        // hold each pose for a full frame interval instead of re-sampling continuously every
+        // rAF tick (~60fps) — otherwise a clip set to e.g. 7fps still *looks* perfectly smooth
+        // during Play, since the frame rate would only ever affect snapping/display, never
+        // actual playback. Quantizing to the frame grid here makes low frame rates genuinely
+        // read as low frame rates.
+        const frameRateNow = useSceneStore.getState().clips.find((c) => c.id === activeClipId)?.frameRate ?? 24
+        setPlayhead(Math.floor(rawTimeRef.current * frameRateNow) / frameRateNow)
         // setPlayhead clamps a 'none' clip's playhead to its end instead of looping it — stop
         // playback there instead of spinning the rAF loop forever at a frozen pose
         const s = useSceneStore.getState()
