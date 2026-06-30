@@ -87,8 +87,8 @@ export default function Toolbar() {
   }
 
   const handleSaveProject = () => {
-    const { objects, referenceImage: ref, meshOpacity: opacity } = useSceneStore.getState()
-    const json = serializeProject({ version: PROJECT_VERSION, objects, referenceImage: ref, meshOpacity: opacity })
+    const { objects, referenceImage: ref, meshOpacity: opacity, clips } = useSceneStore.getState()
+    const json = serializeProject({ version: PROJECT_VERSION, objects, referenceImage: ref, meshOpacity: opacity, clips })
     const blob = new Blob([json], { type: 'application/json' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)

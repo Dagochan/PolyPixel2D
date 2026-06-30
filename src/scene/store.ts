@@ -1,8 +1,11 @@
 import { create } from 'zustand'
 import type {
+  AnimationClip,
   AppMode,
+  EasingType,
   EditElementType,
   InsertSlot,
+  LoopMode,
   Mesh,
   ReferenceImage,
   SceneObject,
@@ -10,6 +13,7 @@ import type {
   UvIslandTransform,
   Vec2,
 } from './types'
+import { resolvePlaybackTime, sampleClipAtTime } from './animation'
 import { createCircleMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
@@ -119,6 +123,15 @@ interface SceneState {
   /** Max number of colors the auto-extracted palette may use. */
   pixelPreviewPaletteSize: number
 
+  /** Every animation clip in the project (e.g. "Idle", "Walk"). Editing/scrubbing always targets
+   *  `activeClipId` — there's no per-clip-project split. */
+  clips: AnimationClip[]
+  activeClipId: string | null
+  /** Current scrub/playback position, in seconds, within the active clip. Moving it re-evaluates
+   *  every animated object's transform (see `setPlayhead`) — it's "what you're looking at", not
+   *  just a UI cursor. */
+  playheadTime: number
+
   beginChange: () => void
   undo: () => void
   redo: () => void
@@ -147,7 +160,12 @@ interface SceneState {
   setPixelPreviewPaletteEnabled: (enabled: boolean) => void
   setPixelPreviewPaletteSize: (n: number) => void
   /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
-  loadProject: (project: { objects: SceneObject[]; referenceImage: ReferenceImage | null; meshOpacity: number }) => void
+  loadProject: (project: {
+    objects: SceneObject[]
+    referenceImage: ReferenceImage | null
+    meshOpacity: number
+    clips?: AnimationClip[]
+  }) => void
   selectObject: (id: string | null) => void
   removeObject: (id: string) => void
   toggleVisibility: (id: string) => void
@@ -242,6 +260,27 @@ interface SceneState {
   fillSelectedFace: () => void
   /** Merge `mergeIndex` into `keepIndex` (keepIndex's position wins). Used for drag-to-weld onto an adjacent vertex. */
   mergeVertexPair: (objectId: string, keepIndex: number, mergeIndex: number) => void
+
+  /** Create a new, empty animation clip and make it active. Returns its id. */
+  addClip: (name?: string) => string
+  /** Remove a clip. If it was the active one, falls back to another remaining clip (or `null`). */
+  removeClip: (id: string) => void
+  renameClip: (id: string, name: string) => void
+  setActiveClipId: (id: string | null) => void
+  setClipDuration: (id: string, duration: number) => void
+  setClipLoopMode: (id: string, loopMode: LoopMode) => void
+  setClipFrameRate: (id: string, frameRate: number) => void
+  /** Snapshot `objectId`'s current transform into the active clip as a keyframe at `time`
+   *  (seconds), creating that object's track if needed. Replaces any existing key at the same
+   *  time. No-op if there's no active clip. */
+  insertKeyframe: (objectId: string, time: number, easing?: EasingType) => void
+  removeKeyframe: (objectId: string, keyframeId: string) => void
+  setKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
+  setKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Move the scrub position and apply the active clip's evaluated pose to every object it
+   *  animates (objects with no track in the active clip are left untouched). This is pose
+   *  *evaluation*, not a user edit — it doesn't push undo history. */
+  setPlayhead: (time: number) => void
 }
 
 /** The vertex indices touched by the current selection, given which element type is active. */
@@ -310,6 +349,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   pixelPreviewOffset: { x: 0, y: 0 },
   pixelPreviewPaletteEnabled: false,
   pixelPreviewPaletteSize: 16,
+  clips: [],
+  activeClipId: null,
+  playheadTime: 0,
 
   beginChange: () =>
     set((s) => ({
@@ -476,6 +518,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         ...partial,
       }
     })
+    // older saves predate per-clip frame rate
+    const clips = (project.clips ?? []).map((c) => {
+      const partial = c as Partial<AnimationClip> & Pick<AnimationClip, 'id' | 'name' | 'duration' | 'loopMode' | 'tracks'>
+      return { frameRate: 24, ...partial }
+    })
     set({
       objects,
       referenceImage: project.referenceImage,
@@ -489,6 +536,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       activeTool: 'select',
       history: [],
       future: [],
+      clips,
+      activeClipId: clips[0]?.id ?? null,
+      playheadTime: 0,
     })
   },
 
@@ -1151,6 +1201,140 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       selectedVertices: survivorIndex >= 0 ? new Set([survivorIndex]) : new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
+    }))
+  },
+
+  addClip: (name) => {
+    const id = genId('clip')
+    const clip: AnimationClip = {
+      id,
+      name: name ?? `Clip ${get().clips.length + 1}`,
+      duration: 1,
+      loopMode: 'loop',
+      frameRate: 24,
+      tracks: [],
+    }
+    set((s) => ({ clips: [...s.clips, clip], activeClipId: id, playheadTime: 0 }))
+    return id
+  },
+
+  removeClip: (id) =>
+    set((s) => {
+      const clips = s.clips.filter((c) => c.id !== id)
+      const activeClipId = s.activeClipId === id ? (clips[0]?.id ?? null) : s.activeClipId
+      return { clips, activeClipId }
+    }),
+
+  renameClip: (id, name) =>
+    set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, name } : c)) })),
+
+  setActiveClipId: (id) => set({ activeClipId: id, playheadTime: 0 }),
+
+  setClipDuration: (id, duration) =>
+    set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, duration: Math.max(0, duration) } : c)) })),
+
+  setClipLoopMode: (id, loopMode) =>
+    set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, loopMode } : c)) })),
+
+  setClipFrameRate: (id, frameRate) =>
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id === id ? { ...c, frameRate: Math.max(1, Math.round(frameRate)) } : c)),
+    })),
+
+  insertKeyframe: (objectId, time, easing = 'linear') => {
+    const s = get()
+    const clipId = s.activeClipId
+    if (!clipId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const transform: Transform = { ...obj.transform, head: { ...obj.transform.head } }
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== clipId) return c
+        const existingTrack = c.tracks.find((t) => t.objectId === objectId)
+        const newKey = { id: genId('key'), time, transform, easing }
+        if (!existingTrack) {
+          return { ...c, tracks: [...c.tracks, { objectId, keyframes: [newKey] }] }
+        }
+        // replace any key already at this exact time, otherwise insert and keep sorted
+        const withoutSameTime = existingTrack.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return {
+          ...c,
+          tracks: c.tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)),
+        }
+      }),
+    }))
+  },
+
+  removeKeyframe: (objectId, keyframeId) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          tracks: c.tracks
+            .map((t) =>
+              t.objectId === objectId
+                ? { ...t, keyframes: t.keyframes.filter((k) => k.id !== keyframeId) }
+                : t,
+            )
+            // drop the track entirely once it has no keys left, rather than leaving an empty one around
+            .filter((t) => t.objectId !== objectId || t.keyframes.length > 0),
+        }
+      }),
+    })),
+
+  setKeyframeTime: (objectId, keyframeId, time) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          tracks: c.tracks.map((t) => {
+            if (t.objectId !== objectId) return t
+            const keyframes = t.keyframes
+              .map((k) => (k.id === keyframeId ? { ...k, time } : k))
+              .sort((a, b) => a.time - b.time)
+            return { ...t, keyframes }
+          }),
+        }
+      }),
+    })),
+
+  setKeyframeEasing: (objectId, keyframeId, easing) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          tracks: c.tracks.map((t) =>
+            t.objectId !== objectId
+              ? t
+              : { ...t, keyframes: t.keyframes.map((k) => (k.id === keyframeId ? { ...k, easing } : k)) },
+          ),
+        }
+      }),
+    })),
+
+  setPlayhead: (time) => {
+    const s = get()
+    const clip = s.clips.find((c) => c.id === s.activeClipId)
+    if (!clip) {
+      set({ playheadTime: time })
+      return
+    }
+    // resolved into the clip's own [0, duration] range (clamped for 'none', wrapped for
+    // loop/pingpong) so the stored playhead — and anything displaying it — never drifts outside
+    // the clip's bounds, even while a raw, ever-growing playback time keeps feeding in
+    const resolved = resolvePlaybackTime(time, clip.duration, clip.loopMode)
+    const sampled = sampleClipAtTime(clip, resolved)
+    set((st) => ({
+      playheadTime: resolved,
+      objects: st.objects.map((o) => {
+        const t = sampled.get(o.id)
+        return t ? { ...o, transform: t } : o
+      }),
     }))
   },
 }))

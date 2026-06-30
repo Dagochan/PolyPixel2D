@@ -5,18 +5,22 @@ import Outliner from './panels/Outliner'
 import Properties from './panels/Properties'
 import Toolbar from './panels/Toolbar'
 import ToolPane from './panels/ToolPane'
+import Timeline from './panels/Timeline'
 import { useSceneStore } from './scene/store'
 
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
 const OUTLINER_MIN_HEIGHT = 80
 const PROPERTIES_MIN_HEIGHT = 80
+const TIMELINE_MIN_HEIGHT = 80
+const TIMELINE_MAX_HEIGHT = 600
 
 export default function App() {
   const [awaitingMerge, setAwaitingMerge] = useState(false)
   const awaitingMergeRef = useRef(false)
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [propertiesHeight, setPropertiesHeight] = useState(540)
+  const [timelineHeight, setTimelineHeight] = useState(180)
   const resizingRef = useRef(false)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
@@ -216,6 +220,25 @@ export default function App() {
     window.addEventListener('pointerup', onUp)
   }
 
+  const startTimelineResize = (e: ReactPointerEvent) => {
+    e.preventDefault()
+    resizingRef.current = true
+    const onMove = (ev: PointerEvent) => {
+      if (!resizingRef.current) return
+      // the timeline is docked flush to the bottom of the window, so its height is just the
+      // distance from the cursor to the bottom edge — dragging up (smaller clientY) grows it
+      const next = window.innerHeight - ev.clientY
+      setTimelineHeight(Math.min(TIMELINE_MAX_HEIGHT, Math.max(TIMELINE_MIN_HEIGHT, next)))
+    }
+    const onUp = () => {
+      resizingRef.current = false
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   return (
     <div className="app">
       <Toolbar />
@@ -233,6 +256,8 @@ export default function App() {
           <div className="merge-hint">Merge: 1=first vertex 2=last vertex 3=midpoint (Esc or right-click to cancel)</div>
         )}
       </div>
+      <div className="timeline-resizer" onPointerDown={startTimelineResize} />
+      <Timeline style={{ height: timelineHeight }} />
     </div>
   )
 }

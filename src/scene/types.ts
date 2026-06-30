@@ -126,3 +126,47 @@ export interface EdgeKey {
   a: number
   b: number
 }
+
+/** Interpolation used for the segment leading into a keyframe (i.e. how the *previous* key blends
+ *  into this one). Cubic ease curves, not configurable bezier handles — matches the "ease-in/out"
+ *  scope agreed for the first pass of the animation system. */
+export type EasingType = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut'
+
+/** A full Transform snapshot at a point in time, on one object's animation track. Keyframing the
+ *  whole Transform together (rather than per-channel x/y/rotation/scale keys) matches how this
+ *  app's keying is triggered (one "insert keyframe" action per object) and avoids cross-channel
+ *  timing/easing bookkeeping; per-channel keys can be split out later if a real need shows up. */
+export interface TransformKeyframe {
+  id: string
+  /** Seconds from the clip's start. Keyframes on a track are kept sorted by this. */
+  time: number
+  transform: Transform
+  easing: EasingType
+}
+
+/** One object's keyframes within a single `AnimationClip`. An object with no track in a clip is
+ *  simply not animated by it (keeps its last-evaluated/static transform). */
+export interface ObjectAnimationTrack {
+  objectId: string
+  keyframes: TransformKeyframe[]
+}
+
+/** Out-of-range playback behavior once the playhead passes `duration` (or goes below 0 while
+ *  scrubbing). 'none' clamps and holds the boundary pose. */
+export type LoopMode = 'none' | 'loop' | 'pingpong'
+
+/** A named, independently-playable animation (e.g. "Idle", "Walk"). A project can hold several;
+ *  only one is "active" (edited/scrubbed) at a time, per the agreed no-per-clip-projects design. */
+export interface AnimationClip {
+  id: string
+  name: string
+  /** Seconds. The nominal playback range is [0, duration] regardless of where the last keyframe
+   *  on any track actually falls (lets a clip have trailing/leading hold time). */
+  duration: number
+  loopMode: LoopMode
+  /** Frames per second — purely a snapping/display granularity (this app's time axis stays
+   *  seconds-based, per the agreed Blender-style design). Per-clip rather than project-global so a
+   *  12fps "chunky" walk cycle and a smoother 30fps idle can coexist. */
+  frameRate: number
+  tracks: ObjectAnimationTrack[]
+}

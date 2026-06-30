@@ -632,3 +632,272 @@ input[type='range']:disabled {
   padding: 2px 6px;
   font-size: 10px;
 }
+
+.timeline {
+  flex-shrink: 0;
+  min-height: 80px;
+  background: #25262a;
+  border-top: 1px solid #111;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.timeline-resizer {
+  flex-shrink: 0;
+  height: 6px;
+  margin: -3px 0;
+  cursor: row-resize;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+
+.timeline-resizer:hover,
+.timeline-resizer:active {
+  background: #4ea1ff55;
+}
+
+.timeline-frame-readout {
+  align-self: center;
+  width: 64px;
+  font-size: 11px;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+}
+
+.timeline-header select,
+.timeline-header input[type='number'] {
+  background: #1e1f22;
+  color: #ddd;
+  border: 1px solid #111;
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-header input[type='number'] {
+  width: 56px;
+}
+
+.timeline-clip-name {
+  width: 140px;
+}
+
+.timeline-header button {
+  background: #3a3b3e;
+  color: #ddd;
+  border: 1px solid #111;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.timeline-header button:hover { filter: brightness(1.15); }
+
+.timeline-header button.active {
+  background: #4ea1ff;
+  color: #111;
+}
+
+.timeline-header button:disabled {
+  opacity: 0.4;
+  cursor: default;
+  filter: none;
+}
+
+.timeline-zoom-group {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.timeline-body {
+  flex: 1;
+  margin: 0 10px 10px;
+  display: flex;
+  overflow: hidden;
+  background: #1e1f22;
+  border: 1px solid #111;
+  border-radius: 3px;
+}
+
+.timeline-channel-list {
+  flex-shrink: 0;
+  width: 110px;
+  overflow-y: auto;
+  border-right: 1px solid #111;
+  background: #202124;
+}
+
+.timeline-channel-list-header {
+  height: 30px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #111;
+}
+
+.timeline-channel-name {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #aaa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid #2a2b2e;
+  cursor: pointer;
+}
+
+.timeline-channel-name:hover {
+  background: #2a2b2e;
+}
+
+.timeline-channel-name.selected {
+  background: #4ea1ff33;
+  color: #ddd;
+}
+
+.timeline-channel-name.empty-hint {
+  cursor: default;
+  color: #666;
+}
+
+.timeline-scroll {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.timeline-ruler {
+  position: relative;
+  flex-shrink: 0;
+  height: 16px;
+  border-bottom: 1px solid #111;
+}
+
+.timeline-frame-ruler {
+  position: relative;
+  flex-shrink: 0;
+  height: 14px;
+  border-bottom: 1px solid #111;
+  background: #202124;
+}
+
+.timeline-frame-ruler .timeline-tick span {
+  color: #666;
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid #3a3b3e;
+  pointer-events: none;
+}
+
+.timeline-tick span {
+  position: absolute;
+  top: 1px;
+  left: 3px;
+  font-size: 9px;
+  color: #888;
+  white-space: nowrap;
+}
+
+.timeline-rows {
+  position: relative;
+  flex: 1;
+  min-height: 28px;
+  cursor: pointer;
+}
+
+.timeline-track-row {
+  position: relative;
+  height: 28px;
+  border-bottom: 1px solid #2a2b2e;
+}
+
+.timeline-track-row.selected {
+  background: #4ea1ff14;
+}
+
+.timeline-track-row.empty {
+  height: 28px;
+}
+
+.timeline-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  pointer-events: none;
+}
+
+.timeline-gridline.frame {
+  border-left: 1px dotted #3a3b3e;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e5484d;
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.timeline-keyframe {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #4ea1ff;
+  border: 1px solid #111;
+  transform: translate(-50%, -50%) rotate(45deg);
+  cursor: grab;
+}
+
+.timeline-keyframe.selected {
+  background: #ffd24e;
+}
+
+.timeline-keyframe-inspector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 8px;
+  font-size: 12px;
+  color: #ccc;
+}
+
+.timeline-keyframe-inspector select {
+  background: #1e1f22;
+  color: #ddd;
+  border: 1px solid #111;
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+.timeline-keyframe-inspector button {
+  background: #3a3b3e;
+  color: #ddd;
+  border: 1px solid #111;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}

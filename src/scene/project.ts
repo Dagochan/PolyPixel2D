@@ -1,6 +1,6 @@
-import type { ReferenceImage, SceneObject } from './types'
+import type { AnimationClip, ReferenceImage, SceneObject } from './types'
 
-export const PROJECT_VERSION = 1
+export const PROJECT_VERSION = 2
 export const PROJECT_EXTENSION = '.fltd'
 
 export interface ProjectFile {
@@ -8,6 +8,9 @@ export interface ProjectFile {
   objects: SceneObject[]
   referenceImage: ReferenceImage | null
   meshOpacity: number
+  /** Absent in files saved before animation clips existed (version < 2) — `parseProjectFile`
+   *  backfills those to `[]`. */
+  clips: AnimationClip[]
 }
 
 export function serializeProject(data: ProjectFile): string {
@@ -31,5 +34,6 @@ export function parseProjectFile(json: string): ProjectFile {
     objects: d.objects as SceneObject[],
     referenceImage: d.referenceImage ?? null,
     meshOpacity: typeof d.meshOpacity === 'number' ? d.meshOpacity : 1,
+    clips: Array.isArray(d.clips) ? d.clips : [],
   }
 }
