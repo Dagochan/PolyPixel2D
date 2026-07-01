@@ -217,3 +217,86 @@ export function ReferenceImageIcon({ size = 16 }: IconProps) {
     </svg>
   )
 }
+
+export function PlayIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M7,5 L7,19 L19,12 Z" />
+    </svg>
+  )
+}
+
+export function PauseIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M7,5 L7,19 L10,19 L10,5 Z M14,5 L14,19 L17,19 L17,5 Z" />
+    </svg>
+  )
+}
+
+export function JumpToStartIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5,5 L5,19 L7.5,19 L7.5,5 Z M19,5 L7.5,12 L19,19 Z" />
+    </svg>
+  )
+}
+
+export function JumpToEndIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M19,5 L19,19 L16.5,19 L16.5,5 Z M5,5 L16.5,12 L5,19 Z" />
+    </svg>
+  )
+}
+
+export function JumpToPrevFrameIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      {/* diamond left, triangle pointing left right */}
+      <path d="M7,6 L12,12 L7,18 L2,12 Z M20,7 L20,17 L14,12 Z" />
+    </svg>
+  )
+}
+
+export function JumpToNextFrameIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      {/* triangle pointing right left, diamond right */}
+      <path d="M4,7 L4,17 L10,12 Z M17,6 L22,12 L17,18 L12,12 Z" />
+    </svg>
+  )
+}
+
+export function PlayheadIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" style={{ fillRule: 'evenodd', clipRule: 'evenodd' }}>
+      <g transform="matrix(1.166667,0,0,1,-2,-2)">
+        <path d="M18,2L18,14L12,20L6,14L6,2L18,2Z" />
+      </g>
+    </svg>
+  )
+}
+
+export function AddKeyframeIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" style={{ fillRule: 'evenodd', clipRule: 'evenodd' }}>
+      <g transform="matrix(1.2,0,0,1.166667,-4.2,-0)">
+        <path d="M16,6L11,12L16,18L21,12L16,6Z" />
+      </g>
+      <g transform="matrix(1.142857,0,0,1,0.714286,-5)">
+        <path d="M4.625,13L2,13L2,11L4.625,11L4.625,8L6.375,8L6.375,11L9,11L9,13L6.375,13L6.375,16L4.625,16L4.625,13Z" />
+      </g>
+      <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      <g transform="matrix(0,1,-1,0,24,0)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(-1,0,-0,-1,24,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(0,-1,1,0,0,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+    </svg>
+  )
+}

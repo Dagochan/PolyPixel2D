@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { EasingType, LoopMode } from '../scene/types'
+import { AddKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon } from './icons'
 
 const EASING_OPTIONS: EasingType[] = ['linear', 'easeIn', 'easeOut', 'easeInOut']
 
@@ -123,9 +124,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const frameRate = activeClip.frameRate
   // the track is at least as wide as the visible scroll area, so a short clip still fills the
   // panel instead of leaving a sliver of ruler at 0px-per-second precision
-  const contentWidth = Math.max(scrollRef.current?.clientWidth ?? 0, duration * pxPerSecond)
+  // left margin before t=0 so the playhead handle is never clipped behind the channel list
+  const RULER_OFFSET_PX = 8
+  const contentWidth = Math.max(scrollRef.current?.clientWidth ?? 0, duration * pxPerSecond + RULER_OFFSET_PX)
   const clampTime = (t: number) => Math.min(duration, Math.max(0, t))
-  const xToTime = (x: number) => clampTime(x / pxPerSecond)
+  const xToTime = (x: number) => clampTime((x - RULER_OFFSET_PX) / pxPerSecond)
   // frame rate is a snapping/display granularity only (the time axis itself stays seconds-based)
   // — pointer-driven moves (click-seek, keyframe drag) snap to it; typed values stay exact
   const snapToFrame = (t: number) => clampTime(Math.round(t * frameRate) / frameRate)
@@ -218,9 +221,23 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             onChange={(e) => setClipFrameRate(activeClip.id, +e.target.value)}
           />
         </label>
-        <button className={isPlaying ? 'active' : ''} onClick={() => setIsPlaying((p) => !p)}>
-          {isPlaying ? '⏸ Pause' : '▶ Play'}
-        </button>
+        <div className="timeline-transport">
+          <button className="timeline-transport-btn" title="Jump to start" onClick={() => setPlayhead(0)}>
+            <JumpToStartIcon size={16} />
+          </button>
+          <button className="timeline-transport-btn" title="Previous frame" onClick={() => setPlayhead(snapToFrame(playheadTime - 1 / frameRate))}>
+            <JumpToPrevFrameIcon size={16} />
+          </button>
+          <button className={`timeline-transport-btn play${isPlaying ? ' active' : ''}`} title={isPlaying ? 'Pause' : 'Play'} onClick={() => setIsPlaying((p) => !p)}>
+            {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
+          </button>
+          <button className="timeline-transport-btn" title="Next frame" onClick={() => setPlayhead(snapToFrame(playheadTime + 1 / frameRate))}>
+            <JumpToNextFrameIcon size={16} />
+          </button>
+          <button className="timeline-transport-btn" title="Jump to end" onClick={() => setPlayhead(duration)}>
+            <JumpToEndIcon size={16} />
+          </button>
+        </div>
         <label className="seg-input">
           Time (s)
           <input
@@ -232,13 +249,6 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           />
         </label>
         <span className="timeline-frame-readout">frame {Math.round(playheadTime * frameRate)}</span>
-        <button
-          disabled={!selectedObjectId}
-          title={selectedObjectId ? 'Snapshot the selected object\'s transform as a keyframe here' : 'Select an object first'}
-          onClick={() => selectedObjectId && insertKeyframe(selectedObjectId, snapToFrame(playheadTime))}
-        >
-          ◆ Insert keyframe
-        </button>
         <div className="timeline-zoom-group">
           <button title="Zoom out" onClick={() => zoomBy(1 / 1.25)}>
             −
@@ -254,7 +264,16 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
 
       <div className="timeline-body">
         <div className="timeline-channel-list">
-          <div className="timeline-channel-list-header" />
+          <div className="timeline-channel-list-header">
+            <button
+              className="timeline-insert-keyframe-btn"
+              disabled={!selectedObjectId}
+              title={selectedObjectId ? 'Insert keyframe at playhead' : 'Select an object first'}
+              onClick={() => selectedObjectId && insertKeyframe(selectedObjectId, snapToFrame(playheadTime))}
+            >
+              <AddKeyframeIcon size={14} />
+            </button>
+          </div>
           {activeClip.tracks.map((t) => {
             const obj = objects.find((o) => o.id === t.objectId)
             return (
@@ -274,16 +293,36 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         </div>
 
         <div className="timeline-scroll" ref={scrollRef}>
+          <div
+            className="timeline-playhead"
+            style={{ left: RULER_OFFSET_PX + playheadTime * pxPerSecond }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              draggingPlayheadRef.current = true
+              seekFromClientX(e.clientX)
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+            }}
+            onPointerMove={(e) => {
+              if (!draggingPlayheadRef.current) return
+              seekFromClientX(e.clientX)
+            }}
+            onPointerUp={(e) => {
+              draggingPlayheadRef.current = false
+              try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
+            }}
+          >
+            <PlayheadIcon size={16} />
+          </div>
           <div className="timeline-ruler" style={{ width: contentWidth }}>
             {ticks.map((t) => (
-              <div key={t} className="timeline-tick" style={{ left: t * pxPerSecond }}>
+              <div key={t} className="timeline-tick" style={{ left: RULER_OFFSET_PX + t * pxPerSecond }}>
                 <span>{t.toFixed(tickInterval < 1 ? 2 : 0)}s</span>
               </div>
             ))}
           </div>
           <div className="timeline-frame-ruler" style={{ width: contentWidth }}>
             {frameTicks.map((f) => (
-              <div key={f} className="timeline-tick" style={{ left: (f / frameRate) * pxPerSecond }}>
+              <div key={f} className="timeline-tick" style={{ left: RULER_OFFSET_PX + (f / frameRate) * pxPerSecond }}>
                 <span>{f}</span>
               </div>
             ))}
@@ -319,16 +358,15 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             }}
           >
             {frameGridlines.map((f) => (
-              <div key={`fg-${f}`} className="timeline-gridline frame" style={{ left: (f / frameRate) * pxPerSecond }} />
+              <div key={`fg-${f}`} className="timeline-gridline frame" style={{ left: RULER_OFFSET_PX + (f / frameRate) * pxPerSecond }} />
             ))}
-            <div className="timeline-playhead" style={{ left: playheadTime * pxPerSecond }} />
             {activeClip.tracks.map((t) => (
               <div key={t.objectId} className={'timeline-track-row' + (t.objectId === selectedObjectId ? ' selected' : '')}>
                 {t.keyframes.map((k) => (
                   <div
                     key={k.id}
                     className={'timeline-keyframe' + (selectedKeyId === k.id ? ' selected' : '')}
-                    style={{ left: k.time * pxPerSecond }}
+                    style={{ left: RULER_OFFSET_PX + k.time * pxPerSecond }}
                     title={`${objects.find((o) => o.id === t.objectId)?.name ?? t.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`}
                     onPointerDown={(e) => {
                       e.stopPropagation()

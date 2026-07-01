@@ -743,6 +743,61 @@ input[type='range']:disabled {
   height: 30px;
   flex-shrink: 0;
   border-bottom: 1px solid #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.timeline-transport {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.timeline-transport-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px;
+  margin: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  outline: none;
+  color: #aaa;
+  cursor: pointer;
+}
+.timeline-transport-btn:hover {
+  background: #333;
+  color: #fff;
+}
+.timeline-transport-btn.play.active {
+  color: #e5484d;
+}
+
+.timeline-insert-keyframe-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: #ccc;
+  cursor: pointer;
+}
+.timeline-insert-keyframe-btn:hover:not(:disabled) {
+  background: #333;
+  color: #fff;
+}
+.timeline-insert-keyframe-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .timeline-channel-name {
@@ -779,6 +834,7 @@ input[type='range']:disabled {
   flex-direction: column;
   overflow-x: auto;
   overflow-y: auto;
+  position: relative;
 }
 
 .timeline-ruler {
@@ -854,10 +910,23 @@ input[type='range']:disabled {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: 1px;
   background: #e5484d;
-  transform: translateX(-1px);
+  transform: translateX(-0.5px);
   pointer-events: none;
+  z-index: 10;
+  cursor: ew-resize;
+}
+
+.timeline-playhead > svg {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #e5484d;
+  pointer-events: auto;
+  cursor: ew-resize;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
 }
 
 .timeline-keyframe {
