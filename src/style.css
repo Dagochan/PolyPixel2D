@@ -514,6 +514,12 @@ input[type='range']:disabled {
   outline: 1px solid #4ea1ff;
 }
 
+/* this property has keyframes on the active clip — same idea as a DCC's "animated property"
+   highlight, so it's obvious at a glance without opening the Timeline */
+.layer-name.animated {
+  color: #c792ea;
+}
+
 .icon-btn {
   background: transparent;
   border: none;
@@ -854,6 +860,12 @@ input[type='range']:disabled {
 .timeline-channel-name.empty-hint {
   cursor: default;
   color: #666;
+}
+
+.timeline-channel-subrow {
+  padding-left: 20px;
+  font-size: 10px;
+  color: #888;
 }
 
 .timeline-scroll {

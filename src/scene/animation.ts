@@ -1,4 +1,4 @@
-import type { AnimationClip, EasingType, LoopMode, ObjectAnimationTrack, Transform } from './types'
+import type { AnimationClip, EasingType, LoopMode, ObjectAnimationTrack, ShapeKeyTrack, Transform } from './types'
 
 function easeFn(easing: EasingType, t: number): number {
   switch (easing) {
@@ -85,18 +85,64 @@ export function sampleTrack(
   return lastKey.transform
 }
 
-/** Evaluates every animated object in a clip at `time` (raw — this resolves it into the clip's
- *  playback range internally per its loop mode). Objects with no track in this clip are absent
- *  from the result (callers should leave their transform untouched). */
-export function sampleClipAtTime(clip: AnimationClip, time: number): Map<string, Transform> {
+/** Composite key for the `shapeKeyValues` map returned by `sampleClipAtTime` — an object can have
+ *  several independently-keyed shape keys, so `objectId` alone isn't unique. Exported so callers
+ *  (the store's playhead-apply step) can build the same key to read a sampled value back out. */
+export function shapeKeyTrackKey(objectId: string, shapeKeyId: string): string {
+  return `${objectId}::${shapeKeyId}`
+}
+
+/** Evaluates one shape key's weight track at `time` — same hold/lerp/cycle rules as `sampleTrack`,
+ *  just interpolating a plain number (`k.value`) instead of a `Transform`. */
+export function sampleShapeKeyTrack(
+  track: ShapeKeyTrack,
+  time: number,
+  cycle?: { duration: number },
+): number | null {
+  const keys = track.keyframes
+  if (keys.length === 0) return null
+  if (time <= keys[0].time) return keys[0].value
+  const lastKey = keys[keys.length - 1]
+  if (time >= lastKey.time) {
+    if (cycle && lastKey.time < cycle.duration) {
+      const span = cycle.duration - lastKey.time
+      const rawT = span <= 0 ? 1 : (time - lastKey.time) / span
+      return lerp(lastKey.value, keys[0].value, easeFn(keys[0].easing, Math.min(1, rawT)))
+    }
+    return lastKey.value
+  }
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i]
+    const b = keys[i + 1]
+    if (time >= a.time && time <= b.time) {
+      const span = b.time - a.time
+      const rawT = span <= 0 ? 1 : (time - a.time) / span
+      return lerp(a.value, b.value, easeFn(b.easing, rawT))
+    }
+  }
+  return lastKey.value
+}
+
+/** Evaluates every animated object (and shape key) in a clip at `time` (raw — resolved into the
+ *  clip's playback range internally per its loop mode). Objects/shape keys with no track in this
+ *  clip are absent from the result (callers should leave their current value untouched). */
+export function sampleClipAtTime(
+  clip: AnimationClip,
+  time: number,
+): { transforms: Map<string, Transform>; shapeKeyValues: Map<string, number> } {
   const resolved = resolvePlaybackTime(time, clip.duration, clip.loopMode)
   // only a plain 'loop' wraps back to its own start — 'pingpong' already reverses smoothly on its
   // own, and 'none' has nothing past the end to blend toward
   const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
-  const result = new Map<string, Transform>()
+  const transforms = new Map<string, Transform>()
   for (const track of clip.tracks) {
     const sampled = sampleTrack(track, resolved, cycle)
-    if (sampled) result.set(track.objectId, sampled)
+    if (sampled) transforms.set(track.objectId, sampled)
   }
-  return result
+  const shapeKeyValues = new Map<string, number>()
+  for (const track of clip.shapeKeyTracks ?? []) {
+    const sampled = sampleShapeKeyTrack(track, resolved, cycle)
+    if (sampled !== null) shapeKeyValues.set(shapeKeyTrackKey(track.objectId, track.shapeKeyId), sampled)
+  }
+  return { transforms, shapeKeyValues }
 }

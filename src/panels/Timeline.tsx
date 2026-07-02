@@ -44,6 +44,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const removeKeyframe = useSceneStore((s) => s.removeKeyframe)
   const setKeyframeTime = useSceneStore((s) => s.setKeyframeTime)
   const setKeyframeEasing = useSceneStore((s) => s.setKeyframeEasing)
+  const removeShapeKeyKeyframe = useSceneStore((s) => s.removeShapeKeyKeyframe)
+  const setShapeKeyKeyframeTime = useSceneStore((s) => s.setShapeKeyKeyframeTime)
+  const setShapeKeyKeyframeEasing = useSceneStore((s) => s.setShapeKeyKeyframeEasing)
   const setPlayhead = useSceneStore((s) => s.setPlayhead)
 
   const activeClip = clips.find((c) => c.id === activeClipId) ?? null
@@ -55,6 +58,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   // reverse shouldn't happen: switching the scene selection elsewhere shouldn't silently relabel
   // an already-selected keyframe as belonging to a different track.
   const [selectedKeyObjectId, setSelectedKeyObjectId] = useState<string | null>(null)
+  // which shape key `selectedKeyId` belongs to, if any — `null` means the selected key is on the
+  // object's Transform track, not a shape-key weight track
+  const [selectedKeyShapeKeyId, setSelectedKeyShapeKeyId] = useState<string | null>(null)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -171,6 +177,35 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const frameGridlines: number[] =
     pxPerFrame >= 3 ? Array.from({ length: totalFrames + 1 }, (_, f) => f) : frameTicks
 
+  // one row per Transform track, each immediately followed by that same object's shape-key
+  // tracks (if any) — a shape-key track can outlive its object's Transform track (e.g. the
+  // Transform track got fully deleted), so this is built from the union of both track lists'
+  // object ids, not just `tracks`.
+  type Row =
+    | { kind: 'transform'; objectId: string; keyframes: typeof activeClip.tracks[number]['keyframes'] }
+    | {
+        kind: 'shapeKey'
+        objectId: string
+        shapeKeyId: string
+        keyName: string
+        keyframes: NonNullable<typeof activeClip.shapeKeyTracks>[number]['keyframes']
+      }
+  const rowObjectIds: string[] = []
+  for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
+  for (const t of activeClip.shapeKeyTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
+  const rows: Row[] = []
+  for (const objectId of rowObjectIds) {
+    const t = activeClip.tracks.find((tt) => tt.objectId === objectId)
+    if (t) rows.push({ kind: 'transform', objectId, keyframes: t.keyframes })
+    const obj = objects.find((o) => o.id === objectId)
+    for (const skt of (activeClip.shapeKeyTracks ?? []).filter((s) => s.objectId === objectId)) {
+      const keyName = obj?.shapeKeys?.find((k) => k.id === skt.shapeKeyId)?.name ?? '(deleted shape key)'
+      rows.push({ kind: 'shapeKey', objectId, shapeKeyId: skt.shapeKeyId, keyName, keyframes: skt.keyframes })
+    }
+  }
+
   return (
     <div className="panel timeline" style={style}>
       <div className="timeline-header">
@@ -274,20 +309,32 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
               <AddKeyframeIcon size={14} />
             </button>
           </div>
-          {activeClip.tracks.map((t) => {
-            const obj = objects.find((o) => o.id === t.objectId)
+          {rows.map((row) => {
+            if (row.kind === 'transform') {
+              const obj = objects.find((o) => o.id === row.objectId)
+              return (
+                <div
+                  key={`t-${row.objectId}`}
+                  className={'timeline-channel-name' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title={obj?.name ?? '(deleted object)'}
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  {obj?.name ?? '(deleted object)'}
+                </div>
+              )
+            }
             return (
               <div
-                key={t.objectId}
-                className={'timeline-channel-name' + (t.objectId === selectedObjectId ? ' selected' : '')}
-                title={obj?.name ?? '(deleted object)'}
-                onClick={() => selectObject(t.objectId)}
+                key={`sk-${row.objectId}-${row.shapeKeyId}`}
+                className={'timeline-channel-name timeline-channel-subrow' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                title={row.keyName}
+                onClick={() => selectObject(row.objectId)}
               >
-                {obj?.name ?? '(deleted object)'}
+                ↳ {row.keyName}
               </div>
             )
           })}
-          {activeClip.tracks.length === 0 && (
+          {rows.length === 0 && (
             <div className="timeline-channel-name empty-hint">No keyframed objects yet</div>
           )}
         </div>
@@ -360,18 +407,26 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             {frameGridlines.map((f) => (
               <div key={`fg-${f}`} className="timeline-gridline frame" style={{ left: RULER_OFFSET_PX + (f / frameRate) * pxPerSecond }} />
             ))}
-            {activeClip.tracks.map((t) => (
-              <div key={t.objectId} className={'timeline-track-row' + (t.objectId === selectedObjectId ? ' selected' : '')}>
-                {t.keyframes.map((k) => (
+            {rows.map((row) => (
+              <div
+                key={row.kind === 'transform' ? `t-${row.objectId}` : `sk-${row.objectId}-${row.shapeKeyId}`}
+                className={'timeline-track-row' + (row.objectId === selectedObjectId ? ' selected' : '')}
+              >
+                {row.keyframes.map((k) => (
                   <div
                     key={k.id}
                     className={'timeline-keyframe' + (selectedKeyId === k.id ? ' selected' : '')}
                     style={{ left: RULER_OFFSET_PX + k.time * pxPerSecond }}
-                    title={`${objects.find((o) => o.id === t.objectId)?.name ?? t.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`}
+                    title={
+                      row.kind === 'transform'
+                        ? `${objects.find((o) => o.id === row.objectId)?.name ?? row.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                        : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                    }
                     onPointerDown={(e) => {
                       e.stopPropagation()
-                      selectObject(t.objectId)
-                      setSelectedKeyObjectId(t.objectId)
+                      selectObject(row.objectId)
+                      setSelectedKeyObjectId(row.objectId)
+                      setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
                       setSelectedKeyId(k.id)
                       draggingKeyRef.current = k.id
                       e.currentTarget.setPointerCapture(e.pointerId)
@@ -380,7 +435,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       if (draggingKeyRef.current !== k.id) return
                       const rect = trackRef.current?.getBoundingClientRect()
                       if (!rect) return
-                      setKeyframeTime(t.objectId, k.id, snapToFrame(xToTime(e.clientX - rect.left)))
+                      const time = snapToFrame(xToTime(e.clientX - rect.left))
+                      if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
+                      else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
                     }}
                     onPointerUp={() => {
                       draggingKeyRef.current = null
@@ -389,7 +446,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 ))}
               </div>
             ))}
-            {activeClip.tracks.length === 0 && <div className="timeline-track-row empty" />}
+            {rows.length === 0 && <div className="timeline-track-row empty" />}
           </div>
         </div>
       </div>
@@ -397,8 +454,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
       {selectedKeyId && selectedKeyObjectId && (
         <div className="timeline-keyframe-inspector">
           {(() => {
-            const keyTrack = activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)
-            const key = keyTrack?.keyframes.find((k) => k.id === selectedKeyId)
+            const shapeKeyId = selectedKeyShapeKeyId
+            const key = shapeKeyId
+              ? (activeClip.shapeKeyTracks ?? [])
+                  .find((t) => t.objectId === selectedKeyObjectId && t.shapeKeyId === shapeKeyId)
+                  ?.keyframes.find((k) => k.id === selectedKeyId)
+              : activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)?.keyframes.find((k) => k.id === selectedKeyId)
             if (!key) return null
             return (
               <>
@@ -407,7 +468,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   Easing
                   <select
                     value={key.easing}
-                    onChange={(e) => setKeyframeEasing(selectedKeyObjectId, key.id, e.target.value as EasingType)}
+                    onChange={(e) => {
+                      const easing = e.target.value as EasingType
+                      if (shapeKeyId) setShapeKeyKeyframeEasing(selectedKeyObjectId, shapeKeyId, key.id, easing)
+                      else setKeyframeEasing(selectedKeyObjectId, key.id, easing)
+                    }}
                   >
                     {EASING_OPTIONS.map((opt) => (
                       <option key={opt} value={opt}>
@@ -419,9 +484,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 <button
                   title="Delete this keyframe"
                   onClick={() => {
-                    removeKeyframe(selectedKeyObjectId, key.id)
+                    if (shapeKeyId) removeShapeKeyKeyframe(selectedKeyObjectId, shapeKeyId, key.id)
+                    else removeKeyframe(selectedKeyObjectId, key.id)
                     setSelectedKeyId(null)
                     setSelectedKeyObjectId(null)
+                    setSelectedKeyShapeKeyId(null)
                   }}
                 >
                   🗑 Delete keyframe

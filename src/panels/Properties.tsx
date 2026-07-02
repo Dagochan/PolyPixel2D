@@ -5,7 +5,7 @@ import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
 import type { InsertSlot, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
-import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon } from './icons'
+import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon } from './icons'
 
 function NumberField({
   label,
@@ -239,6 +239,10 @@ function ShapeKeysSection({
   setShapeKeyValue,
   setShapeKeyInterpolation,
   setEditingShapeKey,
+  insertShapeKeyKeyframe,
+  hasActiveClip,
+  playheadTime,
+  animatedShapeKeyIds,
 }: {
   obj: SceneObject
   editingShapeKeyId: string | null
@@ -248,6 +252,12 @@ function ShapeKeysSection({
   setShapeKeyValue: (id: string, keyId: string, value: number) => void
   setShapeKeyInterpolation: (id: string, keyId: string, interpolation: 'linear' | 'arc') => void
   setEditingShapeKey: (keyId: string | null) => void
+  insertShapeKeyKeyframe: (id: string, keyId: string, time: number) => void
+  hasActiveClip: boolean
+  playheadTime: number
+  /** Shape key ids that have at least one keyframe on the active clip — their name gets a
+   *  distinct color, same idea as a DCC's "this property is animated" highlight. */
+  animatedShapeKeyIds: Set<string>
 }) {
   const keys = obj.shapeKeys ?? []
   const editingKey = keys.find((k) => k.id === editingShapeKeyId)
@@ -282,7 +292,8 @@ function ShapeKeysSection({
               ✏️
             </button>
             <input
-              className="layer-name"
+              className={'layer-name' + (animatedShapeKeyIds.has(key.id) ? ' animated' : '')}
+              title={animatedShapeKeyIds.has(key.id) ? 'This shape key has keyframes on the active clip' : undefined}
               value={key.name}
               onChange={(e) => renameShapeKey(obj.id, key.id, e.target.value)}
             />
@@ -311,6 +322,14 @@ function ShapeKeysSection({
               onChange={(e) => setShapeKeyValue(obj.id, key.id, +e.target.value)}
             />
             <span className="shapekey-value-readout">{round(value)}</span>
+            <button
+              className="icon-btn"
+              disabled={!hasActiveClip}
+              title={hasActiveClip ? 'Insert a keyframe for this weight at the playhead' : 'Create/select an animation clip first'}
+              onClick={() => insertShapeKeyKeyframe(obj.id, key.id, playheadTime)}
+            >
+              <AddKeyframeIcon size={14} />
+            </button>
             <button className="icon-btn" title="Delete this shape key" onClick={() => removeShapeKey(obj.id, key.id)}>
               🗑
             </button>
@@ -355,6 +374,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setShapeKeyValue = useSceneStore((s) => s.setShapeKeyValue)
   const setShapeKeyInterpolation = useSceneStore((s) => s.setShapeKeyInterpolation)
   const setEditingShapeKey = useSceneStore((s) => s.setEditingShapeKey)
+  const insertShapeKeyKeyframe = useSceneStore((s) => s.insertShapeKeyKeyframe)
+  const hasActiveClip = useSceneStore((s) => s.activeClipId !== null)
+  const activeClip = useSceneStore((s) => s.clips.find((c) => c.id === s.activeClipId))
+  const playheadTime = useSceneStore((s) => s.playheadTime)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
@@ -525,6 +548,16 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               setShapeKeyValue={setShapeKeyValue}
               setShapeKeyInterpolation={setShapeKeyInterpolation}
               setEditingShapeKey={setEditingShapeKey}
+              insertShapeKeyKeyframe={insertShapeKeyKeyframe}
+              hasActiveClip={hasActiveClip}
+              animatedShapeKeyIds={
+                new Set(
+                  (activeClip?.shapeKeyTracks ?? [])
+                    .filter((t) => t.objectId === obj.id && t.keyframes.length > 0)
+                    .map((t) => t.shapeKeyId),
+                )
+              }
+              playheadTime={playheadTime}
             />
           )}
 

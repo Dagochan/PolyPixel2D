@@ -182,6 +182,25 @@ export interface ObjectAnimationTrack {
   keyframes: TransformKeyframe[]
 }
 
+/** A single keyed value on a `ShapeKeyTrack` — same shape as `TransformKeyframe` but for one
+ *  scalar (a shape key's blend weight) instead of a full `Transform`. */
+export interface ShapeKeyKeyframe {
+  id: string
+  time: number
+  value: number
+  easing: EasingType
+}
+
+/** One shape key's animated weight track within a clip — parallel to `ObjectAnimationTrack`
+ *  but keyed by (`objectId`, `shapeKeyId`) since an object can have several independently
+ *  keyed shape keys. Deliberately a separate array on `AnimationClip` rather than folded into
+ *  `tracks`, so existing Transform-only track code never has to type-narrow. */
+export interface ShapeKeyTrack {
+  objectId: string
+  shapeKeyId: string
+  keyframes: ShapeKeyKeyframe[]
+}
+
 /** Out-of-range playback behavior once the playhead passes `duration` (or goes below 0 while
  *  scrubbing). 'none' clamps and holds the boundary pose. */
 export type LoopMode = 'none' | 'loop' | 'pingpong'
@@ -200,4 +219,6 @@ export interface AnimationClip {
    *  12fps "chunky" walk cycle and a smoother 30fps idle can coexist. */
   frameRate: number
   tracks: ObjectAnimationTrack[]
+  /** Shape-key weight tracks — absent/undefined on older saved projects, treated as empty. */
+  shapeKeyTracks?: ShapeKeyTrack[]
 }

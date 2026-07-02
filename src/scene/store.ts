@@ -14,7 +14,7 @@ import type {
   UvIslandTransform,
   Vec2,
 } from './types'
-import { resolvePlaybackTime, sampleClipAtTime } from './animation'
+import { resolvePlaybackTime, sampleClipAtTime, shapeKeyTrackKey } from './animation'
 import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
@@ -310,6 +310,12 @@ interface SceneState {
   removeKeyframe: (objectId: string, keyframeId: string) => void
   setKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Keys the given shape key's current live weight (`obj.shapeKeyValues[shapeKeyId] ?? 0`) at
+   *  `time` — mirrors `insertKeyframe` capturing the live transform. Creates the track if absent. */
+  insertShapeKeyKeyframe: (objectId: string, shapeKeyId: string, time: number, easing?: EasingType) => void
+  removeShapeKeyKeyframe: (objectId: string, shapeKeyId: string, keyframeId: string) => void
+  setShapeKeyKeyframeTime: (objectId: string, shapeKeyId: string, keyframeId: string, time: number) => void
+  setShapeKeyKeyframeEasing: (objectId: string, shapeKeyId: string, keyframeId: string, easing: EasingType) => void
   /** Move the scrub position and apply the active clip's evaluated pose to every object it
    *  animates (objects with no track in the active clip are left untouched). This is pose
    *  *evaluation*, not a user edit — it doesn't push undo history. */
@@ -1488,6 +1494,83 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  insertShapeKeyKeyframe: (objectId, shapeKeyId, time, easing = 'linear') => {
+    const s = get()
+    const clipId = s.activeClipId
+    if (!clipId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const value = obj.shapeKeyValues?.[shapeKeyId] ?? 0
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== clipId) return c
+        const tracks = c.shapeKeyTracks ?? []
+        const existingTrack = tracks.find((t) => t.objectId === objectId && t.shapeKeyId === shapeKeyId)
+        const newKey = { id: genId('key'), time, value, easing }
+        if (!existingTrack) {
+          return { ...c, shapeKeyTracks: [...tracks, { objectId, shapeKeyId, keyframes: [newKey] }] }
+        }
+        const withoutSameTime = existingTrack.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return {
+          ...c,
+          shapeKeyTracks: tracks.map((t) =>
+            t.objectId === objectId && t.shapeKeyId === shapeKeyId ? { ...t, keyframes } : t,
+          ),
+        }
+      }),
+    }))
+  },
+
+  removeShapeKeyKeyframe: (objectId, shapeKeyId, keyframeId) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          shapeKeyTracks: (c.shapeKeyTracks ?? [])
+            .map((t) =>
+              t.objectId === objectId && t.shapeKeyId === shapeKeyId
+                ? { ...t, keyframes: t.keyframes.filter((k) => k.id !== keyframeId) }
+                : t,
+            )
+            .filter((t) => !(t.objectId === objectId && t.shapeKeyId === shapeKeyId) || t.keyframes.length > 0),
+        }
+      }),
+    })),
+
+  setShapeKeyKeyframeTime: (objectId, shapeKeyId, keyframeId, time) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          shapeKeyTracks: (c.shapeKeyTracks ?? []).map((t) => {
+            if (t.objectId !== objectId || t.shapeKeyId !== shapeKeyId) return t
+            const keyframes = t.keyframes
+              .map((k) => (k.id === keyframeId ? { ...k, time } : k))
+              .sort((a, b) => a.time - b.time)
+            return { ...t, keyframes }
+          }),
+        }
+      }),
+    })),
+
+  setShapeKeyKeyframeEasing: (objectId, shapeKeyId, keyframeId, easing) =>
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          shapeKeyTracks: (c.shapeKeyTracks ?? []).map((t) =>
+            t.objectId !== objectId || t.shapeKeyId !== shapeKeyId
+              ? t
+              : { ...t, keyframes: t.keyframes.map((k) => (k.id === keyframeId ? { ...k, easing } : k)) },
+          ),
+        }
+      }),
+    })),
+
   setPlayhead: (time) => {
     const s = get()
     const clip = s.clips.find((c) => c.id === s.activeClipId)
@@ -1503,8 +1586,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((st) => ({
       playheadTime: resolved,
       objects: st.objects.map((o) => {
-        const t = sampled.get(o.id)
-        return t ? { ...o, transform: t } : o
+        const t = sampled.transforms.get(o.id)
+        const next = t ? { ...o, transform: t } : o
+        // apply any sampled shape-key weights for this object, one lookup per shape key it has —
+        // a key with no track at this time is left at whatever weight it already had
+        if (!next.shapeKeys?.length) return next
+        let shapeKeyValues: Record<string, number> | null = null
+        for (const key of next.shapeKeys) {
+          const v = sampled.shapeKeyValues.get(shapeKeyTrackKey(o.id, key.id))
+          if (v === undefined) continue
+          if (!shapeKeyValues) shapeKeyValues = { ...next.shapeKeyValues }
+          shapeKeyValues[key.id] = v
+        }
+        return shapeKeyValues ? { ...next, shapeKeyValues } : next
       }),
     }))
   },
