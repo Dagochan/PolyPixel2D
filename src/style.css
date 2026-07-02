@@ -165,6 +165,16 @@ body {
   align-items: center;
 }
 
+/* icon-only primitive buttons (Rectangle/Circle/Hair Path) — a fixed square so every row's
+   parameter fields line up at the same x regardless of how wide each primitive's old label text
+   used to be */
+.primitive-btn {
+  width: 32px;
+  height: 28px;
+  padding: 0 !important;
+  flex-shrink: 0;
+}
+
 .seg-input {
   display: flex;
   flex-direction: column;
@@ -312,6 +322,8 @@ input[type='range']:disabled {
   color: #ddd;
   cursor: grab;
   touch-action: none;
+  /* dragging the header by its text (to move the window) shouldn't also text-select it */
+  user-select: none;
 }
 
 .pixel-preview-header label {
@@ -331,6 +343,7 @@ input[type='range']:disabled {
   gap: 10px;
   font-size: 12px;
   color: #ddd;
+  user-select: none;
 }
 
 .pixel-preview-controls label {
@@ -534,7 +547,9 @@ input[type='range']:disabled {
 
 .prop-section {
   font-size: 11px;
-  color: #888;
+  /* distinct from the regular field-label gray (#999) so section headers (SLOT NAME, ISLANDS,
+     MATERIAL, ...) stand out as group titles at a glance — reuses the app's existing accent blue */
+  color: #7fb8ea;
   margin-top: 6px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -545,6 +560,19 @@ input[type='range']:disabled {
 .prop-row {
   display: flex;
   gap: 8px;
+}
+
+.shapekey-value-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.shapekey-value-readout {
+  font-size: 11px;
+  color: #aaa;
+  width: 34px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .insert-slot-label {

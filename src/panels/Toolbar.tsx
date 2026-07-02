@@ -9,6 +9,9 @@ import {
   RedoIcon,
   ObjImportIcon,
   ReferenceImageIcon,
+  RectPrimitiveIcon,
+  CirclePrimitiveIcon,
+  HairPathPrimitiveIcon,
 } from './icons'
 
 export default function Toolbar() {
@@ -18,6 +21,8 @@ export default function Toolbar() {
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
   const addEmpty = useSceneStore((s) => s.addEmpty)
   const setPendingPrimitive = useSceneStore((s) => s.setPendingPrimitive)
+  const hairPathConstantWidth = useSceneStore((s) => s.hairPathConstantWidth)
+  const setHairPathConstantWidth = useSceneStore((s) => s.setHairPathConstantWidth)
   const referenceImage = useSceneStore((s) => s.referenceImage)
   const setReferenceImage = useSceneStore((s) => s.setReferenceImage)
   const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
@@ -275,6 +280,7 @@ export default function Toolbar() {
                 <div className="dropdown-submenu">
                   <div className="dropdown-item-row">
                     <button
+                      className="primitive-btn"
                       title={mode === 'edit' && selectedObj ? 'Add a rectangle as an island (click to place it)' : 'Add a rectangle'}
                       onClick={() => {
                         if (mode === 'edit' && selectedObj) {
@@ -286,7 +292,7 @@ export default function Toolbar() {
                         closeAddMenu()
                       }}
                     >
-                      ▭ Rectangle
+                      <RectPrimitiveIcon size={18} />
                     </button>
                     <label className="seg-input">
                       Segments X
@@ -299,6 +305,7 @@ export default function Toolbar() {
                   </div>
                   <div className="dropdown-item-row">
                     <button
+                      className="primitive-btn"
                       title={mode === 'edit' && selectedObj ? 'Add a circle as an island (click to place it)' : 'Add a circle'}
                       onClick={() => {
                         if (mode === 'edit' && selectedObj) {
@@ -310,7 +317,7 @@ export default function Toolbar() {
                         closeAddMenu()
                       }}
                     >
-                      ◯ Circle
+                      <CirclePrimitiveIcon size={18} />
                     </button>
                     <label className="seg-input">
                       Segments
@@ -319,6 +326,30 @@ export default function Toolbar() {
                         min={3}
                         value={circleSegs}
                         onChange={(e) => setCircleSegs(+e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <div className="dropdown-item-row">
+                    <button
+                      className="primitive-btn"
+                      title={
+                        hairPathConstantWidth
+                          ? 'Add a Hair Path: click to lay down control points, drag any of them to reposition, Enter to confirm (constant width — stays full width to the tip, for belts/straps)'
+                          : 'Add a Hair Path: click to lay down control points, drag any of them to reposition, Enter to confirm (root full-width, tapers to a single vertex at the tip)'
+                      }
+                      onClick={() => {
+                        setActiveTool('place-hairpath')
+                        closeAddMenu()
+                      }}
+                    >
+                      <HairPathPrimitiveIcon size={18} />
+                    </button>
+                    <label className="seg-input" title="Keep the ribbon full width all the way to the tip instead of tapering to a point — for belts/straps, not just hair">
+                      Constant width
+                      <input
+                        type="checkbox"
+                        checked={hairPathConstantWidth}
+                        onChange={(e) => setHairPathConstantWidth(e.target.checked)}
                       />
                     </label>
                   </div>

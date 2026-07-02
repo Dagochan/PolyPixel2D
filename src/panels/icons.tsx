@@ -99,6 +99,22 @@ export function VisibleFalseIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function LockedIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M240-80q-33 0-56.5-23.5T160-160v-400q0-33 23.5-56.5T240-640h40v-80q0-83 58.5-141.5T480-920q83 0 141.5 58.5T680-720v80h40q33 0 56.5 23.5T800-560v400q0 33-23.5 56.5T720-80H240Zm0-80h480v-400H240v400Zm296.5-143.5Q560-327 560-360t-23.5-56.5Q513-440 480-440t-56.5 23.5Q400-393 400-360t23.5 56.5Q447-280 480-280t56.5-23.5ZM360-640h240v-80q0-50-35-85t-85-35q-50 0-85 35t-35 85v80ZM240-160v-400 400Z" />
+    </svg>
+  )
+}
+
+export function UnlockedIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M240-160h480v-400H240v400Zm296.5-143.5Q560-327 560-360t-23.5-56.5Q513-440 480-440t-56.5 23.5Q400-393 400-360t23.5 56.5Q447-280 480-280t56.5-23.5ZM240-160v-400 400Zm0 80q-33 0-56.5-23.5T160-160v-400q0-33 23.5-56.5T240-640h280v-80q0-83 58.5-141.5T720-920q83 0 141.5 58.5T920-720h-80q0-50-35-85t-85-35q-50 0-85 35t-35 85v80h120q33 0 56.5 23.5T800-560v400q0 33-23.5 56.5T720-80H240Z" />
+    </svg>
+  )
+}
+
 export function IslandSelectIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} {...base}>
@@ -114,6 +130,47 @@ export function LoopCutIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} {...base}>
       <path d="M16,21L3,21L3,8L8,3L21,3L21,16L16,21ZM13,4L8.5,4L4.5,8L9,8L13,4ZM9,9L4,9L4,20L9,20L9,9ZM10,20L15,20L15,9L10,9L10,20ZM10.5,8L15,8L19,4L14.5,4L10.5,8ZM16,9L16,19.5L20,15.5L20,5L16,9Z" />
+    </svg>
+  )
+}
+
+export function RectPrimitiveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2" width="20" height="20" strokeWidth="1.1" />
+      <path d="M15,3L15,21" strokeWidth="1" />
+      <path d="M8.5,3L8.5,21" strokeWidth="1" />
+      <path d="M3,15L21,15" strokeWidth="1" />
+      <path d="M3,8.5L21,8.5" strokeWidth="1" />
+    </svg>
+  )
+}
+
+export function CirclePrimitiveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12,2L19.071,4.929L22,12L19.071,19.071L12,22L4.929,19.071L2,12L4.929,4.929L12,2Z" strokeWidth="1" />
+      <path d="M3,12L21,12" strokeWidth="1" />
+      <path d="M12,3L12,21" strokeWidth="1" />
+      <path d="M6,6L18,18" strokeWidth="1" />
+      <path d="M6,18L18,6" strokeWidth="1" />
+    </svg>
+  )
+}
+
+export function HairPathPrimitiveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <g transform="matrix(0.033333,0,0,0.033333,-11.333333,-4.666667)">
+        <path d="M610,200L610,400L670,540L770,680L1000,800L700,770L520,635L400,440L400,200L610,200Z" strokeWidth="30" />
+        <path d="M400,440L610,400" strokeWidth="30" />
+        <g transform="matrix(1,0,0,1,10,150)">
+          <path d="M510,485L660,390" strokeWidth="30" />
+        </g>
+        <g transform="matrix(1,0,0,1,70,290)">
+          <path d="M630,480L700,390" strokeWidth="30" />
+        </g>
+      </g>
     </svg>
   )
 }

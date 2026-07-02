@@ -18,6 +18,8 @@ import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
+import { displayVertices } from '../scene/shapeKeys'
+import { createHairPathMesh } from '../scene/primitives'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -26,6 +28,31 @@ const RING_RADIUS_PX = 56 // fixed screen size, like Blender's gizmo (doesn't sc
 const ARROW_LENGTH_PX = 42
 const EMPTY_GIZMO_SIZE = 12 // world units; stand-in "bounds" half-size for a mesh-less Empty
 const EMPTY_HIT_RADIUS_PX = 10 // click hit-test radius for picking an Empty in the viewport
+const HAIR_PATH_DEFAULT_WIDTH = 10 // world units — starting root width of a Hair Path, before any Shift+wheel adjustment
+const HAIR_PATH_CP_HIT_RADIUS_PX = 10 // click hit-test radius for grabbing an already-placed control point
+
+/** The object as it should actually be displayed/hit-tested right now — every field identical
+ *  to `obj` except `mesh.vertices`, which is swapped for the shape-key-evaluated pose (see
+ *  `displayVertices`). A no-op (returns `obj` itself) whenever there's nothing to blend, so every
+ *  caller can use this unconditionally with zero cost/behavior-change for shape-key-less objects. */
+function getEffectiveObj(obj: SceneObject, editingShapeKeyId: string | null, isSelected: boolean): SceneObject {
+  const verts = displayVertices(obj, editingShapeKeyId, isSelected)
+  return verts === obj.mesh.vertices ? obj : { ...obj, mesh: { ...obj.mesh, vertices: verts } }
+}
+
+/** Vertex indices belonging to a locked island (Properties panel lock toggle) — locked
+ *  geometry is completely ignored by click-select, box-select, and knife/loop-cut hover, on
+ *  top of its wireframe/overlays being hidden during rendering (see the render pass in the
+ *  main effect below, which computes this same set independently). */
+function getLockedVertices(obj: SceneObject): Set<number> {
+  const locked = new Set<number>()
+  if (!obj.islandLocked) return locked
+  const islands = findIslands(obj.mesh)
+  islands.forEach((island, islandIdx) => {
+    if (obj.islandLocked?.[islandIdx]) island.vertices.forEach((v) => locked.add(v))
+  })
+  return locked
+}
 
 type DragMode =
   | { kind: 'none' }
@@ -64,6 +91,8 @@ type DragMode =
     }
   | { kind: 'move-head'; objectId: string }
   | { kind: 'move-tail'; objectId: string }
+  | { kind: 'move-shapekey-arc-pivot'; objectId: string; keyId: string }
+  | { kind: 'move-hairpath-cp'; index: number }
   | {
       kind: 'box-select'
       objectId: string
@@ -161,6 +190,10 @@ export default function Viewport() {
   const ringCutSnapMidRef = useRef(false)
   const knifePathRef = useRef<KnifeCutPoint[]>([])
   const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
+  // control points for the in-progress Hair Path primitive, in world space (see createHairPathMesh)
+  const hairPathRef = useRef<Vec2[]>([])
+  // root width for the in-progress Hair Path — Shift+wheel adjusts this live while drawing
+  const hairPathWidthRef = useRef(HAIR_PATH_DEFAULT_WIDTH)
   const elementModalRef = useRef<ElementModal | null>(null)
   const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
   const placePreviewRef = useRef<Vec2 | null>(null)
@@ -199,6 +232,31 @@ export default function Viewport() {
     }
   }
 
+  /** Confirm the in-progress Hair Path: needs at least 2 control points (a single point can't
+   *  define a ribbon). Mirrors Rect/Circle's own island-vs-standalone split — `addHairPathIsland`
+   *  when there's a selected object in edit mode to merge into, otherwise a new standalone object. */
+  function finalizeHairPath() {
+    const store = useSceneStore.getState()
+    const points = hairPathRef.current
+    const width = hairPathWidthRef.current
+    const constantWidth = store.hairPathConstantWidth
+    hairPathRef.current = []
+    hairPathWidthRef.current = HAIR_PATH_DEFAULT_WIDTH
+    if (points.length < 2) return
+    if (store.mode === 'edit' && store.selectedObjectId) {
+      const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+      if (obj) {
+        const worldTransform = getWorldTransform(obj, store.objects)
+        const localPoints = points.map((p) => inverseTransform(p, worldTransform))
+        store.addHairPathIsland(obj.id, localPoints, width, constantWidth)
+        store.setActiveTool('select')
+        return
+      }
+    }
+    store.addHairPath(points, width, constantWidth)
+    store.setActiveTool('select')
+  }
+
   function currentPointerWorld() {
     const rect = containerRef.current!.getBoundingClientRect()
     return screenToWorld(lastPointerRef.current.clientX, lastPointerRef.current.clientY, rect, viewRef.current)
@@ -211,12 +269,22 @@ export default function Viewport() {
   function startElementModal(kind: 'rotate' | 'scale' | 'move', skipBeginChange = false) {
     const store = useSceneStore.getState()
     if (store.mode !== 'edit' || !store.selectedObjectId) return
-    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
-    if (!obj) return
+    const rawObj = store.objects.find((o) => o.id === store.selectedObjectId)
+    if (!rawObj) return
+    // while sculpting a shape key, drag start positions come from its isolated pose, not the
+    // Basis, or a fresh drag would jump already-sculpted vertices back to their Basis position
+    const obj = getEffectiveObj(rawObj, store.editingShapeKeyId, true)
     const indices = selectedVertexIndices(store, obj.mesh)
     if (indices.length === 0) return
 
-    const pivot = store.editPivot ?? obj.transform.head
+    // sculpting an Arc-mode key rotates around its own persisted pivot (so posing matches what
+    // Arc evaluation will actually sweep around) — everything else (Basis editing, a Linear key)
+    // keeps using the transient session `editPivot` (P key), unchanged
+    const editingKey = store.editingShapeKeyId ? rawObj.shapeKeys?.find((k) => k.id === store.editingShapeKeyId) : undefined
+    const pivot =
+      editingKey?.interpolation === 'arc'
+        ? (editingKey.arcPivot ?? obj.transform.head)
+        : (store.editPivot ?? obj.transform.head)
     const startPositions = indices.map((i) => ({ ...obj.mesh.vertices[i] }))
     const worldTransform = getWorldTransform(obj, store.objects)
     const local = inverseTransform(currentPointerWorld(), worldTransform)
@@ -264,8 +332,9 @@ export default function Viewport() {
     if (!modal || modal.kind !== 'move') return
     const store = useSceneStore.getState()
     if (store.editElementType === 'face') return
-    const obj = store.objects.find((o) => o.id === modal.objectId)
-    if (!obj) return
+    const rawObj = store.objects.find((o) => o.id === modal.objectId)
+    if (!rawObj) return
+    const obj = getEffectiveObj(rawObj, store.editingShapeKeyId, true)
 
     // undo whatever the free-move drag had already applied — slide computes its own offsets
     // from the original pre-drag positions
@@ -314,10 +383,12 @@ export default function Viewport() {
         // to where they ended up, or the new geometry's UV would stay collapsed to a sliver
         if (modal.kind === 'move' && modal.seedUvOnConfirm) store.freezeUvBaseVertices(modal.objectId, modal.indices)
 
+        // snap-merge is a topology change (drops a vertex) — out of scope while sculpting a
+        // shape key, which can only reposition the Basis's existing vertices, not merge them
         const movedSet = new Set(modal.indices)
         let best: { keep: number; merge: number } | null = null
         let bestDist = Infinity
-        for (const [a, b] of getEdges(obj.mesh)) {
+        for (const [a, b] of store.editingShapeKeyId ? [] : getEdges(obj.mesh)) {
           const aMoved = movedSet.has(a)
           const bMoved = movedSet.has(b)
           if (aMoved === bMoved) continue
@@ -603,6 +674,17 @@ export default function Viewport() {
         ringCutCountRef.current = Math.max(1, Math.min(20, ringCutCountRef.current + delta))
         return
       }
+      // Shift+wheel while drawing a Hair Path adjusts its width instead of zooming — plain wheel
+      // stays zoom (can't repurpose it outright, it's the primary zoom gesture). Most
+      // browsers/mice remap a Shift-held wheel scroll onto deltaX instead of deltaY (it becomes
+      // a "horizontal scroll" gesture at the OS level), leaving deltaY at 0 — so read whichever
+      // axis actually moved.
+      if (e.shiftKey && useSceneStore.getState().activeTool === 'place-hairpath') {
+        const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX
+        const factor = Math.exp(-delta * 0.002)
+        hairPathWidthRef.current = Math.max(1, Math.min(200, hairPathWidthRef.current * factor))
+        return
+      }
       const r = container.getBoundingClientRect()
       const before = screenToWorld(e.clientX, e.clientY, r, viewRef.current)
       const factor = Math.exp(-e.deltaY * 0.001)
@@ -640,6 +722,11 @@ export default function Viewport() {
         useSceneStore.getState().setActiveTool('select')
         useSceneStore.getState().setPendingPrimitive(null)
         placePreviewRef.current = null
+      }
+      if (activeTool === 'place-hairpath') {
+        // discard the in-progress path only — stay in the tool (matches knife's cancel above)
+        hairPathRef.current = []
+        hairPathWidthRef.current = HAIR_PATH_DEFAULT_WIDTH
       }
     }
 
@@ -696,6 +783,7 @@ export default function Viewport() {
       if (e.key === 'Escape') cancelActiveDrag()
       if (e.key === 'Enter') {
         if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
+        if (useSceneStore.getState().activeTool === 'place-hairpath') finalizeHairPath()
         if (elementModalRef.current) confirmElementModal()
       }
       // while grabbing (G), X/Y constrains the move to that world axis; pressing the same
@@ -838,11 +926,17 @@ export default function Viewport() {
    *  material, only its render depth is borrowed from the host's island stack position. */
   function drawNestedObjectFill(
     hostGroup: THREE.Group,
-    targetObj: SceneObject,
+    rawTargetObj: SceneObject,
     objects: SceneObject[],
     baseZ: number,
     microStep: number,
   ) {
+    const { selectedObjectId, editingShapeKeyId } = useSceneStore.getState()
+    const displayVerts = displayVertices(rawTargetObj, editingShapeKeyId, rawTargetObj.id === selectedObjectId)
+    const targetObj: SceneObject =
+      displayVerts === rawTargetObj.mesh.vertices
+        ? rawTargetObj
+        : { ...rawTargetObj, mesh: { ...rawTargetObj.mesh, vertices: displayVerts } }
     const targetWorldTransform = getWorldTransform(targetObj, objects)
     const pivot = targetWorldTransform.head
     const perIsland = computeSplitUVIslands(targetObj.mesh, targetObj.uvIslandTransforms, targetObj.uvBaseVertices)
@@ -870,6 +964,7 @@ export default function Viewport() {
       selectedVertices,
       selectedEdges,
       selectedFaces,
+      editingShapeKeyId,
       referenceImage,
       meshOpacity,
       gridVisible,
@@ -881,18 +976,25 @@ export default function Viewport() {
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
 
-    sorted.forEach((obj, depthIndex) => {
-      if (!obj.visible) return
+    sorted.forEach((rawObj, depthIndex) => {
+      if (!rawObj.visible) return
       const group = new THREE.Group()
       group.position.z = depthIndex
-      const isSelected = obj.id === selectedObjectId
-      const worldTransform = getWorldTransform(obj, objects)
+      const isSelected = rawObj.id === selectedObjectId
+      const worldTransform = getWorldTransform(rawObj, objects)
 
-      if (obj.kind === 'empty') {
+      if (rawObj.kind === 'empty') {
         addEmptyGizmo(group, worldTransform, isSelected)
         scene.add(group)
         return
       }
+
+      // shadow `obj` with a shape-key-evaluated view for the rest of this iteration — every
+      // other field is identical to `rawObj`, so this is transparent to all the rendering code
+      // below, which just needs to draw/hit-test the *displayed* pose instead of the raw Basis
+      const displayVerts = displayVertices(rawObj, editingShapeKeyId, isSelected)
+      const obj: SceneObject =
+        displayVerts === rawObj.mesh.vertices ? rawObj : { ...rawObj, mesh: { ...rawObj.mesh, vertices: displayVerts } }
 
       // THREE's Object3D position/rotation/scale always pivots about the local origin, but our
       // objects can have an arbitrary head — so bake the head offset into the geometry itself
@@ -926,12 +1028,27 @@ export default function Viewport() {
       // the other, never split between a hidden and a visible one
       const hiddenVertices = new Set<number>()
       const hiddenFaces = new Set<number>()
-      const islands = obj.showIslandNames || obj.islandVisible ? findIslands(obj.mesh) : null
+      // a locked island (per-island lock toggle in the Properties panel) can't be selected/
+      // edited, and its wireframe/vertex/edge/face edit overlays are hidden too — but unlike
+      // `hiddenVertices`/`hiddenFaces` above, its *fill* (material/texture) still renders, so
+      // these are tracked in their own sets rather than folded into the hidden ones
+      const lockedVertices = new Set<number>()
+      const lockedFaces = new Set<number>()
+      const islands =
+        obj.showIslandNames || obj.islandVisible || obj.islandLocked ? findIslands(obj.mesh) : null
       if (islands && obj.islandVisible) {
         islands.forEach((island, islandIdx) => {
           if (obj.islandVisible?.[islandIdx] === false) {
             island.vertices.forEach((v) => hiddenVertices.add(v))
             island.faces.forEach((f) => hiddenFaces.add(f))
+          }
+        })
+      }
+      if (islands && obj.islandLocked) {
+        islands.forEach((island, islandIdx) => {
+          if (obj.islandLocked?.[islandIdx]) {
+            island.vertices.forEach((v) => lockedVertices.add(v))
+            island.faces.forEach((f) => lockedFaces.add(f))
           }
         })
       }
@@ -992,7 +1109,7 @@ export default function Viewport() {
       const wireMesh = obj.mesh
       const edgePositions: number[] = []
       for (const [a, b] of getEdges(wireMesh)) {
-        if (hiddenVertices.has(a)) continue // an edge's endpoints are always in the same island
+        if (hiddenVertices.has(a) || lockedVertices.has(a)) continue // an edge's endpoints are always in the same island
         const va = wireMesh.vertices[a]
         const vb = wireMesh.vertices[b]
         edgePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
@@ -1010,7 +1127,7 @@ export default function Viewport() {
       if (mode === 'edit' && isSelected) {
         if (editElementType === 'vertex') {
           obj.mesh.vertices.forEach((v, i) => {
-            if (hiddenVertices.has(i)) return
+            if (hiddenVertices.has(i) || lockedVertices.has(i)) return
             const p = applyTransform(v, worldTransform)
             const selected = selectedVertices.has(i)
             // unselected dots are deliberately smaller than selected ones, to stay legible at
@@ -1030,7 +1147,7 @@ export default function Viewport() {
 
         if (editElementType === 'edge') {
           for (const [a, b] of getEdges(obj.mesh)) {
-            if (hiddenVertices.has(a)) continue
+            if (hiddenVertices.has(a) || lockedVertices.has(a)) continue
             if (!selectedEdges.has(edgeKey(a, b))) continue
             const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
             const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
@@ -1073,7 +1190,7 @@ export default function Viewport() {
 
         if (editElementType === 'face') {
           obj.mesh.faces.forEach((face, fi) => {
-            if (hiddenFaces.has(fi)) return
+            if (hiddenFaces.has(fi) || lockedFaces.has(fi)) return
             if (!selectedFaces.has(fi)) return
             const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
             const positions = pts.flatMap((p) => [p.x, p.y, 0])
@@ -1126,6 +1243,14 @@ export default function Viewport() {
           const pivot = state.editPivot ?? obj.transform.head
           addEditPivotMarker(scene, obj, pivot)
         }
+        // Arc-mode shape key: its own persisted, draggable pivot handle — shown regardless of
+        // selection (it's a handle, not an always-on rotate-anchor marker like the one above)
+        if (state.editingShapeKeyId) {
+          const editingKey = obj.shapeKeys?.find((k) => k.id === state.editingShapeKeyId)
+          if (editingKey?.interpolation === 'arc') {
+            addEditPivotMarker(scene, obj, editingKey.arcPivot ?? obj.transform.head, 0xf5a623)
+          }
+        }
         const modal = elementModalRef.current
         if (modal && modal.objectId === obj.id) {
           if (modal.kind === 'move') {
@@ -1171,6 +1296,45 @@ export default function Viewport() {
       const at = placePreviewRef.current
       if (obj && pending && at) addPlacePreview(scene, obj, pending, at)
     }
+
+    // hair path preview: dots at each placed control point, plus the tapered mesh outline once
+    // there are enough points to build one — all in world space, works with or without a
+    // selected object (unlike Rect/Circle's island-only ghost preview above)
+    if (activeTool === 'place-hairpath') {
+      addHairPathPreview(scene, hairPathRef.current)
+    }
+  }
+
+  function addHairPathPreview(scene: THREE.Scene, points: Vec2[]) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    points.forEach((p) => {
+      const dot = new THREE.Mesh(
+        new THREE.CircleGeometry(3 * pxToWorld, 12),
+        new THREE.MeshBasicMaterial({ color: 0x4ea1ff, depthTest: false, transparent: true }),
+      )
+      dot.position.set(p.x, p.y, 0.71)
+      scene.add(dot)
+    })
+    if (points.length < 2) return
+    const mesh = createHairPathMesh(points, hairPathWidthRef.current, useSceneStore.getState().hairPathConstantWidth)
+    const positions: number[] = []
+    for (const [a, b] of getEdges(mesh)) {
+      const va = mesh.vertices[a]
+      const vb = mesh.vertices[b]
+      positions.push(va.x, va.y, 0.7, vb.x, vb.y, 0.7)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    const mat = new THREE.LineDashedMaterial({
+      color: 0x4ea1ff,
+      dashSize: 6 * pxToWorld,
+      gapSize: 4 * pxToWorld,
+      depthTest: false,
+      transparent: true,
+    })
+    const outline = new THREE.LineSegments(geom, mat)
+    outline.computeLineDistances()
+    scene.add(outline)
   }
 
   function addPlacePreview(scene: THREE.Scene, obj: SceneObject, pending: PendingPrimitive, at: Vec2) {
@@ -1523,13 +1687,14 @@ export default function Viewport() {
   }
 
   /** Small always-on marker at the edit-mode pivot (set via P) — deliberately not a full
-   *  gizmo, just enough to know where rotate/scale will anchor when R/S is pressed. */
-  function addEditPivotMarker(scene: THREE.Scene, obj: SceneObject, pivot: Vec2) {
+   *  gizmo, just enough to know where rotate/scale will anchor when R/S is pressed. Also reused
+   *  (with a distinct `color`) for a shape key's draggable Arc-mode pivot handle. */
+  function addEditPivotMarker(scene: THREE.Scene, obj: SceneObject, pivot: Vec2, color: THREE.ColorRepresentation = 0xe5484d) {
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const pxToWorld = 1 / viewRef.current.zoom
     const center = applyTransform(pivot, worldTransform)
     const ringGeom = new THREE.RingGeometry(6 * pxToWorld - 0.8 * pxToWorld, 6 * pxToWorld + 0.8 * pxToWorld, 24)
-    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true }))
+    const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }))
     ring.position.set(center.x, center.y, 0.65)
     scene.add(ring)
   }
@@ -1933,11 +2098,13 @@ export default function Viewport() {
     }
     const worldTransform = getWorldTransform(obj, store.objects)
     const world = getWorldPos(e)
+    const locked = getLockedVertices(obj)
     let bestA = -1
     let bestB = -1
     let bestT = 0
     let bestDist = Infinity
     for (const [a, b] of getEdges(obj.mesh)) {
+      if (locked.has(a)) continue
       const va = applyTransform(obj.mesh.vertices[a], worldTransform)
       const vb = applyTransform(obj.mesh.vertices[b], worldTransform)
       const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
@@ -1985,6 +2152,7 @@ export default function Viewport() {
     }
     const worldTransform = getWorldTransform(obj, store.objects)
     const world = getWorldPos(e)
+    const locked = getLockedVertices(obj)
     const edges = getEdges(obj.mesh)
     const degree = new Map<number, number>()
     for (const [a, b] of edges) {
@@ -1996,6 +2164,7 @@ export default function Viewport() {
     let bestRim = -1
     let bestDist = Infinity
     for (const [a, b] of edges) {
+      if (locked.has(a) || locked.has(b)) continue
       const da = degree.get(a) ?? 0
       const db = degree.get(b) ?? 0
       if (da === db) continue // rim-to-rim boundary edge, not a spoke
@@ -2038,10 +2207,12 @@ export default function Viewport() {
     const worldTransform = getWorldTransform(obj, store.objects)
     const world = getWorldPos(e)
     const zoom = viewRef.current.zoom
+    const locked = getLockedVertices(obj)
 
     let bestVertex = -1
     let bestVertexDist = Infinity
     obj.mesh.vertices.forEach((v, i) => {
+      if (locked.has(i)) return
       const p = applyTransform(v, worldTransform)
       const dist = Math.hypot((world.x - p.x) * zoom, (world.y - p.y) * zoom)
       if (dist < bestVertexDist) {
@@ -2059,6 +2230,7 @@ export default function Viewport() {
     let bestT = 0
     let bestDist = Infinity
     for (const [a, b] of getEdges(obj.mesh)) {
+      if (locked.has(a)) continue
       const va = applyTransform(obj.mesh.vertices[a], worldTransform)
       const vb = applyTransform(obj.mesh.vertices[b], worldTransform)
       const { dist, t } = pxDistToSegmentWithT(world.x, world.y, va.x, va.y, vb.x, vb.y)
@@ -2128,6 +2300,21 @@ export default function Viewport() {
       }
     }
 
+    // Hair Path: click adds a new control point, unless the click lands on an already-placed
+    // one — in which case it starts dragging that point instead (works in either app mode; the
+    // path itself is target-agnostic until Enter confirms it, see finalizeHairPath)
+    if (useSceneStore.getState().activeTool === 'place-hairpath') {
+      const world = getWorldPos(e)
+      const path = hairPathRef.current
+      const hitIndex = path.findIndex((p) => pxDistSq(world.x, world.y, p.x, p.y) < HAIR_PATH_CP_HIT_RADIUS_PX ** 2)
+      if (hitIndex >= 0) {
+        dragRef.current = { kind: 'move-hairpath-cp', index: hitIndex }
+      } else {
+        hairPathRef.current = [...path, world]
+      }
+      return
+    }
+
     const store0 = useSceneStore.getState()
     if (store0.mode === 'edit' && store0.activeTool === 'knife') {
       const hover = knifeHoverRef.current
@@ -2161,8 +2348,25 @@ export default function Viewport() {
     }
 
     const world = getWorldPos(e)
-    const { objects, selectedObjectId, mode, editElementType } = useSceneStore.getState()
-    const selectedObj = objects.find((o) => o.id === selectedObjectId) || null
+    const { objects, selectedObjectId, mode, editElementType, editingShapeKeyId } = useSceneStore.getState()
+    const rawSelectedObj = objects.find((o) => o.id === selectedObjectId) || null
+    const selectedObj = rawSelectedObj && getEffectiveObj(rawSelectedObj, editingShapeKeyId, true)
+
+    // sculpting an Arc-mode shape key: its pivot handle (drawn in rebuildScene) is draggable,
+    // checked before the normal edit-mode vertex/edge/face hit-tests below so it takes priority
+    if (mode === 'edit' && rawSelectedObj && editingShapeKeyId) {
+      const editingKey = rawSelectedObj.shapeKeys?.find((k) => k.id === editingShapeKeyId)
+      if (editingKey?.interpolation === 'arc') {
+        const worldTransform = getWorldTransform(rawSelectedObj, objects)
+        const pivotLocal = editingKey.arcPivot ?? rawSelectedObj.transform.head
+        const pivotWorld = applyTransform(pivotLocal, worldTransform)
+        if (pxDistSq(world.x, world.y, pivotWorld.x, pivotWorld.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
+          useSceneStore.getState().beginChange()
+          dragRef.current = { kind: 'move-shapekey-arc-pivot', objectId: rawSelectedObj.id, keyId: editingKey.id }
+          return
+        }
+      }
+    }
 
     // pivot mode: head/tail dots are the only draggable handles here (no move/rotate/scale gizmo
     // is rendered in this mode, so there's nothing else to hit-test against)
@@ -2255,9 +2459,11 @@ export default function Viewport() {
 
     if (mode === 'edit' && selectedObj && editElementType === 'vertex') {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
+      const locked = getLockedVertices(selectedObj)
       let hitIndex = -1
       let bestDist = Infinity
       selectedObj.mesh.vertices.forEach((v, i) => {
+        if (locked.has(i)) return
         const p = applyTransform(v, selectedWorldTransform)
         const d = pxDistSq(world.x, world.y, p.x, p.y)
         if (d < bestDist) {
@@ -2293,9 +2499,11 @@ export default function Viewport() {
 
     if (mode === 'edit' && selectedObj && editElementType === 'edge') {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
+      const locked = getLockedVertices(selectedObj)
       let hitKey: string | null = null
       let bestDist = Infinity
       for (const [a, b] of getEdges(selectedObj.mesh)) {
+        if (locked.has(a)) continue // an edge's endpoints are always in the same island
         const pa = applyTransform(selectedObj.mesh.vertices[a], selectedWorldTransform)
         const pb = applyTransform(selectedObj.mesh.vertices[b], selectedWorldTransform)
         const d = pxDistToSegment(world.x, world.y, pa.x, pa.y, pb.x, pb.y)
@@ -2346,8 +2554,10 @@ export default function Viewport() {
 
     if (mode === 'edit' && selectedObj && editElementType === 'face') {
       const local = inverseTransform(world, getWorldTransform(selectedObj, objects))
+      const locked = getLockedVertices(selectedObj)
       let hitFace = -1
       selectedObj.mesh.faces.forEach((face, fi) => {
+        if (face.some((i) => locked.has(i))) return
         if (hitFace === -1 && pointInPolygon(local, face.map((i) => selectedObj.mesh.vertices[i]))) {
           hitFace = fi
         }
@@ -2533,6 +2743,43 @@ export default function Viewport() {
       return
     }
 
+    if (drag.kind === 'move-shapekey-arc-pivot') {
+      const rawObj = store.objects.find((o) => o.id === drag.objectId)
+      if (!rawObj) return
+      // the effective (isolated-pose) vertices are what's actually drawn while sculpting this
+      // key, so snap against those rather than the raw Basis — matches what the user sees
+      const obj = getEffectiveObj(rawObj, store.editingShapeKeyId, true)
+      const worldTransform = getWorldTransform(obj, store.objects)
+      let nearestLocal: Vec2 | null = null
+      let bestDist = (VERTEX_HIT_RADIUS * 1.5) ** 2
+      obj.mesh.vertices.forEach((v) => {
+        const p = applyTransform(v, worldTransform)
+        const d = pxDistSq(world.x, world.y, p.x, p.y)
+        if (d < bestDist) {
+          bestDist = d
+          nearestLocal = v
+        }
+      })
+      let localUnderMouse: Vec2
+      if (nearestLocal) {
+        localUnderMouse = nearestLocal
+      } else if (shouldGridSnap(e.ctrlKey)) {
+        // grid is defined in world space, so snap there first, then convert to this object's
+        // local space — matches how the move modal's own grid-snap works
+        const inc = getGridSnapIncrement()
+        const snappedWorld = { x: snapToIncrement(world.x, inc), y: snapToIncrement(world.y, inc) }
+        localUnderMouse = inverseTransform(snappedWorld, worldTransform)
+      } else {
+        localUnderMouse = inverseTransform(world, worldTransform)
+      }
+      store.setShapeKeyArcPivot(drag.objectId, drag.keyId, localUnderMouse)
+      return
+    }
+
+    if (drag.kind === 'move-hairpath-cp') {
+      hairPathRef.current = hairPathRef.current.map((p, i) => (i === drag.index ? world : p))
+      return
+    }
 
     if (drag.kind === 'box-select') {
       dragRef.current = { ...drag, endClientX: e.clientX, endClientY: e.clientY }
@@ -2565,7 +2812,8 @@ export default function Viewport() {
       const movedPx = Math.hypot(drag.endClientX - drag.startClientX, drag.endClientY - drag.startClientY)
       if (movedPx > 4) {
         const store = useSceneStore.getState()
-        const obj = store.objects.find((o) => o.id === drag.objectId)
+        const rawObj = store.objects.find((o) => o.id === drag.objectId)
+        const obj = rawObj && getEffectiveObj(rawObj, store.editingShapeKeyId, true)
         if (obj) {
           const rect = containerRef.current!.getBoundingClientRect()
           const wa = screenToWorld(drag.startClientX, drag.startClientY, rect, viewRef.current)
@@ -2578,15 +2826,17 @@ export default function Viewport() {
             p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
 
           const worldTransform = getWorldTransform(obj, store.objects)
+          const locked = getLockedVertices(obj)
           if (store.editElementType === 'vertex') {
             const next = drag.additive ? new Set(store.selectedVertices) : new Set<number>()
             obj.mesh.vertices.forEach((v, i) => {
-              if (inside(applyTransform(v, worldTransform))) next.add(i)
+              if (!locked.has(i) && inside(applyTransform(v, worldTransform))) next.add(i)
             })
             store.setSelectedVertices(next)
           } else if (store.editElementType === 'edge') {
             const next = drag.additive ? new Set(store.selectedEdges) : new Set<string>()
             for (const [a, b] of getEdges(obj.mesh)) {
+              if (locked.has(a)) continue
               const pa = applyTransform(obj.mesh.vertices[a], worldTransform)
               const pb = applyTransform(obj.mesh.vertices[b], worldTransform)
               if (inside(pa) && inside(pb)) next.add(edgeKey(a, b))
@@ -2595,6 +2845,7 @@ export default function Viewport() {
           } else {
             const next = drag.additive ? new Set(store.selectedFaces) : new Set<number>()
             obj.mesh.faces.forEach((face, fi) => {
+              if (face.some((i) => locked.has(i))) return
               if (face.every((i) => inside(applyTransform(obj.mesh.vertices[i], worldTransform)))) {
                 next.add(fi)
               }

@@ -288,7 +288,14 @@ export function applyKnifeCut(mesh: Mesh, rawPath: KnifeCutPoint[]): { mesh: Mes
 
     const origFaceIdx = segmentFaces[s]
     const candidateIds = origFaceIdx !== -1 ? origToCurrentIds.get(origFaceIdx) ?? [] : Array.from(facesById.keys())
-    splitFaceContaining(candidateIds, p, q) // no-op if already an edge, or nothing matches
+    const split = splitFaceContaining(candidateIds, p, q) // no-op if already an edge, or nothing matches
+    // the scoped candidateIds tracking is an optimization to disambiguate which face a segment
+    // belongs to — but it's derived from the *original* mesh's face indices, and can fall out of
+    // sync with the actual current split state once several segments land on the same original
+    // face (or its already-split pieces) in ways the incremental bookkeeping doesn't anticipate.
+    // Rather than silently drop the cut (leaving p and q sitting on the mesh as unconnected
+    // points — same position, no shared edge), fall back to searching every currently-live face.
+    if (!split && origFaceIdx !== -1) splitFaceContaining(Array.from(facesById.keys()), p, q)
   }
 
   return { mesh: { vertices, faces: Array.from(facesById.values()) } }

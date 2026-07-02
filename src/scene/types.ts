@@ -48,6 +48,26 @@ export interface UvIslandTransform {
   excludeFromDensityMatch?: boolean
 }
 
+/** A named morph target (Blender-style shape key) — an alternate, sparse vertex pose blended on
+ *  top of the object's live `mesh.vertices` (the "Basis"). Several keys blend additively at once,
+ *  each scaled by its own weight in `SceneObject.shapeKeyValues`. */
+export interface ShapeKey {
+  id: string
+  name: string
+  /** Sparse absolute target vertex positions, indexed like `mesh.vertices`. A vertex absent here
+   *  sits at its Basis (live `mesh.vertices`) position — i.e. this key doesn't move it. */
+  positions: Record<number, Vec2>
+  /** Interpolation from Basis to this key's target pose. 'linear' (default when absent) is the
+   *  straight Cartesian lerp. 'arc' sweeps each vertex along an arc around `arcPivot` instead —
+   *  fixes volume loss/pinching on rotational deformations. Falls back to 'linear' behavior
+   *  whenever `arcPivot` is unset (graceful default). */
+  interpolation?: 'linear' | 'arc'
+  /** Local mesh-space pivot Arc mode rotates around. Dragged via a dedicated viewport handle —
+   *  independent of the transient `editPivot` (P key), since this one must persist with the key
+   *  rather than reset on every mode/object switch. */
+  arcPivot?: Vec2
+}
+
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
  *  it in rank order. Lets render order cross object boundaries without splitting a mesh purely
@@ -109,6 +129,12 @@ export interface SceneObject {
    *  `islandZOrders`). An island absent from this map is visible (default true). A hidden
    *  island draws nothing at all — fill, wireframe, and edit-mode overlays alike. */
   islandVisible?: Record<number, boolean>
+  /** Per-island edit lock (indexed by island order from `findIslands` — same caveat as
+   *  `islandZOrders`). An island absent from this map is unlocked (default false). A locked
+   *  island cannot be selected/edited in edit mode (click, box-select, and its wireframe/vertex/
+   *  edge overlays are hidden), but its fill (material/texture) still renders normally — useful
+   *  for isolating one island's editing when several overlap on screen. */
+  islandLocked?: Record<number, boolean>
   /** Unique-per-scene name another object's `InsertSlot.targetSlotName` can reference, to render
    *  this object sandwiched into that object's island stack instead of in normal document order.
    *  Setting it (Properties panel) steals it from whichever other object currently holds it, so
@@ -117,6 +143,11 @@ export interface SceneObject {
   /** Reserved positions in this object's own island Z-order stack for other objects to be
    *  inserted into (see `InsertSlot`). */
   insertSlots?: InsertSlot[]
+  /** Morph targets blended on top of this object's live mesh (the Basis) — see `ShapeKey`. */
+  shapeKeys?: ShapeKey[]
+  /** Weight per shape key id (`ShapeKey.id`), applied additively at eval time. Absent = 0.
+   *  Unclamped (Blender allows negative/>1 weights for overshoot/corrective use). */
+  shapeKeyValues?: Record<string, number>
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

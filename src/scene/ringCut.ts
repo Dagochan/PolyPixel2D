@@ -129,8 +129,31 @@ export function applyRingCut(mesh: Mesh, path: FanPath, ts: number[]): { mesh: M
     newFaces.push([lastRing[i], lastRing[j], path.rim[j], path.rim[i]])
   }
 
+  // any *other* face bordering the fan along one of its spoke edges (e.g. a quad the ring cut's
+  // open end butts up against) needs the same new ring vertices spliced into its own vertex loop
+  // too — otherwise its boundary stays un-split while the fan's does, a T-junction that merely
+  // *looks* welded (same position) but isn't actually connected, so dragging the inserted vertex
+  // tears the two apart. Same idea as the loop-cut fix (`loopCut.ts`) and `knifeCut.ts`'s
+  // "splice inserted vertices into every face touching the edge" pattern.
+  const insertsByEdge = new Map<string, { from: number; verts: number[] }>()
+  path.rim.forEach((r, i) => {
+    insertsByEdge.set(edgeKey(path.center, r), { from: path.center, verts: rings.map((ring) => ring[i]) })
+  })
+
   const faceSet = new Set(path.faces)
-  const faces = mesh.faces.filter((_, fi) => !faceSet.has(fi)).map((f) => [...f])
+  const faces: number[][] = []
+  mesh.faces.forEach((face, fi) => {
+    if (faceSet.has(fi)) return // rebuilt above via newFaces
+    const next: number[] = []
+    for (let i = 0; i < face.length; i++) {
+      const a = face[i]
+      const b = face[(i + 1) % face.length]
+      next.push(a)
+      const insert = insertsByEdge.get(edgeKey(a, b))
+      if (insert) next.push(...(insert.from === a ? insert.verts : [...insert.verts].reverse()))
+    }
+    faces.push(next)
+  })
   faces.push(...newFaces)
 
   return { mesh: { vertices, faces } }

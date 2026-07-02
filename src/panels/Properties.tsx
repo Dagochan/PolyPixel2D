@@ -5,7 +5,7 @@ import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
 import type { InsertSlot, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
-import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon } from './icons'
+import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon } from './icons'
 
 function NumberField({
   label,
@@ -86,6 +86,7 @@ function IslandZOrderSection({
   clearIslandNameIfEmpty,
   setShowIslandNames,
   toggleIslandVisible,
+  toggleIslandLocked,
   addInsertSlot,
   removeInsertSlot,
   setInsertSlotTarget,
@@ -99,6 +100,7 @@ function IslandZOrderSection({
   clearIslandNameIfEmpty: (id: string, islandIndex: number) => void
   setShowIslandNames: (id: string, show: boolean) => void
   toggleIslandVisible: (id: string, islandIndex: number) => void
+  toggleIslandLocked: (id: string, islandIndex: number) => void
   addInsertSlot: (id: string) => void
   removeInsertSlot: (id: string, slotId: string) => void
   setInsertSlotTarget: (id: string, slotId: string, targetSlotName: string) => void
@@ -136,6 +138,7 @@ function IslandZOrderSection({
         if (entry.kind === 'island') {
           const islandIdx = entry.islandIdx
           const visible = obj.islandVisible?.[islandIdx] ?? true
+          const locked = obj.islandLocked?.[islandIdx] ?? false
           return (
             <div className="prop-row" key={`island-${islandIdx}`}>
               <button
@@ -151,6 +154,13 @@ function IslandZOrderSection({
                 onClick={() => toggleIslandVisible(obj.id, islandIdx)}
               >
                 {visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
+              </button>
+              <button
+                className="icon-btn"
+                title={locked ? 'Unlock this island (allow selecting/editing it)' : 'Lock this island (can\'t be selected/edited, wireframe hidden — texture stays visible)'}
+                onClick={() => toggleIslandLocked(obj.id, islandIdx)}
+              >
+                {locked ? <LockedIcon size={18} /> : <UnlockedIcon size={18} />}
               </button>
               <input
                 className="layer-name"
@@ -215,6 +225,105 @@ function IslandZOrderSection({
   )
 }
 
+/** Blender-style shape keys (morph targets) — a list of named alternate vertex poses blended
+ *  additively on top of the live mesh (the "Basis") by their own weight. Modeled directly on
+ *  `IslandZOrderSection` above: one `.prop-row` per key, editable name, and a delete button. The
+ *  "Edit" toggle enters isolated sculpt mode for that key (see `setEditingShapeKey` in the
+ *  store) — while active, a banner at the top offers the only way back to normal Basis editing. */
+function ShapeKeysSection({
+  obj,
+  editingShapeKeyId,
+  addShapeKey,
+  removeShapeKey,
+  renameShapeKey,
+  setShapeKeyValue,
+  setShapeKeyInterpolation,
+  setEditingShapeKey,
+}: {
+  obj: SceneObject
+  editingShapeKeyId: string | null
+  addShapeKey: (id: string) => void
+  removeShapeKey: (id: string, keyId: string) => void
+  renameShapeKey: (id: string, keyId: string, name: string) => void
+  setShapeKeyValue: (id: string, keyId: string, value: number) => void
+  setShapeKeyInterpolation: (id: string, keyId: string, interpolation: 'linear' | 'arc') => void
+  setEditingShapeKey: (keyId: string | null) => void
+}) {
+  const keys = obj.shapeKeys ?? []
+  const editingKey = keys.find((k) => k.id === editingShapeKeyId)
+
+  return (
+    <>
+      <div className="prop-section">Shape Keys</div>
+      {editingKey && (
+        <div className="prop-row prop-static">
+          <span>
+            Editing shape key: <strong>{editingKey.name}</strong> — pose it with the vertex tool, then
+            {editingKey.interpolation === 'arc' && ' — drag the orange pivot handle in the viewport, then rotate (R) to pose the target'}
+          </span>
+        </div>
+      )}
+      {editingKey && (
+        <div className="prop-row">
+          <button onClick={() => setEditingShapeKey(null)}>Done editing</button>
+        </div>
+      )}
+      {keys.map((key) => {
+        const isEditing = key.id === editingShapeKeyId
+        const value = obj.shapeKeyValues?.[key.id] ?? 0
+        const interpolation = key.interpolation ?? 'linear'
+        return (
+          <div className="prop-row" key={key.id}>
+            <button
+              className={'icon-btn' + (isEditing ? ' active' : '')}
+              title={isEditing ? 'Stop sculpting this shape key' : 'Sculpt this shape key (isolated pose, vertex tool only)'}
+              onClick={() => setEditingShapeKey(isEditing ? null : key.id)}
+            >
+              ✏️
+            </button>
+            <input
+              className="layer-name"
+              value={key.name}
+              onChange={(e) => renameShapeKey(obj.id, key.id, e.target.value)}
+            />
+            <button
+              className={'icon-btn' + (interpolation === 'linear' ? ' active' : '')}
+              title="Linear — straight Cartesian blend from Basis to target"
+              onClick={() => setShapeKeyInterpolation(obj.id, key.id, 'linear')}
+            >
+              Lin
+            </button>
+            <button
+              className={'icon-btn' + (interpolation === 'arc' ? ' active' : '')}
+              title="Arc — sweeps along an arc around a pivot instead of a straight line, avoiding volume loss on large rotations"
+              onClick={() => setShapeKeyInterpolation(obj.id, key.id, 'arc')}
+            >
+              Arc
+            </button>
+            <input
+              className="shapekey-value-slider"
+              type="range"
+              title="Blend weight — 0 is the Basis (original) shape, 1 is the sculpted shape key; a bit of over/undershoot beyond that is allowed for corrective use"
+              min={-1}
+              max={2}
+              step={0.01}
+              value={value}
+              onChange={(e) => setShapeKeyValue(obj.id, key.id, +e.target.value)}
+            />
+            <span className="shapekey-value-readout">{round(value)}</span>
+            <button className="icon-btn" title="Delete this shape key" onClick={() => removeShapeKey(obj.id, key.id)}>
+              🗑
+            </button>
+          </div>
+        )
+      })}
+      <div className="prop-row">
+        <button onClick={() => addShapeKey(obj.id)}>+ Add Shape Key</button>
+      </div>
+    </>
+  )
+}
+
 export default function Properties({ style }: { style?: CSSProperties }) {
   const obj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
   const objects = useSceneStore((s) => s.objects)
@@ -233,11 +342,19 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const clearIslandNameIfEmpty = useSceneStore((s) => s.clearIslandNameIfEmpty)
   const setShowIslandNames = useSceneStore((s) => s.setShowIslandNames)
   const toggleIslandVisible = useSceneStore((s) => s.toggleIslandVisible)
+  const toggleIslandLocked = useSceneStore((s) => s.toggleIslandLocked)
   const setSlotName = useSceneStore((s) => s.setSlotName)
   const addInsertSlot = useSceneStore((s) => s.addInsertSlot)
   const removeInsertSlot = useSceneStore((s) => s.removeInsertSlot)
   const setInsertSlotTarget = useSceneStore((s) => s.setInsertSlotTarget)
   const moveInsertSlotRank = useSceneStore((s) => s.moveInsertSlotRank)
+  const editingShapeKeyId = useSceneStore((s) => s.editingShapeKeyId)
+  const addShapeKey = useSceneStore((s) => s.addShapeKey)
+  const removeShapeKey = useSceneStore((s) => s.removeShapeKey)
+  const renameShapeKey = useSceneStore((s) => s.renameShapeKey)
+  const setShapeKeyValue = useSceneStore((s) => s.setShapeKeyValue)
+  const setShapeKeyInterpolation = useSceneStore((s) => s.setShapeKeyInterpolation)
+  const setEditingShapeKey = useSceneStore((s) => s.setEditingShapeKey)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
   const [uvEditorOpen, setUvEditorOpen] = useState(false)
@@ -389,11 +506,25 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               setIslandName={setIslandName}
               clearIslandNameIfEmpty={clearIslandNameIfEmpty}
               setShowIslandNames={setShowIslandNames}
+              toggleIslandLocked={toggleIslandLocked}
               toggleIslandVisible={toggleIslandVisible}
               addInsertSlot={addInsertSlot}
               removeInsertSlot={removeInsertSlot}
               setInsertSlotTarget={setInsertSlotTarget}
               moveInsertSlotRank={moveInsertSlotRank}
+            />
+          )}
+
+          {mode === 'edit' && obj.kind !== 'empty' && (
+            <ShapeKeysSection
+              obj={obj}
+              editingShapeKeyId={editingShapeKeyId}
+              addShapeKey={addShapeKey}
+              removeShapeKey={removeShapeKey}
+              renameShapeKey={renameShapeKey}
+              setShapeKeyValue={setShapeKeyValue}
+              setShapeKeyInterpolation={setShapeKeyInterpolation}
+              setEditingShapeKey={setEditingShapeKey}
             />
           )}
 

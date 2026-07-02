@@ -9,12 +9,13 @@ import type {
   Mesh,
   ReferenceImage,
   SceneObject,
+  ShapeKey,
   Transform,
   UvIslandTransform,
   Vec2,
 } from './types'
 import { resolvePlaybackTime, sampleClipAtTime } from './animation'
-import { createCircleMesh, createRectMesh } from './primitives'
+import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
 import { findFullLoop } from './loopPath'
@@ -26,7 +27,7 @@ import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knif
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland, clampToMesh } from './meshUtils'
 import { findIslands, type Island } from './uv'
 
-export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle'
+export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath'
 
 export type { ReferenceImage }
 
@@ -82,6 +83,11 @@ interface SceneState {
   selectedVertices: Set<number>
   selectedEdges: Set<string> // "a_b" with a < b
   selectedFaces: Set<number>
+  /** Id of the shape key currently being sculpted on the selected object, or `null` for normal
+   *  Basis editing (unaffected by shape keys). While set, `setVertexPositions` writes into that
+   *  key's `positions` instead of `mesh.vertices`, and the viewport shows/hit-tests that key's
+   *  isolated pose instead of the blended result. */
+  editingShapeKeyId: string | null
   history: SceneObject[][]
   future: SceneObject[][]
   activeTool: ActiveTool
@@ -93,6 +99,9 @@ interface SceneState {
   editPivot: Vec2 | null
   /** Dimensions for the primitive currently being placed (activeTool === 'place-rect'/'place-circle'). */
   pendingPrimitive: PendingPrimitive | null
+  /** Toggled in the Add ▾ menu before starting a Hair Path — when true, the ribbon stays full
+   *  width all the way to the tip instead of tapering to a point (for belts/straps, not just hair). */
+  hairPathConstantWidth: boolean
   /** Trace-over reference image shown behind everything; `null` if none loaded. */
   referenceImage: ReferenceImage | null
   /** Global opacity (0..1) applied to every object's material, so you can see a reference image through them. */
@@ -140,6 +149,9 @@ interface SceneState {
 
   addRect: (width: number, height: number, segX: number, segY: number) => void
   addCircle: (radius: number, segments: number) => void
+  /** Standalone new object from a hand-drawn path (`points` already in world/local space, since
+   *  the new object's transform is identity) — see `createHairPathMesh`. */
+  addHairPath: (points: Vec2[], width: number, constantWidth?: boolean) => void
   addImportedMesh: (mesh: Mesh, name: string) => void
   /** Adds a mesh-less hierarchy-only dummy object (e.g. a rig root), positioned at the origin. */
   addEmpty: () => void
@@ -147,7 +159,10 @@ interface SceneState {
    *  creating a separate object — used when adding a primitive while already in edit mode. */
   addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
   addCircleIsland: (objectId: string, at: Vec2, radius: number, segments: number) => void
+  /** Add a hair-path island — `points` must already be converted into `objectId`'s local space. */
+  addHairPathIsland: (objectId: string, points: Vec2[], width: number, constantWidth?: boolean) => void
   setPendingPrimitive: (p: PendingPrimitive | null) => void
+  setHairPathConstantWidth: (v: boolean) => void
   setReferenceImage: (url: string | null) => void
   setReferenceImageTransform: (transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'opacity'>>) => void
   setMeshOpacity: (opacity: number) => void
@@ -187,6 +202,9 @@ interface SceneState {
   /** Toggle one island's visibility (by `findIslands` order) — hidden draws nothing at all
    *  (fill, wireframe, edit overlays). */
   toggleIslandVisible: (id: string, islandIndex: number) => void
+  /** Toggle one island's edit lock (by `findIslands` order) — locked can't be selected/edited
+   *  and hides its wireframe/vertex/edge overlays, but its fill (material/texture) still draws. */
+  toggleIslandLocked: (id: string, islandIndex: number) => void
   /** Set this object's unique slot name — stealing it from whichever other object currently
    *  holds it, so the same name is never held by two objects at once. */
   setSlotName: (id: string, slotName: string) => void
@@ -198,6 +216,21 @@ interface SceneState {
   /** Swap an insert slot's rank with whichever island or other slot is immediately in front
    *  of/behind it in the combined order (direction 1 = forward/up, -1 = back/down). */
   moveInsertSlotRank: (id: string, slotId: string, direction: 1 | -1) => void
+  /** Add a new (empty) shape key to this object, blended at weight 0 until set otherwise. */
+  addShapeKey: (id: string) => void
+  /** Remove a shape key — also drops its weight entry, and clears `editingShapeKeyId` if it
+   *  pointed at this key. */
+  removeShapeKey: (id: string, keyId: string) => void
+  renameShapeKey: (id: string, keyId: string, name: string) => void
+  /** Set a shape key's blend weight (unclamped — see `SceneObject.shapeKeyValues`). */
+  setShapeKeyValue: (id: string, keyId: string, value: number) => void
+  setShapeKeyInterpolation: (id: string, keyId: string, interpolation: 'linear' | 'arc') => void
+  /** Live-write a shape key's Arc pivot (local mesh space) — called every pointermove while
+   *  dragging its viewport handle, same pattern as `setHead`/`setTail`. */
+  setShapeKeyArcPivot: (id: string, keyId: string, pivot: Vec2) => void
+  /** Enter/exit sculpting a shape key in isolation (`null` = back to normal Basis editing). Also
+   *  clears the current vertex/edge/face selection, since it belonged to a different mesh state. */
+  setEditingShapeKey: (keyId: string | null) => void
   /** Re-stamp the UV rest-pose for specific vertices to their current position — used right after
    *  a post-extrude grab confirms, so the new geometry's UV reflects where it ended up. */
   freezeUvBaseVertices: (id: string, indices: number[]) => void
@@ -333,12 +366,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   selectedVertices: new Set(),
   selectedEdges: new Set(),
   selectedFaces: new Set(),
+  editingShapeKeyId: null,
   history: [],
   future: [],
   activeTool: 'select',
   gizmoOrientation: 'local',
   editPivot: null,
   pendingPrimitive: null,
+  hairPathConstantWidth: false,
   referenceImage: null,
   meshOpacity: 1,
   gridSubdivisions: 10,
@@ -430,6 +465,26 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
 
+  addHairPath: (points, width, constantWidth) => {
+    get().beginChange()
+    const objects = get().objects
+    const mesh = createHairPathMesh(points, width, constantWidth)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `HairPath_${objects.length + 1}`,
+      mesh,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
   addImportedMesh: (mesh, name) => {
     get().beginChange()
     const objects = get().objects
@@ -487,7 +542,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)) }))
   },
 
+  addHairPathIsland: (objectId, points, width, constantWidth) => {
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const mesh = mergeMeshAsIsland(obj.mesh, createHairPathMesh(points, width, constantWidth), { x: 0, y: 0 })
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
+    get().beginChange()
+    set((s) => ({ objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)) }))
+  },
+
   setPendingPrimitive: (pendingPrimitive) => set({ pendingPrimitive }),
+  setHairPathConstantWidth: (hairPathConstantWidth) => set({ hairPathConstantWidth }),
 
   setReferenceImage: (url) =>
     set({ referenceImage: url ? { url, x: 0, y: 0, scale: 1, opacity: 1 } : null }),
@@ -672,6 +737,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
+  toggleIslandLocked: (id, islandIndex) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, islandLocked: { ...o.islandLocked, [islandIndex]: !(o.islandLocked?.[islandIndex] ?? false) } }
+          : o,
+      ),
+    }))
+  },
+
   setSlotName: (id, slotName) => {
     get().beginChange()
     set((s) => ({
@@ -745,6 +821,79 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         return { ...o, islandZOrders, insertSlots }
       }),
     }))
+  },
+
+  addShapeKey: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const n = (o.shapeKeys?.length ?? 0) + 1
+        const key: ShapeKey = { id: genId('shapekey'), name: `Key ${n}`, positions: {} }
+        return { ...o, shapeKeys: [...(o.shapeKeys ?? []), key] }
+      }),
+    }))
+  },
+
+  removeShapeKey: (id, keyId) => {
+    get().beginChange()
+    set((s) => ({
+      editingShapeKeyId: s.editingShapeKeyId === keyId ? null : s.editingShapeKeyId,
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const { [keyId]: _removed, ...restValues } = o.shapeKeyValues ?? {}
+        return { ...o, shapeKeys: (o.shapeKeys ?? []).filter((k) => k.id !== keyId), shapeKeyValues: restValues }
+      }),
+    }))
+  },
+
+  renameShapeKey: (id, keyId, name) => {
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, shapeKeys: (o.shapeKeys ?? []).map((k) => (k.id === keyId ? { ...k, name } : k)) }
+          : o,
+      ),
+    }))
+  },
+
+  setShapeKeyValue: (id, keyId, value) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? { ...o, shapeKeyValues: { ...o.shapeKeyValues, [keyId]: value } } : o,
+      ),
+    }))
+  },
+
+  setShapeKeyInterpolation: (id, keyId, interpolation) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, shapeKeys: (o.shapeKeys ?? []).map((k) => (k.id === keyId ? { ...k, interpolation } : k)) }
+          : o,
+      ),
+    }))
+  },
+
+  setShapeKeyArcPivot: (id, keyId, pivot) => {
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? { ...o, shapeKeys: (o.shapeKeys ?? []).map((k) => (k.id === keyId ? { ...k, arcPivot: pivot } : k)) }
+          : o,
+      ),
+    }))
+  },
+
+  setEditingShapeKey: (keyId) => {
+    set({
+      editingShapeKeyId: keyId,
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    })
   },
 
   freezeUvBaseVertices: (id, indices) =>
@@ -879,6 +1028,18 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) => {
         if (o.id !== objectId) return o
         const overrides = new Map(indices.map((idx, k) => [idx, positions[k]]))
+        // while sculpting a shape key, grab/move writes into that key's own sparse pose instead
+        // of the Basis (`mesh.vertices`) — keeps the Basis and every other key untouched
+        if (s.editingShapeKeyId) {
+          const key = o.shapeKeys?.find((k) => k.id === s.editingShapeKeyId)
+          if (!key) return o
+          const nextPositions = { ...key.positions }
+          overrides.forEach((pos, i) => (nextPositions[i] = pos))
+          return {
+            ...o,
+            shapeKeys: o.shapeKeys!.map((k) => (k.id === key.id ? { ...k, positions: nextPositions } : k)),
+          }
+        }
         const vertices = o.mesh.vertices.map((v, i) => overrides.get(i) ?? v)
         return { ...o, mesh: { ...o.mesh, vertices } }
       }),
@@ -903,6 +1064,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setGizmoOrientation: (gizmoOrientation) => set({ gizmoOrientation }),
 
   applyLoopCut: (objectId, edgeA, edgeB, ts) => {
+    // topology tools are Basis-only — a shape key can only reposition existing vertices
+    if (get().editingShapeKeyId) return
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
     const path = findFullLoop(obj.mesh, edgeA, edgeB)
@@ -921,6 +1084,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   applyRingCut: (objectId, center, hoverRim, ts) => {
+    if (get().editingShapeKeyId) return
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
     const path = findFan(obj.mesh, center, hoverRim)
@@ -939,6 +1103,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   applyKnifeCut: (objectId, path) => {
+    if (get().editingShapeKeyId) return
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj || path.length < 2) return
     const result = applyKnifeCutToMesh(obj.mesh, path)
@@ -956,6 +1121,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   extrudeSelection: () => {
     const s = get()
+    if (s.editingShapeKeyId) return false
     const objectId = s.selectedObjectId
     if (!objectId) return false
     const obj = s.objects.find((o) => o.id === objectId)
@@ -993,6 +1159,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   deleteSelection: () => {
     const s = get()
+    if (s.editingShapeKeyId) return
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
@@ -1035,6 +1202,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   dissolveSelection: () => {
     const s = get()
+    if (s.editingShapeKeyId) return
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
@@ -1146,6 +1314,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   mergeSelectedVertices: (mode) => {
     const s = get()
+    if (s.editingShapeKeyId) return
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
@@ -1167,6 +1336,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   fillSelectedFace: () => {
     const s = get()
+    if (s.editingShapeKeyId) return
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
@@ -1191,6 +1361,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   mergeVertexPair: (objectId, keepIndex, mergeIndex) => {
+    if (get().editingShapeKeyId) return
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
     // no beginChange here: this is called right after a vertex drag, which already opened
