@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
-import { VisibleTrueIcon, VisibleFalseIcon } from './icons'
+import { VisibleTrueIcon, VisibleFalseIcon, TrashIcon } from './icons'
 
 /** Where a drag-over point falls within a row: near the top/bottom edge reorders this object as
  *  a sibling immediately before/after the hovered row (adopting its parent); the middle band
@@ -137,7 +137,7 @@ export default function Outliner() {
             removeObject(obj.id)
           }}
         >
-          🗑
+          <TrashIcon size={14} />
         </button>
       </div>
       {children.length > 0 && !isCollapsed && (

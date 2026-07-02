@@ -1,11 +1,11 @@
-import { useRef, useState, type CSSProperties } from 'react'
-import { useSceneStore } from '../scene/store'
+import { createContext, useContext, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
-import type { InsertSlot, SceneObject } from '../scene/types'
+import type { AppMode, FakeFlagSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
-import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon } from './icons'
+import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
 function NumberField({
   label,
@@ -39,6 +39,31 @@ function NumberField({
 
 function round(v: number) {
   return Math.round(v * 1000) / 1000
+}
+
+/** Which `Section` titles are collapsed — global UI state (not per-object, not undo-tracked),
+ *  matching Blender's panel-collapse behavior: it's about how you like to view the properties
+ *  editor, not something that travels with the selected object or the scene file. */
+const CollapseContext = createContext<{ collapsed: Set<string>; toggle: (title: string) => void }>({
+  collapsed: new Set(),
+  toggle: () => {},
+})
+
+/** A `.prop-section` header that doubles as a collapse/expand toggle for everything passed as
+ *  `children` — every section in this panel should use this instead of a bare
+ *  `<div className="prop-section">` so the whole panel gets collapsible sections uniformly. */
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  const { collapsed, toggle } = useContext(CollapseContext)
+  const isCollapsed = collapsed.has(title)
+  return (
+    <>
+      <div className="prop-section prop-section-toggle" onClick={() => toggle(title)}>
+        <span className="prop-section-caret">{isCollapsed ? '▸' : '▾'}</span>
+        {title}
+      </div>
+      {!isCollapsed && children}
+    </>
+  )
 }
 
 const UV_RESOLUTIONS = [512, 1024, 2048, 4096]
@@ -120,8 +145,7 @@ function IslandZOrderSection({
   const availableSlotNames = Array.from(new Set(objects.map((o) => o.slotName).filter((n): n is string => !!n)))
 
   return (
-    <>
-      <div className="prop-section">Islands (Z-order)</div>
+    <Section title="Islands (Z-order)">
       <div className="prop-row prop-static">
         <span>Front on top, back on bottom. Select with the left button, names are editable</span>
       </div>
@@ -213,7 +237,7 @@ function IslandZOrderSection({
               ▼
             </button>
             <button className="icon-btn" title="Remove this slot" onClick={() => removeInsertSlot(obj.id, slot.id)}>
-              🗑
+              <TrashIcon size={14} />
             </button>
           </div>
         )
@@ -221,7 +245,7 @@ function IslandZOrderSection({
       <div className="prop-row">
         <button onClick={() => addInsertSlot(obj.id)}>+ Add INSERT OBJECT</button>
       </div>
-    </>
+    </Section>
   )
 }
 
@@ -263,8 +287,7 @@ function ShapeKeysSection({
   const editingKey = keys.find((k) => k.id === editingShapeKeyId)
 
   return (
-    <>
-      <div className="prop-section">Shape Keys</div>
+    <Section title="Shape Keys">
       {editingKey && (
         <div className="prop-row prop-static">
           <span>
@@ -331,7 +354,7 @@ function ShapeKeysSection({
               <AddKeyframeIcon size={14} />
             </button>
             <button className="icon-btn" title="Delete this shape key" onClick={() => removeShapeKey(obj.id, key.id)}>
-              🗑
+              <TrashIcon size={14} />
             </button>
           </div>
         )
@@ -339,7 +362,163 @@ function ShapeKeysSection({
       <div className="prop-row">
         <button onClick={() => addShapeKey(obj.id)}>+ Add Shape Key</button>
       </div>
-    </>
+    </Section>
+  )
+}
+
+/** One modifier's settings UI, inside the generic chrome (`ModifiersSection`) that gives it a
+ *  name row with an enable toggle and a remove button — same shape every future modifier type
+ *  will follow. */
+function FakeFlagModifierBox({
+  obj,
+  settings,
+  mode,
+  hasVertexSelection,
+  removeModifier,
+  toggleFakeFlagEnabled,
+  updateFakeFlag,
+  assignFakeFlagAnchor,
+  clearFakeFlagAnchor,
+  previewFakeFlag,
+  togglePreviewFakeFlag,
+}: {
+  obj: SceneObject
+  settings: FakeFlagSettings
+  mode: AppMode
+  hasVertexSelection: boolean
+  removeModifier: (id: string, type: Modifier['type']) => void
+  toggleFakeFlagEnabled: (id: string) => void
+  updateFakeFlag: (id: string, patch: Partial<FakeFlagSettings>) => void
+  assignFakeFlagAnchor: (id: string) => void
+  clearFakeFlagAnchor: (id: string) => void
+  previewFakeFlag: boolean
+  togglePreviewFakeFlag: () => void
+}) {
+  const anchorCount = settings.anchorVertices?.length ?? 0
+  const vertexMode = anchorCount > 0
+
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => toggleFakeFlagEnabled(obj.id)}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Fake Flag</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'fakeFlag')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row prop-static">
+            <span>
+              {vertexMode
+                ? `Vertex (cloth) mode — ${anchorCount} anchor vert${anchorCount === 1 ? '' : 's'} pinned`
+                : 'Object rotation mode — sways the whole object about its head'}
+            </span>
+          </div>
+          {obj.kind !== 'empty' && (
+            <div className="prop-row">
+              <button
+                disabled={mode !== 'edit' || !hasVertexSelection}
+                title={
+                  mode !== 'edit'
+                    ? 'Switch to Edit Mode and select vertices to pin as the anchor'
+                    : !hasVertexSelection
+                      ? 'Select the vertices to pin (e.g. a flag\'s luff against its pole) first'
+                      : 'Pin the current vertex selection as the anchor — switches to vertex (cloth) mode'
+                }
+                onClick={() => assignFakeFlagAnchor(obj.id)}
+              >
+                Assign anchor from selection
+              </button>
+              {vertexMode && (
+                <button title="Clear the anchor — switches back to object rotation mode" onClick={() => clearFakeFlagAnchor(obj.id)}>
+                  Clear anchor
+                </button>
+              )}
+            </div>
+          )}
+          <div className="prop-row">
+            <button
+              className={'icon-btn' + (previewFakeFlag ? ' active' : '')}
+              title="Live wall-clock preview — see the sway/flutter without laying down any keyframes"
+              onClick={togglePreviewFakeFlag}
+            >
+              {previewFakeFlag ? <StopIcon size={14} /> : <PlayIcon size={14} />}
+              {previewFakeFlag ? 'Stop preview' : 'Preview'}
+            </button>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label={vertexMode ? 'Amplitude (units)' : 'Amplitude (°)'}
+              value={settings.amplitude}
+              onChange={(v) => updateFakeFlag(obj.id, { amplitude: v })}
+            />
+            <NumberField
+              label="Cycles / loop"
+              value={settings.cyclesPerLoop}
+              onChange={(v) => updateFakeFlag(obj.id, { cyclesPerLoop: Math.max(1, Math.round(v)) })}
+            />
+          </div>
+          <div className="prop-row">
+            <NumberField label="Phase" value={settings.phase} step={0.05} onChange={(v) => updateFakeFlag(obj.id, { phase: v })} />
+            <NumberField label="Direction (°)" value={settings.direction} onChange={(v) => updateFakeFlag(obj.id, { direction: v })} />
+          </div>
+          <div className="prop-row">
+            <NumberField label="Wavelength" value={settings.wavelength} onChange={(v) => updateFakeFlag(obj.id, { wavelength: v })} />
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Random strength"
+              value={settings.randomStrength}
+              step={0.05}
+              onChange={(v) => updateFakeFlag(obj.id, { randomStrength: v })}
+            />
+            <NumberField label="Seed" value={settings.seed} onChange={(v) => updateFakeFlag(obj.id, { seed: v })} />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Blender-style "add only what you use" modifier stack — replaces what used to be a permanently
+ *  visible Fake Flag section, so an object that doesn't use any opt-in effect isn't paying rent
+ *  for one in its Properties panel. Add a second modifier type here (and to the store's
+ *  `addModifier`/`Modifier` union) by following `FakeFlagModifierBox`'s shape. */
+function ModifiersSection(props: {
+  obj: SceneObject
+  mode: AppMode
+  hasVertexSelection: boolean
+  addModifier: (id: string, type: Modifier['type']) => void
+  removeModifier: (id: string, type: Modifier['type']) => void
+  toggleFakeFlagEnabled: (id: string) => void
+  updateFakeFlag: (id: string, patch: Partial<FakeFlagSettings>) => void
+  assignFakeFlagAnchor: (id: string) => void
+  clearFakeFlagAnchor: (id: string) => void
+  previewFakeFlag: boolean
+  togglePreviewFakeFlag: () => void
+}) {
+  const { obj, addModifier } = props
+  const modifiers = obj.modifiers ?? []
+  const hasFakeFlag = modifiers.some((m) => m.type === 'fakeFlag')
+
+  return (
+    <Section title="Modifiers">
+      {modifiers.map((m) =>
+        m.type === 'fakeFlag' ? <FakeFlagModifierBox key={m.type} {...props} settings={m.settings} /> : null,
+      )}
+      {!hasFakeFlag && (
+        <div className="prop-row">
+          <button onClick={() => addModifier(obj.id, 'fakeFlag')}>+ Add Modifier ▾</button>
+        </div>
+      )}
+    </Section>
   )
 }
 
@@ -375,6 +554,17 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setShapeKeyInterpolation = useSceneStore((s) => s.setShapeKeyInterpolation)
   const setEditingShapeKey = useSceneStore((s) => s.setEditingShapeKey)
   const insertShapeKeyKeyframe = useSceneStore((s) => s.insertShapeKeyKeyframe)
+  const addModifier = useSceneStore((s) => s.addModifier)
+  const removeModifier = useSceneStore((s) => s.removeModifier)
+  const toggleFakeFlagEnabled = useSceneStore((s) => s.toggleFakeFlagEnabled)
+  const updateFakeFlag = useSceneStore((s) => s.updateFakeFlag)
+  const assignFakeFlagAnchor = useSceneStore((s) => s.assignFakeFlagAnchor)
+  const clearFakeFlagAnchor = useSceneStore((s) => s.clearFakeFlagAnchor)
+  const previewFakeFlag = useSceneStore((s) => s.previewFakeFlag)
+  const togglePreviewFakeFlag = useSceneStore((s) => s.togglePreviewFakeFlag)
+  const hasVertexSelection = useSceneStore(
+    (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
+  )
   const hasActiveClip = useSceneStore((s) => s.activeClipId !== null)
   const activeClip = useSceneStore((s) => s.clips.find((c) => c.id === s.activeClipId))
   const playheadTime = useSceneStore((s) => s.playheadTime)
@@ -389,6 +579,14 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   )
   const textureInputRef = useRef<HTMLInputElement>(null)
   const [baking, setBaking] = useState(false)
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+  const toggleSection = (title: string) =>
+    setCollapsedSections((prev) => {
+      const next = new Set(prev)
+      if (next.has(title)) next.delete(title)
+      else next.add(title)
+      return next
+    })
 
   const handleModalHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     modalDragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: modalOffset.x, startOffsetY: modalOffset.y }
@@ -422,103 +620,122 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   }
 
   return (
+    <CollapseContext.Provider value={{ collapsed: collapsedSections, toggle: toggleSection }}>
     <div className="panel properties" style={style}>
       <div className="panel-title">Properties</div>
       {!obj ? (
         <div className="empty-hint">No object selected</div>
       ) : (
         <div className="prop-body">
-          <div className="prop-section">Slot name</div>
-          <div className="prop-row">
-            <input
-              className="layer-name"
-              placeholder="(none)"
-              title="A name unique within the scene that other objects' INSERT OBJECT slots can reference. Setting the same name on another object removes it from the previous owner"
-              value={obj.slotName ?? ''}
-              onChange={(e) => setSlotName(obj.id, e.target.value)}
-            />
-          </div>
-
-          <div className="prop-section">Hierarchy</div>
-          {obj.parentId !== null ? (
-            <>
-              <div className="prop-row prop-static">
-                <span>Parent: {objects.find((o) => o.id === obj.parentId)?.name ?? '(unknown)'}</span>
-              </div>
-              <div className="prop-row">
-                <button onClick={() => setParent(obj.id, null)}>Unparent</button>
-              </div>
-              <div className="prop-row">
-                <label className="uv-hint uv-density-toggle">
-                  <input
-                    type="checkbox"
-                    checked={obj.connected}
-                    onChange={(e) => setConnected(obj.id, e.target.checked)}
-                  />
-                  Connect to parent's Tail
-                </label>
-              </div>
-            </>
-          ) : (
-            <div className="prop-row prop-static">
-              <span>No parent object (drag in the outliner to set one)</span>
+          <Section title="Slot name">
+            <div className="prop-row">
+              <input
+                className="layer-name"
+                placeholder="(none)"
+                title="A name unique within the scene that other objects' INSERT OBJECT slots can reference. Setting the same name on another object removes it from the previous owner"
+                value={obj.slotName ?? ''}
+                onChange={(e) => setSlotName(obj.id, e.target.value)}
+              />
             </div>
-          )}
+          </Section>
 
-          <div className="prop-section">Transform</div>
-          <div className="prop-row">
-            <NumberField
-              label="Position X"
-              value={obj.transform.x}
-              disabled={obj.connected && obj.parentId !== null}
-              onChange={(v) => setTransform(obj.id, { x: v })}
-            />
-            <NumberField
-              label="Position Y"
-              value={obj.transform.y}
-              disabled={obj.connected && obj.parentId !== null}
-              onChange={(v) => setTransform(obj.id, { y: v })}
-            />
-          </div>
-          <div className="prop-row">
-            <NumberField
-              label="Rotation (°)"
-              value={(obj.transform.rotation * 180) / Math.PI}
-              onChange={(v) => setTransform(obj.id, { rotation: (v * Math.PI) / 180 })}
-            />
-          </div>
-          <div className="prop-row">
-            <NumberField
-              label="Scale X"
-              value={obj.transform.scaleX}
-              step={0.1}
-              onChange={(v) => setTransform(obj.id, { scaleX: v })}
-            />
-            <NumberField
-              label="Scale Y"
-              value={obj.transform.scaleY}
-              step={0.1}
-              onChange={(v) => setTransform(obj.id, { scaleY: v })}
-            />
-          </div>
+          <Section title="Hierarchy">
+            {obj.parentId !== null ? (
+              <>
+                <div className="prop-row prop-static">
+                  <span>Parent: {objects.find((o) => o.id === obj.parentId)?.name ?? '(unknown)'}</span>
+                </div>
+                <div className="prop-row">
+                  <button onClick={() => setParent(obj.id, null)}>Unparent</button>
+                </div>
+                <div className="prop-row">
+                  <label className="uv-hint uv-density-toggle">
+                    <input
+                      type="checkbox"
+                      checked={obj.connected}
+                      onChange={(e) => setConnected(obj.id, e.target.checked)}
+                    />
+                    Connect to parent's Tail
+                  </label>
+                </div>
+              </>
+            ) : (
+              <div className="prop-row prop-static">
+                <span>No parent object (drag in the outliner to set one)</span>
+              </div>
+            )}
+          </Section>
 
-          <div className="prop-section">Head (local coordinates)</div>
-          <div className="prop-row">
-            <NumberField
-              label="Head X"
-              value={obj.transform.head.x}
-              onChange={(v) => setHead(obj.id, { x: v, y: obj.transform.head.y })}
-            />
-            <NumberField
-              label="Head Y"
-              value={obj.transform.head.y}
-              onChange={(v) => setHead(obj.id, { x: obj.transform.head.x, y: v })}
-            />
-          </div>
-          <div className="prop-row">
-            <NumberField label="Tail X" value={obj.tail.x} onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })} />
-            <NumberField label="Tail Y" value={obj.tail.y} onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })} />
-          </div>
+          <Section title="Transform">
+            <div className="prop-row">
+              <NumberField
+                label="Position X"
+                value={obj.transform.x}
+                disabled={obj.connected && obj.parentId !== null}
+                onChange={(v) => setTransform(obj.id, { x: v })}
+              />
+              <NumberField
+                label="Position Y"
+                value={obj.transform.y}
+                disabled={obj.connected && obj.parentId !== null}
+                onChange={(v) => setTransform(obj.id, { y: v })}
+              />
+            </div>
+            <div className="prop-row">
+              <NumberField
+                label="Rotation (°)"
+                value={(obj.transform.rotation * 180) / Math.PI}
+                onChange={(v) => setTransform(obj.id, { rotation: (v * Math.PI) / 180 })}
+              />
+            </div>
+            <div className="prop-row">
+              <NumberField
+                label="Scale X"
+                value={obj.transform.scaleX}
+                step={0.1}
+                onChange={(v) => setTransform(obj.id, { scaleX: v })}
+              />
+              <NumberField
+                label="Scale Y"
+                value={obj.transform.scaleY}
+                step={0.1}
+                onChange={(v) => setTransform(obj.id, { scaleY: v })}
+              />
+            </div>
+          </Section>
+
+          <Section title="Head (local coordinates)">
+            <div className="prop-row">
+              <NumberField
+                label="Head X"
+                value={obj.transform.head.x}
+                onChange={(v) => setHead(obj.id, { x: v, y: obj.transform.head.y })}
+              />
+              <NumberField
+                label="Head Y"
+                value={obj.transform.head.y}
+                onChange={(v) => setHead(obj.id, { x: obj.transform.head.x, y: v })}
+              />
+            </div>
+            <div className="prop-row">
+              <NumberField label="Tail X" value={obj.tail.x} onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })} />
+              <NumberField label="Tail Y" value={obj.tail.y} onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })} />
+            </div>
+          </Section>
+
+          <ModifiersSection
+            obj={obj}
+            mode={mode}
+            hasVertexSelection={hasVertexSelection}
+            addModifier={addModifier}
+            removeModifier={removeModifier}
+            toggleFakeFlagEnabled={toggleFakeFlagEnabled}
+            updateFakeFlag={updateFakeFlag}
+            assignFakeFlagAnchor={assignFakeFlagAnchor}
+            clearFakeFlagAnchor={clearFakeFlagAnchor}
+            previewFakeFlag={previewFakeFlag}
+            togglePreviewFakeFlag={togglePreviewFakeFlag}
+          />
 
           {mode === 'edit' && obj.kind !== 'empty' && (
             <IslandZOrderSection
@@ -567,92 +784,95 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             </div>
           ) : (
             <>
-              <div className="prop-section">Material</div>
-              <div className="prop-row">
-                <label className="prop-field">
-                  <span>Color{obj.material.textureUrl ? ' (multiplied with texture)' : ''}</span>
-                  <input
-                    type="color"
-                    value={obj.material.color}
-                    onChange={(e) => setMaterialColor(obj.id, e.target.value)}
-                  />
-                </label>
-              </div>
-              {obj.material.textureUrl && (
+              <Section title="Material">
                 <div className="prop-row">
-                  <img src={obj.material.textureUrl} alt="Texture" className="texture-thumb" />
+                  <label className="prop-field">
+                    <span>Color{obj.material.textureUrl ? ' (multiplied with texture)' : ''}</span>
+                    <input
+                      type="color"
+                      value={obj.material.color}
+                      onChange={(e) => setMaterialColor(obj.id, e.target.value)}
+                    />
+                  </label>
                 </div>
-              )}
-              <div className="prop-row">
-                <input
-                  ref={textureInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0]
-                    if (file) handleTextureFile(obj.id, file)
-                    e.target.value = ''
-                  }}
-                />
-                <button onClick={() => textureInputRef.current?.click()}>Set texture</button>
                 {obj.material.textureUrl && (
-                  <>
-                    <button onClick={() => setMaterialTexture(obj.id, undefined)}>Remove texture</button>
-                    <button
-                      onClick={() => downloadDataUrl(obj.material.textureUrl!, `${obj.name}_texture.png`)}
-                    >
-                      Export texture
-                    </button>
-                  </>
+                  <div className="prop-row">
+                    <img src={obj.material.textureUrl} alt="Texture" className="texture-thumb" />
+                  </div>
                 )}
-              </div>
+                <div className="prop-row">
+                  <input
+                    ref={textureInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleTextureFile(obj.id, file)
+                      e.target.value = ''
+                    }}
+                  />
+                  <button onClick={() => textureInputRef.current?.click()}>Set texture</button>
+                  {obj.material.textureUrl && (
+                    <>
+                      <button onClick={() => setMaterialTexture(obj.id, undefined)}>Remove texture</button>
+                      <button
+                        onClick={() => downloadDataUrl(obj.material.textureUrl!, `${obj.name}_texture.png`)}
+                      >
+                        Export texture
+                      </button>
+                    </>
+                  )}
+                </div>
+              </Section>
 
-              <div className="prop-section">UV</div>
-              <div className="prop-row">
-                <button
-                  onClick={() => {
-                    setModalOffset({ x: 0, y: 0 })
-                    setUvEditorOpen(true)
-                  }}
-                >
-                  Edit UVs...
-                </button>
-                <button
-                  title="Recompute UVs from the current shape. Normally moving vertices keeps UVs fixed and stretches the texture instead — use this after a major reshape when you want to re-unwrap"
-                  onClick={() => reunwrapUVs(obj.id)}
-                >
-                  Re-unwrap UVs
-                </button>
-                {referenceImage && (
+              <Section title="UV">
+                <div className="prop-row">
                   <button
-                    title="Bake the reference image into a texture matching this object's UV layout, and apply it directly"
-                    disabled={baking}
-                    onClick={() => handleBakeReference(obj)}
+                    onClick={() => {
+                      setModalOffset({ x: 0, y: 0 })
+                      setUvEditorOpen(true)
+                    }}
                   >
-                    {baking ? 'Baking…' : 'Bake reference image'}
+                    Edit UVs...
                   </button>
-                )}
-              </div>
-              <div className="prop-row">
-                <label className="prop-field">
-                  <span>Resolution</span>
-                  <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
-                    {UV_RESOLUTIONS.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button onClick={() => exportUvMap(obj, uvResolution)}>Export UV map</button>
-              </div>
+                  <button
+                    title="Recompute UVs from the current shape. Normally moving vertices keeps UVs fixed and stretches the texture instead — use this after a major reshape when you want to re-unwrap"
+                    onClick={() => reunwrapUVs(obj.id)}
+                  >
+                    Re-unwrap UVs
+                  </button>
+                  {referenceImage && (
+                    <button
+                      title="Bake the reference image into a texture matching this object's UV layout, and apply it directly"
+                      disabled={baking}
+                      onClick={() => handleBakeReference(obj)}
+                    >
+                      {baking ? 'Baking…' : 'Bake reference image'}
+                    </button>
+                  )}
+                </div>
+                <div className="prop-row">
+                  <label className="prop-field">
+                    <span>Resolution</span>
+                    <select value={uvResolution} onChange={(e) => setUvResolution(parseInt(e.target.value, 10))}>
+                      {UV_RESOLUTIONS.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button onClick={() => exportUvMap(obj, uvResolution)}>Export UV map</button>
+                </div>
+              </Section>
 
-              <div className="prop-section">Mesh</div>
-              <div className="prop-row prop-static">
-                <span>Vertices: {obj.mesh.vertices.length}</span>
-                <span>Faces: {obj.mesh.faces.length}</span>
-              </div>
+              <Section title="Mesh">
+                <div className="prop-row prop-static">
+                  <span>Vertices: {obj.mesh.vertices.length}</span>
+                  <span>Faces: {obj.mesh.faces.length}</span>
+                </div>
+              </Section>
             </>
           )}
         </div>
@@ -709,5 +929,6 @@ export default function Properties({ style }: { style?: CSSProperties }) {
         </div>
       )}
     </div>
+    </CollapseContext.Provider>
   )
 }

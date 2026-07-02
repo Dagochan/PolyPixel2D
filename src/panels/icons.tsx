@@ -55,46 +55,26 @@ export function FaceIcon({ size = 16 }: IconProps) {
   )
 }
 
-/** Four small corner brackets touching all four edges of the 24x24 viewBox — shared by the
- *  "framed" icon set (visibility, island-select) so every icon in that set shares the exact same
- *  ink bounding box regardless of what its own inner glyph looks like, and so they all line up
- *  pixel-for-pixel at any shared `size`. */
-function CornerBrackets() {
-  return (
-    <>
-      <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
-      <g transform="matrix(0,1,-1,0,24,0)">
-        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
-      </g>
-      <g transform="matrix(-1,0,-0,-1,24,24)">
-        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
-      </g>
-      <g transform="matrix(0,-1,1,0,0,24)">
-        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
-      </g>
-    </>
-  )
-}
-
 export function VisibleTrueIcon({ size = 16 }: IconProps) {
   return (
-    <svg width={size} height={size} {...base}>
-      <g transform="matrix(1,0,0,0.5,0,6)">
-        <path d="M18.784,6.614C20.761,9.236 22,12 22,12C22,12 17.519,22 12,22C6.481,22 2,12 2,12C2,12 3.239,9.236 5.216,6.614L3.884,2L5.616,0L6.945,4.602C8.157,3.388 9.532,2.421 11,2.108L11,-2.402L13,-2.402L13,2.108C14.468,2.421 15.843,3.388 17.055,4.602L18.384,0L20.116,2L18.784,6.614ZM12,5C7.585,5 4,12 4,12C4,12 7.585,19 12,19C16.415,19 20,12 20,12C20,12 16.415,5 12,5Z" />
-      </g>
-      <circle cx="12" cy="12" r="4" />
-      <CornerBrackets />
+    <svg width={size} height={size} {...wide}>
+      <path d="M607.5-372.5Q660-425 660-500t-52.5-127.5Q555-680 480-680t-127.5 52.5Q300-575 300-500t52.5 127.5Q405-320 480-320t127.5-52.5Zm-204-51Q372-455 372-500t31.5-76.5Q435-608 480-608t76.5 31.5Q588-545 588-500t-31.5 76.5Q525-392 480-392t-76.5-31.5ZM214-281.5Q94-363 40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200q-146 0-266-81.5ZM480-500Zm207.5 160.5Q782-399 832-500q-50-101-144.5-160.5T480-720q-113 0-207.5 59.5T128-500q50 101 144.5 160.5T480-280q113 0 207.5-59.5Z" />
     </svg>
   )
 }
 
 export function VisibleFalseIcon({ size = 16 }: IconProps) {
   return (
-    <svg width={size} height={size} {...base}>
-      <g transform="matrix(1,0,0,-0.5,0,18)">
-        <path d="M2,12C2,12 3.239,9.236 5.216,6.614L3.884,2L5.616,0L6.945,4.602C8.157,3.388 9.532,2.421 11,2.108L11,-2.402L13,-2.402L13,2.108C14.468,2.421 15.843,3.388 17.055,4.602L18.384,0L20.116,2L18.784,6.614C20.761,9.236 22,12 22,12L20,12C20,12 16.415,5 12,5C7.585,5 4,12 4,12L2,12Z" />
-      </g>
-      <CornerBrackets />
+    <svg width={size} height={size} {...wide}>
+      <path d="m644-428-58-58q9-47-27-88t-93-32l-58-58q17-8 34.5-12t37.5-4q75 0 127.5 52.5T660-500q0 20-4 37.5T644-428Zm128 126-58-56q38-29 67.5-63.5T832-500q-50-101-143.5-160.5T480-720q-29 0-57 4t-55 12l-62-62q41-17 84-25.5t90-8.5q151 0 269 83.5T920-500q-23 59-60.5 109.5T772-302Zm20 246L624-222q-35 11-70.5 16.5T480-200q-151 0-269-83.5T40-500q21-53 53-98.5t73-81.5L56-792l56-56 736 736-56 56ZM222-624q-29 26-53 57t-41 67q50 101 143.5 160.5T480-280q20 0 39-2.5t39-5.5l-36-38q-11 3-21 4.5t-21 1.5q-75 0-127.5-52.5T300-500q0-11 1.5-21t4.5-21l-84-82Zm319 93Zm-151 75Z" />
+    </svg>
+  )
+}
+
+export function TrashIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} {...wide}>
+      <path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z" />
     </svg>
   )
 }
@@ -112,6 +92,25 @@ export function UnlockedIcon({ size = 16 }: IconProps) {
     <svg width={size} height={size} viewBox="0 -960 960 960" fill="currentColor">
       <path d="M240-160h480v-400H240v400Zm296.5-143.5Q560-327 560-360t-23.5-56.5Q513-440 480-440t-56.5 23.5Q400-393 400-360t23.5 56.5Q447-280 480-280t56.5-23.5ZM240-160v-400 400Zm0 80q-33 0-56.5-23.5T160-160v-400q0-33 23.5-56.5T240-640h280v-80q0-83 58.5-141.5T720-920q83 0 141.5 58.5T920-720h-80q0-50-35-85t-85-35q-50 0-85 35t-35 85v80h120q33 0 56.5 23.5T800-560v400q0 33-23.5 56.5T720-80H240Z" />
     </svg>
+  )
+}
+
+/** Four small corner brackets touching all four edges of the 24x24 viewBox — used by
+ *  `IslandSelectIcon` so it shares the same "framed" look the visibility icons used to. */
+function CornerBrackets() {
+  return (
+    <>
+      <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      <g transform="matrix(0,1,-1,0,24,0)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(-1,0,-0,-1,24,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(0,-1,1,0,0,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+    </>
   )
 }
 
@@ -287,6 +286,14 @@ export function PauseIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
       <path d="M7,5 L7,19 L10,19 L10,5 Z M14,5 L14,19 L17,19 L17,5 Z" />
+    </svg>
+  )
+}
+
+export function StopIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" />
     </svg>
   )
 }

@@ -19,6 +19,7 @@ import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
+import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
 import { createHairPathMesh } from '../scene/primitives'
 
 const HANDLE_SIZE = 8 // px
@@ -30,6 +31,7 @@ const EMPTY_GIZMO_SIZE = 12 // world units; stand-in "bounds" half-size for a me
 const EMPTY_HIT_RADIUS_PX = 10 // click hit-test radius for picking an Empty in the viewport
 const HAIR_PATH_DEFAULT_WIDTH = 10 // world units — starting root width of a Hair Path, before any Shift+wheel adjustment
 const HAIR_PATH_CP_HIT_RADIUS_PX = 10 // click hit-test radius for grabbing an already-placed control point
+const FAKE_FLAG_RING_RADIUS_PX = 22 // fixed screen size rotate-ring for the direction handle, at the anchor root
 
 /** The object as it should actually be displayed/hit-tested right now — every field identical
  *  to `obj` except `mesh.vertices`, which is swapped for the shape-key-evaluated pose (see
@@ -92,6 +94,7 @@ type DragMode =
   | { kind: 'move-head'; objectId: string }
   | { kind: 'move-tail'; objectId: string }
   | { kind: 'move-shapekey-arc-pivot'; objectId: string; keyId: string }
+  | { kind: 'move-fake-flag-direction'; objectId: string; startDirection: number; startAngle: number }
   | { kind: 'move-hairpath-cp'; index: number }
   | {
       kind: 'box-select'
@@ -957,7 +960,7 @@ export default function Viewport() {
     scene.add(new THREE.AmbientLight(0xffffff, 1))
 
     const {
-      objects,
+      objects: rawObjects,
       selectedObjectId,
       mode,
       editElementType,
@@ -968,10 +971,28 @@ export default function Viewport() {
       referenceImage,
       meshOpacity,
       gridVisible,
+      clips,
+      activeClipId,
+      playheadTime,
+      previewFakeFlag,
     } = useSceneStore.getState()
 
     if (referenceImage) addReferenceImage(scene, referenceImage)
     if (gridVisible) addGrid(scene)
+
+    // Fake Flag sway/deform is a pure function of time, re-evaluated fresh every frame (no baking).
+    // Normally that's the playhead; "Preview" instead free-runs off the wall clock so a user can
+    // see it without laying down any keyframes first (this render loop already runs every rAF
+    // frame regardless of play state, so this needs no extra scheduling).
+    const activeClip = clips.find((c) => c.id === activeClipId)
+    const fakeFlagLoopDuration = activeClip?.duration ?? 0
+    const fakeFlagTime = previewFakeFlag ? performance.now() / 1000 : playheadTime
+
+    // Bake rotation-mode sway into a shadow `objects` array so every world-transform composition
+    // below (including parent/child chains) automatically carries it, exactly like
+    // `displayVertices` does for shape keys. `objects` still means "editing/gizmo code below should
+    // use the raw pose"; only this drawing pass swaps in the swayed version.
+    const objects = applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration)
 
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
@@ -989,10 +1010,15 @@ export default function Viewport() {
         return
       }
 
-      // shadow `obj` with a shape-key-evaluated view for the rest of this iteration — every
-      // other field is identical to `rawObj`, so this is transparent to all the rendering code
-      // below, which just needs to draw/hit-test the *displayed* pose instead of the raw Basis
-      const displayVerts = displayVertices(rawObj, editingShapeKeyId, isSelected)
+      // shadow `obj` with a shape-key-evaluated (+ Fake Flag vertex-mode, if anchored) view for
+      // the rest of this iteration — every other field is identical to `rawObj`, so this is
+      // transparent to all the rendering code below, which just needs to draw/hit-test the
+      // *displayed* pose instead of the raw Basis
+      const shapeKeyVerts = displayVertices(rawObj, editingShapeKeyId, isSelected)
+      const flagDeltas = fakeFlagVertexDeltas(rawObj, fakeFlagTime, fakeFlagLoopDuration)
+      const displayVerts = flagDeltas
+        ? shapeKeyVerts.map((v, i) => ({ x: v.x + flagDeltas[i].x, y: v.y + flagDeltas[i].y }))
+        : shapeKeyVerts
       const obj: SceneObject =
         displayVerts === rawObj.mesh.vertices ? rawObj : { ...rawObj, mesh: { ...rawObj.mesh, vertices: displayVerts } }
 
@@ -1225,6 +1251,13 @@ export default function Viewport() {
     if (mode === 'object' && selectedObjectId) {
       const obj = objects.find((o) => o.id === selectedObjectId)
       if (obj) addGizmo(scene, obj)
+    }
+
+    // Fake Flag vertex-mode anchor/direction indicator — shown whenever the selected object has
+    // anchors assigned, in any mode, so it's visible as a reference even outside Edit Mode.
+    if (selectedObjectId) {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) addFakeFlagAnchorIndicator(scene, obj, fakeFlagTime, fakeFlagLoopDuration)
     }
 
     // head/tail handles only in pivot mode — see addPivotHandles
@@ -1697,6 +1730,106 @@ export default function Viewport() {
     const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }))
     ring.position.set(center.x, center.y, 0.65)
     scene.add(ring)
+  }
+
+  /** World-space anchor point, ring radius, and current-angle marker for a Fake-Flagged object's
+   *  direction handle — a compact rotate ring at the anchor root (Blender-gizmo style) rather than
+   *  a long arrow, so it stays out of the way of the mesh/wave curve. Shared by the drawing code
+   *  and the pointerdown hit-test/drag logic below so they always agree on where the ring actually
+   *  is. `null` when Fake Flag doesn't apply at all (disabled, or no settings). The ring itself is
+   *  a fixed screen size and doesn't animate with the wave — only `markerWorld` (the dot showing
+   *  the current angle) moves, and only when `direction` itself changes. */
+  function getFakeFlagDirectionHandle(
+    obj: SceneObject,
+    time: number,
+    loopDuration: number,
+  ): { anchorWorld: Vec2; markerWorld: Vec2; ringRadiusWorld: number; worldTransform: Transform } | null {
+    const settings = getFakeFlag(obj)
+    if (!settings?.enabled) return null
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const pxToWorld = 1 / viewRef.current.zoom
+    const anchorIdx = settings.anchorVertices
+
+    let anchorLocal: Vec2
+    if (anchorIdx?.length) {
+      const anchorLocalPositions = anchorIdx.map((i) => obj.mesh.vertices[i]).filter((v): v is Vec2 => !!v)
+      if (anchorLocalPositions.length === 0) return null
+      anchorLocal = anchorLocalPositions.reduce(
+        (acc, p) => ({ x: acc.x + p.x / anchorLocalPositions.length, y: acc.y + p.y / anchorLocalPositions.length }),
+        { x: 0, y: 0 },
+      )
+    } else {
+      anchorLocal = obj.transform.head
+    }
+
+    const anchorWorld = applyTransform(anchorLocal, worldTransform)
+    const ringRadiusWorld = FAKE_FLAG_RING_RADIUS_PX * pxToWorld
+    const dirRad = (settings.direction * Math.PI) / 180 + worldTransform.rotation
+    const dirWorld = { x: Math.cos(dirRad), y: Math.sin(dirRad) }
+    const markerWorld = { x: anchorWorld.x + dirWorld.x * ringRadiusWorld, y: anchorWorld.y + dirWorld.y * ringRadiusWorld }
+    return { anchorWorld, markerWorld, ringRadiusWorld, worldTransform }
+  }
+
+  /** Fake Flag's direction indicator/handle. Vertex mode also draws a dashed curve from the
+   *  anchor centroid out to the mesh's tip, tracing the *actual current wave shape* (not just a
+   *  static arrow) so it's obvious both which way the cloth is set up to wave and what it's doing
+   *  right now — anchor vertices themselves are drawn as small rings. Either way, the *draggable*
+   *  handle itself (from `getFakeFlagDirectionHandle`) is a small rotate ring at the anchor root —
+   *  see that function for why it doesn't follow the animated wave. */
+  function addFakeFlagAnchorIndicator(scene: THREE.Scene, obj: SceneObject, time: number, loopDuration: number) {
+    const settings = getFakeFlag(obj)
+    if (!settings?.enabled) return
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const pxToWorld = 1 / viewRef.current.zoom
+    const anchorColor = 0xf5a623
+    const anchorIdx = settings.anchorVertices
+
+    const handle = getFakeFlagDirectionHandle(obj, time, loopDuration)
+    if (!handle) return
+
+    const ringGeom2 = new THREE.RingGeometry(handle.ringRadiusWorld - 1 * pxToWorld, handle.ringRadiusWorld + 1 * pxToWorld, 40)
+    const ringMesh2 = new THREE.Mesh(ringGeom2, new THREE.MeshBasicMaterial({ color: anchorColor, depthTest: false, transparent: true }))
+    ringMesh2.position.set(handle.anchorWorld.x, handle.anchorWorld.y, 0.68)
+    scene.add(ringMesh2)
+    const markerGeom = new THREE.CircleGeometry(3 * pxToWorld, 16)
+    const marker = new THREE.Mesh(markerGeom, new THREE.MeshBasicMaterial({ color: anchorColor, depthTest: false, transparent: true }))
+    marker.position.set(handle.markerWorld.x, handle.markerWorld.y, 0.69)
+    scene.add(marker)
+
+    if (!anchorIdx?.length) return
+
+    const anchorLocalPositions = anchorIdx.map((i) => obj.mesh.vertices[i]).filter((v): v is Vec2 => !!v)
+    if (anchorLocalPositions.length === 0) return
+
+    for (const p of anchorLocalPositions) {
+      const world = applyTransform(p, worldTransform)
+      const ringGeom = new THREE.RingGeometry(4 * pxToWorld - 0.8 * pxToWorld, 4 * pxToWorld + 0.8 * pxToWorld, 20)
+      const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: anchorColor, depthTest: false, transparent: true }))
+      ring.position.set(world.x, world.y, 0.65)
+      scene.add(ring)
+    }
+
+    const centroidLocal = anchorLocalPositions.reduce(
+      (acc, p) => ({ x: acc.x + p.x / anchorLocalPositions.length, y: acc.y + p.y / anchorLocalPositions.length }),
+      { x: 0, y: 0 },
+    )
+    const extent = Math.max(fakeFlagAnchorExtent(obj), 1e-3)
+    const samplesLocal = fakeFlagIndicatorSamples(settings, centroidLocal, extent, time, loopDuration)
+    const samplesWorld = samplesLocal.map((p) => applyTransform(p, worldTransform))
+
+    for (let i = 0; i < samplesWorld.length - 1; i++) {
+      const a = samplesWorld[i]
+      const b = samplesWorld[i + 1]
+      addDashedThickLine(scene, a.x, a.y, b.x, b.y, anchorColor, pxToWorld)
+    }
+
+    // Small arrowhead at the curve's tip, purely informational (points along the curve's local
+    // tangent there) — not draggable itself, that's the ring handle drawn above.
+    const tip = samplesWorld[samplesWorld.length - 1]
+    const beforeTip = samplesWorld[samplesWorld.length - 2] ?? tip
+    const tipDir = { x: tip.x - beforeTip.x, y: tip.y - beforeTip.y }
+    const tipDirLen = Math.hypot(tipDir.x, tipDir.y) || 1
+    addAxisArrow(scene, beforeTip, { x: tipDir.x / tipDirLen, y: tipDir.y / tipDirLen }, tipDirLen, pxToWorld, anchorColor)
   }
 
   /** Informational dashed line from a parent's world tail to a `connected: false` child's world
@@ -2368,6 +2501,28 @@ export default function Viewport() {
       }
     }
 
+    // Fake Flag's direction-handle ring (drawn in rebuildScene) — draggable in any mode whenever
+    // it's shown, so it takes priority right after the (edit-mode-only) Arc pivot check above.
+    // Grabbable anywhere on the ring's circumference, Blender-rotate-gizmo style, not just at the
+    // current-angle marker dot.
+    const selectedFakeFlag = rawSelectedObj ? getFakeFlag(rawSelectedObj) : undefined
+    if (rawSelectedObj && selectedFakeFlag?.enabled) {
+      const activeClip = useSceneStore.getState().clips.find((c) => c.id === useSceneStore.getState().activeClipId)
+      const fakeFlagTime = useSceneStore.getState().previewFakeFlag ? performance.now() / 1000 : useSceneStore.getState().playheadTime
+      const handle = getFakeFlagDirectionHandle(rawSelectedObj, fakeFlagTime, activeClip?.duration ?? 0)
+      const distFromAnchorPx = handle ? Math.hypot(world.x - handle.anchorWorld.x, world.y - handle.anchorWorld.y) * viewRef.current.zoom : Infinity
+      if (handle && Math.abs(distFromAnchorPx - FAKE_FLAG_RING_RADIUS_PX) < GIZMO_HIT_TOLERANCE) {
+        useSceneStore.getState().beginChange()
+        dragRef.current = {
+          kind: 'move-fake-flag-direction',
+          objectId: rawSelectedObj.id,
+          startDirection: selectedFakeFlag.direction,
+          startAngle: Math.atan2(world.y - handle.anchorWorld.y, world.x - handle.anchorWorld.x),
+        }
+        return
+      }
+    }
+
     // pivot mode: head/tail dots are the only draggable handles here (no move/rotate/scale gizmo
     // is rendered in this mode, so there's nothing else to hit-test against)
     if (mode === 'pivot' && selectedObj) {
@@ -2773,6 +2928,22 @@ export default function Viewport() {
         localUnderMouse = inverseTransform(world, worldTransform)
       }
       store.setShapeKeyArcPivot(drag.objectId, drag.keyId, localUnderMouse)
+      return
+    }
+
+    if (drag.kind === 'move-fake-flag-direction') {
+      const obj = store.objects.find((o) => o.id === drag.objectId)
+      if (!obj) return
+      const activeClip = store.clips.find((c) => c.id === store.activeClipId)
+      const fakeFlagTime = store.previewFakeFlag ? performance.now() / 1000 : store.playheadTime
+      const handle = getFakeFlagDirectionHandle(obj, fakeFlagTime, activeClip?.duration ?? 0)
+      if (!handle) return
+      // Delta-based, like `rotate-object`'s ring — the value only moves by however far the mouse
+      // has moved *since the click*, so grabbing the ring off-angle from the marker doesn't snap
+      // it straight to the cursor.
+      const currentAngle = Math.atan2(world.y - handle.anchorWorld.y, world.x - handle.anchorWorld.x)
+      const deltaDeg = ((currentAngle - drag.startAngle) * 180) / Math.PI
+      store.setFakeFlagDirection(drag.objectId, drag.startDirection + deltaDeg)
       return
     }
 

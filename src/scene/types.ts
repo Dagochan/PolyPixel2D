@@ -68,6 +68,57 @@ export interface ShapeKey {
   arcPivot?: Vec2
 }
 
+/** Sin-wave sway ("flutter") for flags, cloth, hair etc., evaluated fresh from the playhead time
+ *  on every render — unlike Fake Physics there's no simulation to converge, so nothing needs
+ *  baking. Looping is kept seamless by locking the wave's frequency to a whole number of cycles
+ *  across the active clip's duration rather than letting the user pick a raw, possibly-non-looping
+ *  frequency.
+ *
+ *  Two modes sharing one settings object, chosen by whether `anchorVertices` is set: with no
+ *  anchors, the whole object rigidly rotates about its head (a swinging pendant/pendulum). With
+ *  anchors — vertices pinned in place, e.g. a flag's luff against its pole — the mesh itself
+ *  deforms like a real flag: each vertex is displaced *transverse* to `direction` (perpendicular —
+ *  a wave traveling along the fabric makes it ripple crosswise, not stretch lengthwise), scaled by
+ *  its distance from the nearest anchor (0 right at the anchor, ramping up over one `wavelength` of
+ *  distance), so the cloth waves freely at the tip while staying pinned at the anchor. */
+export interface FakeFlagSettings {
+  enabled: boolean
+  /** No anchors: sway amplitude in degrees (rotation swings +-amplitude about the head). With
+   *  anchors: peak vertex displacement, in mesh-local world units, transverse to `direction`. */
+  amplitude: number
+  /** Whole number of full oscillations across the active clip's duration. */
+  cyclesPerLoop: number
+  /** 0..1 fraction of a cycle to offset the starting phase — desyncs multiple Fake-Flagged objects
+   *  from each other, or (with `direction`) makes a wave visibly travel across a row of them. */
+  phase: number
+  /** No anchors: world-space propagation direction, in degrees, used for inter-object phase offset
+   *  (an object further along this direction picks up phase proportional to `wavelength`). With
+   *  anchors: the anchor-to-tip propagation direction, in the object's local mesh space — vertices
+   *  actually displace *transverse* (perpendicular) to this, not along it. */
+  direction: number
+  /** No anchors: world units per full cycle of the spatial phase offset along `direction`. With
+   *  anchors: local mesh units per full cycle, and also the distance over which a vertex's anchor
+   *  falloff ramps from 0 to full strength. */
+  wavelength: number
+  /** Seeded pseudo-random amplitude jitter per cycle for a less mechanical look — 0 is pure sine,
+   *  1 is full-strength jitter. Deterministic per `seed`, and re-synced every loop, so it never
+   *  breaks the seamless loop. */
+  randomStrength: number
+  seed: number
+  /** Vertex indices (indexed like `mesh.vertices`) pinned as the "anchor" this object's cloth
+   *  waves away from — e.g. a flag's luff edge against its pole. Absent/empty = object-rotation
+   *  mode instead of mesh deformation. Assigned via the Properties panel from the current Edit
+   *  Mode vertex selection. */
+  anchorVertices?: number[]
+}
+
+/** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
+ *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
+ *  app ever grows (Fake Flag today, Fake Physics/FakeBehind later). At most one modifier per
+ *  `type` on a given object (re-adding the same type is a no-op) — a discriminated union so each
+ *  arm's `settings` type-narrows automatically. */
+export type Modifier = { type: 'fakeFlag'; settings: FakeFlagSettings }
+
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
  *  it in rank order. Lets render order cross object boundaries without splitting a mesh purely
@@ -148,6 +199,8 @@ export interface SceneObject {
   /** Weight per shape key id (`ShapeKey.id`), applied additively at eval time. Absent = 0.
    *  Unclamped (Blender allows negative/>1 weights for overshoot/corrective use). */
   shapeKeyValues?: Record<string, number>
+  /** Opt-in effect stack — see `Modifier`. Absent/empty = none added. */
+  modifiers?: Modifier[]
 }
 
 export type EditElementType = 'vertex' | 'edge' | 'face'

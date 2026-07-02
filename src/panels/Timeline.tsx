@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useSceneStore } from '../scene/store'
+import { getFakeFlag } from '../scene/fakeFlag'
 import type { EasingType, LoopMode } from '../scene/types'
-import { AddKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon } from './icons'
+import { AddKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon, TrashIcon } from './icons'
 
 const EASING_OPTIONS: EasingType[] = ['linear', 'easeIn', 'easeOut', 'easeInOut']
 
@@ -190,10 +191,17 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         keyName: string
         keyframes: NonNullable<typeof activeClip.shapeKeyTracks>[number]['keyframes']
       }
+    // Fake Flag has no keyframe track (it's a pure function of time, nothing to key) — this row
+    // exists purely so an object driven only by Fake Flag isn't invisible in the timeline, and so
+    // anyone scrubbing/reading the clip knows a procedural effect is riding along.
+    | { kind: 'fakeFlag'; objectId: string }
   const rowObjectIds: string[] = []
   for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
   for (const t of activeClip.shapeKeyTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
+  for (const o of objects) {
+    if (getFakeFlag(o)?.enabled && !rowObjectIds.includes(o.id)) rowObjectIds.push(o.id)
   }
   const rows: Row[] = []
   for (const objectId of rowObjectIds) {
@@ -204,6 +212,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
       const keyName = obj?.shapeKeys?.find((k) => k.id === skt.shapeKeyId)?.name ?? '(deleted shape key)'
       rows.push({ kind: 'shapeKey', objectId, shapeKeyId: skt.shapeKeyId, keyName, keyframes: skt.keyframes })
     }
+    if (obj && getFakeFlag(obj)?.enabled) rows.push({ kind: 'fakeFlag', objectId })
   }
 
   return (
@@ -223,7 +232,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         />
         <button onClick={() => addClip()}>+ New clip</button>
         <button title="Delete this clip" onClick={() => removeClip(activeClip.id)}>
-          🗑
+          <TrashIcon size={14} />
         </button>
         <label className="seg-input">
           Duration (s)
@@ -323,14 +332,31 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
+            if (row.kind === 'shapeKey') {
+              return (
+                <div
+                  key={`sk-${row.objectId}-${row.shapeKeyId}`}
+                  className={'timeline-channel-name timeline-channel-subrow' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title={row.keyName}
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  ↳ {row.keyName}
+                </div>
+              )
+            }
+            // Fake Flag has no keyframe track — if this object also has a Transform track, this
+            // is a sub-row under that row's name (like a shape key); otherwise it's the only row
+            // for this object, so it needs the object's own name to say which object it is.
+            const hasTransformRow = activeClip.tracks.some((t) => t.objectId === row.objectId)
+            const obj = objects.find((o) => o.id === row.objectId)
             return (
               <div
-                key={`sk-${row.objectId}-${row.shapeKeyId}`}
-                className={'timeline-channel-name timeline-channel-subrow' + (row.objectId === selectedObjectId ? ' selected' : '')}
-                title={row.keyName}
+                key={`ff-${row.objectId}`}
+                className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
+                title="Fake Flag — a procedural sin-wave sway driven directly by time, not keyframes"
                 onClick={() => selectObject(row.objectId)}
               >
-                ↳ {row.keyName}
+                {hasTransformRow ? '↳ Fake Flag' : `${obj?.name ?? '(deleted object)'} — Fake Flag`}
               </div>
             )
           })}
@@ -409,41 +435,57 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             ))}
             {rows.map((row) => (
               <div
-                key={row.kind === 'transform' ? `t-${row.objectId}` : `sk-${row.objectId}-${row.shapeKeyId}`}
-                className={'timeline-track-row' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                key={
+                  row.kind === 'transform'
+                    ? `t-${row.objectId}`
+                    : row.kind === 'shapeKey'
+                      ? `sk-${row.objectId}-${row.shapeKeyId}`
+                      : `ff-${row.objectId}`
+                }
+                className={
+                  'timeline-track-row' +
+                  (row.kind === 'fakeFlag' ? ' fake-flag' : '') +
+                  (row.objectId === selectedObjectId ? ' selected' : '')
+                }
               >
-                {row.keyframes.map((k) => (
-                  <div
-                    key={k.id}
-                    className={'timeline-keyframe' + (selectedKeyId === k.id ? ' selected' : '')}
-                    style={{ left: RULER_OFFSET_PX + k.time * pxPerSecond }}
-                    title={
-                      row.kind === 'transform'
-                        ? `${objects.find((o) => o.id === row.objectId)?.name ?? row.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`
-                        : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
-                    }
-                    onPointerDown={(e) => {
-                      e.stopPropagation()
-                      selectObject(row.objectId)
-                      setSelectedKeyObjectId(row.objectId)
-                      setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
-                      setSelectedKeyId(k.id)
-                      draggingKeyRef.current = k.id
-                      e.currentTarget.setPointerCapture(e.pointerId)
-                    }}
-                    onPointerMove={(e) => {
-                      if (draggingKeyRef.current !== k.id) return
-                      const rect = trackRef.current?.getBoundingClientRect()
-                      if (!rect) return
-                      const time = snapToFrame(xToTime(e.clientX - rect.left))
-                      if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
-                      else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
-                    }}
-                    onPointerUp={() => {
-                      draggingKeyRef.current = null
-                    }}
-                  />
-                ))}
+                {row.kind === 'fakeFlag' ? (
+                  <span className="timeline-fake-flag-label" title="Procedural — driven directly by time, nothing to key">
+                    ≈ sin wave, no keyframes
+                  </span>
+                ) : (
+                  row.keyframes.map((k) => (
+                    <div
+                      key={k.id}
+                      className={'timeline-keyframe' + (selectedKeyId === k.id ? ' selected' : '')}
+                      style={{ left: RULER_OFFSET_PX + k.time * pxPerSecond }}
+                      title={
+                        row.kind === 'transform'
+                          ? `${objects.find((o) => o.id === row.objectId)?.name ?? row.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                          : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                      }
+                      onPointerDown={(e) => {
+                        e.stopPropagation()
+                        selectObject(row.objectId)
+                        setSelectedKeyObjectId(row.objectId)
+                        setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
+                        setSelectedKeyId(k.id)
+                        draggingKeyRef.current = k.id
+                        e.currentTarget.setPointerCapture(e.pointerId)
+                      }}
+                      onPointerMove={(e) => {
+                        if (draggingKeyRef.current !== k.id) return
+                        const rect = trackRef.current?.getBoundingClientRect()
+                        if (!rect) return
+                        const time = snapToFrame(xToTime(e.clientX - rect.left))
+                        if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
+                        else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
+                      }}
+                      onPointerUp={() => {
+                        draggingKeyRef.current = null
+                      }}
+                    />
+                  ))
+                )}
               </div>
             ))}
             {rows.length === 0 && <div className="timeline-track-row empty" />}
@@ -491,7 +533,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     setSelectedKeyShapeKeyId(null)
                   }}
                 >
-                  🗑 Delete keyframe
+                  <TrashIcon size={14} /> Delete keyframe
                 </button>
               </>
             )

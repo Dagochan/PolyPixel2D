@@ -4,9 +4,11 @@ import type {
   AppMode,
   EasingType,
   EditElementType,
+  FakeFlagSettings,
   InsertSlot,
   LoopMode,
   Mesh,
+  Modifier,
   ReferenceImage,
   SceneObject,
   ShapeKey,
@@ -15,6 +17,7 @@ import type {
   Vec2,
 } from './types'
 import { resolvePlaybackTime, sampleClipAtTime, shapeKeyTrackKey } from './animation'
+import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
@@ -88,6 +91,8 @@ interface SceneState {
    *  key's `positions` instead of `mesh.vertices`, and the viewport shows/hit-tests that key's
    *  isolated pose instead of the blended result. */
   editingShapeKeyId: string | null
+  /** Live, wall-clock-driven Fake Flag preview toggle — see `togglePreviewFakeFlag`. */
+  previewFakeFlag: boolean
   history: SceneObject[][]
   future: SceneObject[][]
   activeTool: ActiveTool
@@ -316,6 +321,32 @@ interface SceneState {
   removeShapeKeyKeyframe: (objectId: string, shapeKeyId: string, keyframeId: string) => void
   setShapeKeyKeyframeTime: (objectId: string, shapeKeyId: string, keyframeId: string, time: number) => void
   setShapeKeyKeyframeEasing: (objectId: string, shapeKeyId: string, keyframeId: string, easing: EasingType) => void
+  /** Add a modifier of `type` to this object's stack (see `Modifier`) — a no-op if it already has
+   *  one of that type, since the stack holds at most one per type. */
+  addModifier: (id: string, type: Modifier['type']) => void
+  /** Remove the modifier of `type` from this object's stack entirely (settings and all — unlike
+   *  `toggleFakeFlagEnabled`, this can't be undone by just re-enabling it). */
+  removeModifier: (id: string, type: Modifier['type']) => void
+  /** Quick on/off for an already-added Fake Flag modifier, without removing it (its settings
+   *  survive being disabled, unlike `removeModifier`). */
+  toggleFakeFlagEnabled: (id: string) => void
+  /** Merge a partial patch into this object's Fake Flag settings — adds the modifier (with
+   *  defaults merged with `patch`) if it isn't already in the stack. */
+  updateFakeFlag: (id: string, patch: Partial<FakeFlagSettings>) => void
+  /** Live-write `direction` (degrees) without pushing an undo checkpoint — called every
+   *  pointermove while dragging the viewport direction handle; the caller does its own single
+   *  `beginChange()` at drag start, matching `setShapeKeyArcPivot`'s pattern. */
+  setFakeFlagDirection: (id: string, direction: number) => void
+  /** Pin the current Edit Mode vertex/edge/face selection as this object's Fake Flag anchor,
+   *  switching it from object-rotation mode into vertex (cloth) mode. Replaces any previous
+   *  anchor selection rather than adding to it. */
+  assignFakeFlagAnchor: (id: string) => void
+  /** Clear the anchor list, switching back to object-rotation mode. */
+  clearFakeFlagAnchor: (id: string) => void
+  /** Live, wall-clock-driven Fake Flag preview, independent of the playhead/active clip — lets a
+   *  user see the sway/flutter without laying down any keyframes first. Toggling this never
+   *  touches undo history (it's a view setting, not a scene edit). */
+  togglePreviewFakeFlag: () => void
   /** Move the scrub position and apply the active clip's evaluated pose to every object it
    *  animates (objects with no track in the active clip are left untouched). This is pose
    *  *evaluation*, not a user edit — it doesn't push undo history. */
@@ -362,6 +393,19 @@ function cloneObjects(objects: SceneObject[]): SceneObject[] {
   }))
 }
 
+/** Returns `o` with its Fake Flag modifier's settings replaced by `updater(current settings)` —
+ *  adding the modifier (seeded from `DEFAULT_FAKE_FLAG_SETTINGS`) first if `o` doesn't have one
+ *  yet, so every Fake-Flag-settings setter can stay a one-liner regardless of whether the object
+ *  already has the modifier. */
+function withFakeFlagSettings(o: SceneObject, updater: (settings: FakeFlagSettings) => FakeFlagSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'fakeFlag')
+  const settings = updater(existing?.settings ?? DEFAULT_FAKE_FLAG_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'fakeFlag' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'fakeFlag' as const, settings }]
+  return { ...o, modifiers }
+}
+
 const MAX_HISTORY = 50
 
 export const useSceneStore = create<SceneState>((set, get) => ({
@@ -373,6 +417,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   selectedEdges: new Set(),
   selectedFaces: new Set(),
   editingShapeKeyId: null,
+  previewFakeFlag: false,
   history: [],
   future: [],
   activeTool: 'select',
@@ -1570,6 +1615,81 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
       }),
     })),
+
+  addModifier: (id, type) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id || o.modifiers?.some((m) => m.type === type)) return o
+        const modifier: Modifier = type === 'fakeFlag' ? { type: 'fakeFlag', settings: { ...DEFAULT_FAKE_FLAG_SETTINGS } } : type
+        return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
+      }),
+    }))
+  },
+
+  removeModifier: (id, type) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? { ...o, modifiers: (o.modifiers ?? []).filter((m) => m.type !== type) } : o,
+      ),
+      // dropping a mid-preview Fake Flag shouldn't leave Preview silently armed — re-adding it
+      // later would otherwise immediately jump into motion with no warning
+      previewFakeFlag: type === 'fakeFlag' ? false : s.previewFakeFlag,
+    }))
+  },
+
+  toggleFakeFlagEnabled: (id) => {
+    get().beginChange()
+    set((s) => {
+      const obj = s.objects.find((o) => o.id === id)
+      const nextEnabled = !obj || !getFakeFlag(obj)?.enabled
+      return {
+        objects: s.objects.map((o) =>
+          o.id === id ? withFakeFlagSettings(o, (fs) => ({ ...fs, enabled: !fs.enabled })) : o,
+        ),
+        // switching this object off while it was mid-preview shouldn't leave Preview silently
+        // armed — re-enabling it later would otherwise immediately jump into motion with no
+        // warning, since Preview is a view setting that outlives any one object's toggle
+        previewFakeFlag: nextEnabled ? s.previewFakeFlag : false,
+      }
+    })
+  },
+
+  updateFakeFlag: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withFakeFlagSettings(o, (fs) => ({ ...fs, ...patch })) : o)),
+    }))
+  },
+
+  setFakeFlagDirection: (id, direction) =>
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withFakeFlagSettings(o, (fs) => ({ ...fs, direction })) : o)),
+    })),
+
+  assignFakeFlagAnchor: (id) => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === id)
+    if (!obj) return
+    const anchorVertices = selectedVertexIndices(s, obj.mesh)
+    if (anchorVertices.length === 0) return
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) => (o.id === id ? withFakeFlagSettings(o, (fs) => ({ ...fs, anchorVertices })) : o)),
+    }))
+  },
+
+  clearFakeFlagAnchor: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? withFakeFlagSettings(o, (fs) => ({ ...fs, anchorVertices: [] })) : o,
+      ),
+    }))
+  },
+
+  togglePreviewFakeFlag: () => set((s) => ({ previewFakeFlag: !s.previewFakeFlag })),
 
   setPlayhead: (time) => {
     const s = get()
