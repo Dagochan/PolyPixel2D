@@ -13,6 +13,7 @@ import type {
   Mesh,
   Modifier,
   ObjectAnimationTrack,
+  PixelFrame,
   ReferenceImage,
   SceneObject,
   ShapeKey,
@@ -40,6 +41,7 @@ import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knif
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, pruneOrphanVerticesTracked, mergeMeshAsIsland, clampToMesh } from './meshUtils'
 import { findIslands, type Island } from './uv'
 import { remapObjectVertexData } from './remapVertexData'
+import { getWorldTransform, worldBounds } from './transformUtils'
 
 export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath'
 
@@ -153,6 +155,9 @@ interface SceneState {
   pixelPreviewPaletteEnabled: boolean
   /** Max number of colors the auto-extracted palette may use. */
   pixelPreviewPaletteSize: number
+  /** Pixel Preview's fixed "main render camera" — see `PixelFrame`'s doc. `null` means Pixel
+   *  Preview falls back to its old per-frame auto-fit-to-visible-objects framing. */
+  pixelFrame: PixelFrame | null
 
   /** Every animation clip in the project (e.g. "Idle", "Walk"). Editing/scrubbing always targets
    *  `activeClipId` — there's no per-clip-project split. */
@@ -196,12 +201,21 @@ interface SceneState {
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
   setPixelPreviewPaletteEnabled: (enabled: boolean) => void
   setPixelPreviewPaletteSize: (n: number) => void
+  /** Creates a Pixel Frame (sized/centered on the current auto-fit bounding box of every visible
+   *  object, same framing Pixel Preview used to compute every frame) if none exists, or removes
+   *  the existing one — a single toggle for the "+ Pixel Frame" toolbar button. */
+  togglePixelFrame: () => void
+  /** Live-write the Pixel Frame's rect while dragging its body/corners in the viewport — not
+   *  undo-tracked (a render/export setting, like `setGridVisible`, not scene content). No-op if
+   *  there's no Pixel Frame yet. */
+  setPixelFrame: (patch: Partial<PixelFrame>) => void
   /** Replace the entire scene with a loaded project (clears selection, undo history, and `nextId` continues from fresh ids). */
   loadProject: (project: {
     objects: SceneObject[]
     referenceImage: ReferenceImage | null
     meshOpacity: number
     clips?: AnimationClip[]
+    pixelFrame?: PixelFrame | null
   }) => void
   selectObject: (id: string | null) => void
   removeObject: (id: string) => void
@@ -585,6 +599,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   pixelPreviewOffset: { x: 0, y: 0 },
   pixelPreviewPaletteEnabled: false,
   pixelPreviewPaletteSize: 16,
+  pixelFrame: null,
   clips: [],
   activeClipId: null,
   playheadTime: 0,
@@ -766,10 +781,35 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
   setGridVisible: (visible) => set({ gridVisible: visible }),
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
-  setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(512, Math.round(n / 8) * 8)) }),
+  setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(1024, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
   setPixelPreviewPaletteEnabled: (enabled) => set({ pixelPreviewPaletteEnabled: enabled }),
   setPixelPreviewPaletteSize: (n) => set({ pixelPreviewPaletteSize: Math.max(2, Math.min(64, Math.round(n))) }),
+
+  togglePixelFrame: () =>
+    set((s) => {
+      if (s.pixelFrame) return { pixelFrame: null }
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const obj of s.objects) {
+        if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
+        const t = getWorldTransform(obj, s.objects)
+        const b = worldBounds(obj.mesh.vertices, t)
+        if (b.minX < minX) minX = b.minX
+        if (b.minY < minY) minY = b.minY
+        if (b.maxX > maxX) maxX = b.maxX
+        if (b.maxY > maxY) maxY = b.maxY
+      }
+      const hasContent = minX <= maxX
+      const margin = 1.1
+      const width = hasContent ? (maxX - minX) * margin : 200
+      const height = hasContent ? (maxY - minY) * margin : 200
+      const x = hasContent ? (minX + maxX) / 2 : 0
+      const y = hasContent ? (minY + maxY) / 2 : 0
+      return { pixelFrame: { x, y, width, height } }
+    }),
+
+  setPixelFrame: (patch) =>
+    set((s) => (s.pixelFrame ? { pixelFrame: { ...s.pixelFrame, ...patch } } : s)),
 
   loadProject: (project) => {
     bumpNextIdPast(project.objects)
@@ -793,6 +833,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects,
       referenceImage: project.referenceImage,
       meshOpacity: project.meshOpacity,
+      pixelFrame: project.pixelFrame ?? null,
       selectedObjectId: null,
       selectedVertices: new Set(),
       selectedEdges: new Set(),

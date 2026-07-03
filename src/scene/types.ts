@@ -35,6 +35,19 @@ export interface ReferenceImage {
   opacity: number
 }
 
+/** A fixed world-space rectangle — Pixel Preview's "main render camera": when set, Pixel Preview
+ *  frames exactly this rectangle (world units) instead of auto-fitting to the current visible
+ *  objects' bounding box every frame, so the pixel-art scale stays stable as objects move/deform
+ *  (e.g. Fake Physics swinging a chain) instead of the framing rescaling frame-to-frame. `x`/`y`
+ *  is the rectangle's center, in world space; not undo-tracked (a render/export setting, like
+ *  `gridVisible`/`meshOpacity`, not scene content). */
+export interface PixelFrame {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 /** Manual adjustment on top of an island's auto-normalized (0..1) base UV. Indexed by island
  *  order from `findIslands` — only meaningful as long as the mesh's islands haven't changed. */
 export interface UvIslandTransform {

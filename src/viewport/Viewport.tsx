@@ -12,7 +12,7 @@ import {
   worldPositionToLocalOffset,
 } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
-import type { Mesh, SceneObject, Transform, Vec2 } from '../scene/types'
+import type { Mesh, PixelFrame, SceneObject, Transform, Vec2 } from '../scene/types'
 import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
@@ -104,6 +104,8 @@ type DragMode =
   | { kind: 'move-shapekey-arc-pivot'; objectId: string; keyId: string }
   | { kind: 'move-fake-flag-direction'; objectId: string; startDirection: number; startAngle: number }
   | { kind: 'move-hairpath-cp'; index: number }
+  | { kind: 'move-pixel-frame'; startWorld: Vec2; startFrame: PixelFrame }
+  | { kind: 'resize-pixel-frame'; corner: 'tl' | 'tr' | 'bl' | 'br'; startFrame: PixelFrame }
   | {
       kind: 'box-select'
       objectId: string
@@ -992,10 +994,12 @@ export default function Viewport() {
       playheadTime,
       previewFakeFlag,
       previewFakePhysicsMesh,
+      pixelFrame,
     } = useSceneStore.getState()
 
     if (referenceImage) addReferenceImage(scene, referenceImage)
     if (gridVisible) addGrid(scene)
+    if (pixelFrame) addPixelFrameGizmo(scene, pixelFrame)
 
     // Fake Flag sway/deform is a pure function of time, re-evaluated fresh every frame (no baking).
     // Normally that's the playhead; "Preview" instead free-runs off the wall clock so a user can
@@ -2067,6 +2071,56 @@ export default function Viewport() {
     scene.add(dot)
   }
 
+  const PIXEL_FRAME_COLOR = 0xffa033
+
+  /** Pixel Preview's fixed "main render camera" overlay: a dashed rectangle (same style as the
+   *  scale-gizmo's bbox outline, just orange instead of blue so it doesn't get confused with the
+   *  selected-object gizmo) plus 4 corner resize handles. Body-drag (move) is picked up via the
+   *  border line itself, not the interior, so it doesn't steal clicks meant to select/move objects
+   *  that happen to sit inside the frame — see `pixelFrameCorners`/hit-testing in the pointerdown
+   *  handler. */
+  function addPixelFrameGizmo(scene: THREE.Scene, frame: PixelFrame) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const corners = pixelFrameCorners(frame)
+    const order: Array<keyof typeof corners> = ['bl', 'br', 'tr', 'tl']
+    const outlinePositions: number[] = []
+    for (let i = 0; i < order.length; i++) {
+      const a = corners[order[i]]
+      const b = corners[order[(i + 1) % order.length]]
+      outlinePositions.push(a.x, a.y, 0.5, b.x, b.y, 0.5)
+    }
+    const outlineGeom = new THREE.BufferGeometry()
+    outlineGeom.setAttribute('position', new THREE.Float32BufferAttribute(outlinePositions, 3))
+    const outline = new THREE.LineSegments(
+      outlineGeom,
+      new THREE.LineDashedMaterial({ color: PIXEL_FRAME_COLOR, dashSize: 6 * pxToWorld, gapSize: 4 * pxToWorld, depthTest: false, transparent: true }),
+    )
+    outline.computeLineDistances()
+    scene.add(outline)
+
+    const handleMat = new THREE.MeshBasicMaterial({ color: PIXEL_FRAME_COLOR, depthTest: false, transparent: true })
+    for (const { x, y } of Object.values(corners)) {
+      const size = (HANDLE_SIZE * pxToWorld) / 2
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), handleMat)
+      m.position.set(x, y, 0.6)
+      scene.add(m)
+    }
+  }
+
+  /** The Pixel Frame's 4 corners in world space, keyed the same way the scale-gizmo's are. */
+  function pixelFrameCorners(frame: PixelFrame): Record<'tl' | 'tr' | 'bl' | 'br', Vec2> {
+    const left = frame.x - frame.width / 2
+    const right = frame.x + frame.width / 2
+    const top = frame.y + frame.height / 2
+    const bottom = frame.y - frame.height / 2
+    return {
+      tl: { x: left, y: top },
+      tr: { x: right, y: top },
+      bl: { x: left, y: bottom },
+      br: { x: right, y: bottom },
+    }
+  }
+
   function addGizmo(scene: THREE.Scene, obj: SceneObject) {
     const { center, ringRadius, arrowLength, axisX, axisY, corners } = getGizmoGeom(obj)
     const pxToWorld = 1 / viewRef.current.zoom
@@ -2524,9 +2578,36 @@ export default function Viewport() {
     }
 
     const world = getWorldPos(e)
-    const { objects, selectedObjectId, mode, editElementType, editingShapeKeyId } = useSceneStore.getState()
+    const { objects, selectedObjectId, mode, editElementType, editingShapeKeyId, pixelFrame } = useSceneStore.getState()
     const rawSelectedObj = objects.find((o) => o.id === selectedObjectId) || null
     const selectedObj = rawSelectedObj && getEffectiveObj(rawSelectedObj, editingShapeKeyId, true)
+
+    // Pixel Frame (Pixel Preview's fixed "main render camera"): checked before anything
+    // mode/selection-specific, since it's a scene-wide overlay independent of both. Corners
+    // resize; only the border *line* moves the whole frame (not the interior), so it doesn't
+    // steal clicks meant to select/move objects that happen to sit inside it.
+    if (pixelFrame) {
+      const corners = pixelFrameCorners(pixelFrame)
+      for (const key of ['tl', 'tr', 'bl', 'br'] as const) {
+        const c = corners[key]
+        if (pxDistSq(world.x, world.y, c.x, c.y) < HANDLE_SIZE ** 2) {
+          dragRef.current = { kind: 'resize-pixel-frame', corner: key, startFrame: pixelFrame }
+          return
+        }
+      }
+      const edges: Array<[Vec2, Vec2]> = [
+        [corners.bl, corners.br],
+        [corners.br, corners.tr],
+        [corners.tr, corners.tl],
+        [corners.tl, corners.bl],
+      ]
+      for (const [a, b] of edges) {
+        if (pxDistToSegment(world.x, world.y, a.x, a.y, b.x, b.y) < GIZMO_HIT_TOLERANCE) {
+          dragRef.current = { kind: 'move-pixel-frame', startWorld: world, startFrame: pixelFrame }
+          return
+        }
+      }
+    }
 
     // sculpting an Arc-mode shape key: its pivot handle (drawn in rebuildScene) is draggable,
     // checked before the normal edit-mode vertex/edge/face hit-tests below so it takes priority
@@ -2889,6 +2970,46 @@ export default function Viewport() {
       }
       const local = worldPositionToLocalOffset(newWorldPos, drag.parentWorld, drag.parentTail)
       store.setTransform(drag.objectId, { x: local.x, y: local.y })
+      return
+    }
+
+    if (drag.kind === 'move-pixel-frame') {
+      let dx = world.x - drag.startWorld.x
+      let dy = world.y - drag.startWorld.y
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        dx = snapToIncrement(drag.startFrame.x + dx, inc) - drag.startFrame.x
+        dy = snapToIncrement(drag.startFrame.y + dy, inc) - drag.startFrame.y
+      }
+      store.setPixelFrame({ x: drag.startFrame.x + dx, y: drag.startFrame.y + dy })
+      return
+    }
+
+    if (drag.kind === 'resize-pixel-frame') {
+      const { startFrame, corner } = drag
+      const left = startFrame.x - startFrame.width / 2
+      const right = startFrame.x + startFrame.width / 2
+      const bottom = startFrame.y - startFrame.height / 2
+      const top = startFrame.y + startFrame.height / 2
+      let worldX = world.x
+      let worldY = world.y
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        worldX = snapToIncrement(worldX, inc)
+        worldY = snapToIncrement(worldY, inc)
+      }
+      // the corner opposite the one being dragged stays put; the dragged corner follows the
+      // cursor, so width/height/center all fall out of just those two fixed points
+      const newLeft = corner === 'tl' || corner === 'bl' ? worldX : left
+      const newRight = corner === 'tr' || corner === 'br' ? worldX : right
+      const newBottom = corner === 'bl' || corner === 'br' ? worldY : bottom
+      const newTop = corner === 'tl' || corner === 'tr' ? worldY : top
+      store.setPixelFrame({
+        x: (newLeft + newRight) / 2,
+        y: (newBottom + newTop) / 2,
+        width: Math.max(1, Math.abs(newRight - newLeft)),
+        height: Math.max(1, Math.abs(newTop - newBottom)),
+      })
       return
     }
 

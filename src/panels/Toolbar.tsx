@@ -44,6 +44,8 @@ export default function Toolbar() {
   const setGizmoOrientation = useSceneStore((s) => s.setGizmoOrientation)
   const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
   const setPixelPreviewEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
+  const pixelFrame = useSceneStore((s) => s.pixelFrame)
+  const togglePixelFrame = useSceneStore((s) => s.togglePixelFrame)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
 
   const [segX, setSegX] = useState(1)
@@ -92,8 +94,8 @@ export default function Toolbar() {
   }
 
   const handleSaveProject = () => {
-    const { objects, referenceImage: ref, meshOpacity: opacity, clips } = useSceneStore.getState()
-    const json = serializeProject({ version: PROJECT_VERSION, objects, referenceImage: ref, meshOpacity: opacity, clips })
+    const { objects, referenceImage: ref, meshOpacity: opacity, clips, pixelFrame } = useSceneStore.getState()
+    const json = serializeProject({ version: PROJECT_VERSION, objects, referenceImage: ref, meshOpacity: opacity, clips, pixelFrame })
     const blob = new Blob([json], { type: 'application/json' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
@@ -376,6 +378,13 @@ export default function Toolbar() {
           onClick={() => setPixelPreviewEnabled(!pixelPreviewEnabled)}
         >
           ▦ Pixel preview
+        </button>
+        <button
+          className={pixelFrame ? 'active' : ''}
+          title="Pixel Preview's fixed 'main render camera' — a fixed world-space rectangle (drag its edges to move, corners to resize) that Pixel Preview always frames exactly, so the pixel-art scale stays stable as objects move/deform instead of re-fitting every frame"
+          onClick={() => togglePixelFrame()}
+        >
+          ▧ Pixel frame
         </button>
       </div>
 

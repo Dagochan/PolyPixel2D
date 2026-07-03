@@ -59,27 +59,44 @@ export default function PixelPreview() {
 
     let raf = 0
     const tick = () => {
-      const { objects } = useSceneStore.getState()
+      const { objects, pixelFrame } = useSceneStore.getState()
       const res = useSceneStore.getState().pixelPreviewResolution
 
-      // auto-fit: frame the bounding box of every visible, non-empty object's world-space mesh
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (const obj of objects) {
-        if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
-        const t = getWorldTransform(obj, objects)
-        const b = worldBounds(obj.mesh.vertices, t)
-        if (b.minX < minX) minX = b.minX
-        if (b.minY < minY) minY = b.minY
-        if (b.maxX > maxX) maxX = b.maxX
-        if (b.maxY > maxY) maxY = b.maxY
+      // Pixel Frame set: frame exactly that fixed world-space rect, so the pixel-art scale stays
+      // stable regardless of how objects move/deform (e.g. Fake Physics) — no re-fitting, no
+      // margin (the frame's own size already includes whatever margin the user wants).
+      // No frame: fall back to the old auto-fit, framing the bounding box of every visible,
+      // non-empty object's world-space mesh fresh every frame.
+      let w: number
+      let h: number
+      let cx: number
+      let cy: number
+      let margin: number
+      if (pixelFrame) {
+        w = pixelFrame.width
+        h = pixelFrame.height
+        cx = pixelFrame.x
+        cy = pixelFrame.y
+        margin = 1
+      } else {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+        for (const obj of objects) {
+          if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
+          const t = getWorldTransform(obj, objects)
+          const b = worldBounds(obj.mesh.vertices, t)
+          if (b.minX < minX) minX = b.minX
+          if (b.minY < minY) minY = b.minY
+          if (b.maxX > maxX) maxX = b.maxX
+          if (b.maxY > maxY) maxY = b.maxY
+        }
+        const hasContent = minX <= maxX
+        w = hasContent ? maxX - minX : 1
+        h = hasContent ? maxY - minY : 1
+        cx = hasContent ? (minX + maxX) / 2 : 0
+        cy = hasContent ? (minY + maxY) / 2 : 0
+        // 10% margin around the content so silhouettes don't touch the frame edge
+        margin = 1.1
       }
-      const hasContent = minX <= maxX
-      const w = hasContent ? maxX - minX : 1
-      const h = hasContent ? maxY - minY : 1
-      const cx = hasContent ? (minX + maxX) / 2 : 0
-      const cy = hasContent ? (minY + maxY) / 2 : 0
-      // 10% margin around the content so silhouettes don't touch the frame edge
-      const margin = 1.1
       const canvasW = w >= h ? res : Math.max(1, Math.round((res * w) / h))
       const canvasH = h > w ? res : Math.max(1, Math.round((res * h) / w))
 
@@ -143,7 +160,7 @@ export default function PixelPreview() {
           <input
             type="number"
             min={16}
-            max={512}
+            max={1024}
             step={8}
             value={resolution}
             onChange={(e) => setResolution(Number(e.target.value))}

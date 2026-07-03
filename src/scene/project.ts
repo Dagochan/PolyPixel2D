@@ -1,4 +1,4 @@
-import type { AnimationClip, ReferenceImage, SceneObject } from './types'
+import type { AnimationClip, PixelFrame, ReferenceImage, SceneObject } from './types'
 
 export const PROJECT_VERSION = 2
 export const PROJECT_EXTENSION = '.fltd'
@@ -11,6 +11,9 @@ export interface ProjectFile {
   /** Absent in files saved before animation clips existed (version < 2) — `parseProjectFile`
    *  backfills those to `[]`. */
   clips: AnimationClip[]
+  /** Absent in files saved before Pixel Frame existed — `parseProjectFile` backfills to `null`
+   *  (falls back to Pixel Preview's old auto-fit framing). */
+  pixelFrame: PixelFrame | null
 }
 
 export function serializeProject(data: ProjectFile): string {
@@ -35,5 +38,6 @@ export function parseProjectFile(json: string): ProjectFile {
     referenceImage: d.referenceImage ?? null,
     meshOpacity: typeof d.meshOpacity === 'number' ? d.meshOpacity : 1,
     clips: Array.isArray(d.clips) ? d.clips : [],
+    pixelFrame: d.pixelFrame ?? null,
   }
 }
