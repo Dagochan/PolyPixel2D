@@ -616,9 +616,13 @@ function ModifiersSection(props: {
       })}
       {/* A Fake Physics chain's ROOT is normally a plain object with its own ordinary keyframes
           and no fakePhysics modifier of its own (it's the thing everything else lags behind, not
-          something that itself lags) — so this needs to work regardless of whether `obj` has any
-          modifier at all, not just live inside FakePhysicsModifierBox. */}
-      {props.hasActiveClip && (
+          something that itself lags) — so this lives outside FakePhysicsModifierBox. Only shown
+          when `obj` itself has no fakePhysics modifier: baking reads the clicked object's own
+          *base* `tracks` entry as the signal everything else follows, which is correct for a
+          ROOT but not for a mid-chain section (its own motion is physics-baked, not a base track,
+          so treating it as a fresh unlagged root would silently produce wrong results for its
+          descendants). Re-bake the whole chain from the true ROOT instead. */}
+      {props.hasActiveClip && !addedTypes.has('fakePhysics') && (
         <div className="prop-row">
           <button
             title="Simulate every Fake-Physics descendant of this object (cascading down the parent/child chain) and bake dense keyframes. Use this on the chain's ROOT object — the one with the base motion everything else should lag behind."
