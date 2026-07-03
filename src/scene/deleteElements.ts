@@ -2,7 +2,10 @@ import type { Mesh } from './types'
 import { edgeKey } from './meshUtils'
 
 /** Remove the given faces, then drop any vertices no longer referenced by any remaining face. */
-function removeFacesAndOrphanVertices(mesh: Mesh, faceIndicesToRemove: Set<number>): Mesh {
+function removeFacesAndOrphanVertices(
+  mesh: Mesh,
+  faceIndicesToRemove: Set<number>,
+): { mesh: Mesh; oldToNew: Map<number, number> } {
   const keptFaces = mesh.faces.filter((_, fi) => !faceIndicesToRemove.has(fi))
 
   const usedVerts = new Set<number>()
@@ -16,11 +19,16 @@ function removeFacesAndOrphanVertices(mesh: Mesh, faceIndicesToRemove: Set<numbe
   }
 
   const faces = keptFaces.map((f) => f.map((i) => oldToNew.get(i)!))
-  return { vertices, faces }
+  return { mesh: { vertices, faces }, oldToNew }
 }
 
-/** Delete vertices: removes any face touching a selected vertex, then the now-orphaned vertices. */
-export function deleteVertices(mesh: Mesh, vertexIndices: number[]): Mesh {
+/** Delete vertices: removes any face touching a selected vertex, then the now-orphaned vertices.
+ *  Also returns the old->new vertex index map (see `pruneOrphanVerticesTracked`) since this always
+ *  drops vertices, so callers must remap index-keyed per-object data via `remapObjectVertexData`. */
+export function deleteVertices(
+  mesh: Mesh,
+  vertexIndices: number[],
+): { mesh: Mesh; oldToNew: Map<number, number> } {
   const selected = new Set(vertexIndices)
   const facesToRemove = new Set<number>()
   mesh.faces.forEach((face, fi) => {

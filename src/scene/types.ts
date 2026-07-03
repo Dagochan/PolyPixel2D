@@ -113,17 +113,14 @@ export interface FakeFlagSettings {
 }
 
 /** "Section+delay" secondary-motion sway (a tail, hair, a loose sleeve) — cascaded from a chain
- *  ROOT down through its Fake-Physics-tagged descendants (real `parentId` chain, walked at bake
- *  time; `section` is a display/organization label, not what the simulation follows). Unlike Fake
- *  Flag this isn't evaluated live: "Bake" runs a damped-spring simulation across the active clip
- *  and writes dense keyframes into `AnimationClip.fakePhysicsTracks`, so it needs re-baking after
- *  the chain's base motion or these settings change. */
+ *  ROOT down through its Fake-Physics-tagged descendants (the real `parentId` chain, walked at
+ *  bake time — chain position is entirely determined by that hierarchy, so there's no separate
+ *  section number to track). Unlike Fake Flag this isn't evaluated live: "Bake" runs a damped-
+ *  spring simulation across the active clip and writes dense keyframes into
+ *  `AnimationClip.fakePhysicsTracks`, so it needs re-baking after the chain's base motion or these
+ *  settings change. */
 export interface FakePhysicsSettings {
   enabled: boolean
-  /** 1 (ROOT — this object's own motion drives the chain, unmodified, nothing to bake for it) to
-   *  5 (TIP). Purely a display label; baking walks the actual `parentId` chain regardless of
-   *  whether section numbers are contiguous. */
-  section: number
   /** 0..1 abstracted spring feel — 1 is rigid (follows its parent almost instantly, no
    *  overshoot), 0 is jelly (big delay, big wobbly overshoot before settling). Maps internally to
    *  a damping ratio + natural frequency. */
@@ -134,6 +131,46 @@ export interface FakePhysicsSettings {
   convergeStart: number
 }
 
+/** Same "section+delay" secondary motion as `FakePhysicsSettings`, but generalized from a chain of
+ *  *objects* to 5 fixed vertex groups within a single mesh (a tail, a pudding's wobbling top, a
+ *  cape) — Section 1 (ROOT) always equals the object's own base motion unmodified, and Sections
+ *  2-5 each spring-follow the section below with their own stiffness, exactly like the object-chain
+ *  version's parent/child cascade. Needs baking (see `AnimationClip.fakePhysicsMeshTracks`) for the
+ *  same reason: it's a simulation, not a pure function of time like Fake Flag. */
+export interface FakePhysicsMeshSettings {
+  enabled: boolean
+  /** 'simple' shows one shared Stiffness dial that writes the same value into all five
+   *  `sectionStiffness` slots — enough for most uses, and what a newly-added modifier starts in.
+   *  'advanced' exposes each section's own dial (the tapered-toward-the-tip tuning the
+   *  object-chain version relies on). Purely a UI display choice — `sectionStiffness` is always
+   *  the data the simulation actually reads, in both modes. */
+  stiffnessMode: 'simple' | 'advanced'
+  /** 0..1 abstracted spring feel for each of the 5 sections — index 0 is Section 1 (ROOT), index 4
+   *  is Section 5 (TIP). Section 1 lags behind the object's own raw motion exactly like every other
+   *  section lags the one before it (a real spring stage, not a hardcoded zero-lag passthrough) —
+   *  at the default stiffness of 1 (rigid, see `RigidSpring`) it tracks the object's motion exactly,
+   *  which is what makes "1.0 = ROOT behaves like the old hardcoded passthrough" true by
+   *  construction rather than a separate special case. Same mapping as `FakePhysicsSettings.
+   *  stiffness` (1 = rigid, 0 = jelly), just one dial per section instead of per chain-link object. */
+  sectionStiffness: [number, number, number, number, number]
+  /** Same meaning as `FakePhysicsSettings.convergeStart`, shared across every section (baked
+   *  together in one pass — see `bakeFakePhysicsMesh`). */
+  convergeStart: number
+  /** What each section's lag offset rotates/translates around. 'head' pivots every section around
+   *  the object's own Head — good for a bending tail/rope/cape that swings from one base, since a
+   *  section farther from Head naturally shows more positional lag at the same angular delay.
+   *  'centroid' pivots each section around its own rest-pose vertex centroid instead — good for an
+   *  independently wobbling blob (e.g. a pudding: the rim stays anchored while the top jiggles on
+   *  its own), where every section should sway around its own middle rather than one shared point. */
+  pivotMode: 'head' | 'centroid'
+  /** Vertex indices (indexed like `mesh.vertices`) assigned to each of the 5 sections — index 0 is
+   *  Section 1/ROOT ... index 4 is Section 5/TIP. A vertex belongs to at most one section at a
+   *  time; assigning it to a new one silently drops it from whichever it was in before. Assigned
+   *  from the current Edit Mode selection via the Properties panel, same as Fake Flag's
+   *  `anchorVertices`. */
+  sectionVertices: [number[], number[], number[], number[], number[]]
+}
+
 /** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
  *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
  *  app ever grows (Fake Flag/Fake Physics today, FakeBehind later). At most one modifier per
@@ -142,6 +179,7 @@ export interface FakePhysicsSettings {
 export type Modifier =
   | { type: 'fakeFlag'; settings: FakeFlagSettings }
   | { type: 'fakePhysics'; settings: FakePhysicsSettings }
+  | { type: 'fakePhysicsMesh'; settings: FakePhysicsMeshSettings }
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
@@ -304,4 +342,19 @@ export interface AnimationClip {
    *  take priority over `tracks` for the same `objectId` (see `sampleClipAtTime`), since the bake
    *  already folded the object's own base motion into the simulation as its ROOT input. */
   fakePhysicsTracks?: ObjectAnimationTrack[]
+  /** Dense, machine-generated Fake Physics *mesh* keyframes (see `FakePhysicsMeshSettings`) — one
+   *  track per section (1-5, each a real spring stage) per object. Reuses `TransformKeyframe`'s
+   *  shape for its interpolation machinery, but `x`/`y`/`rotation`
+   *  carry that section's *offset* from the object's own motion (not an absolute pose) — `scaleX`/
+   *  `scaleY`/`head` are unused and always left at their defaults. Unlike `fakePhysicsTracks`, this
+   *  doesn't drive the object's own transform: it deforms the mesh directly at render time (see the
+   *  viewport's per-vertex delta pipeline, alongside shape keys and Fake Flag's vertex mode). */
+  fakePhysicsMeshTracks?: FakePhysicsMeshTrack[]
+}
+
+/** One lagging section's baked offset track for one object, within `AnimationClip.fakePhysicsMeshTracks`. */
+export interface FakePhysicsMeshTrack {
+  objectId: string
+  section: 1 | 2 | 3 | 4 | 5
+  keyframes: TransformKeyframe[]
 }

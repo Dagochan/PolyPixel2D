@@ -3,7 +3,7 @@ import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
-import type { AppMode, FakeFlagSettings, FakePhysicsSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
+import type { AppMode, FakeFlagSettings, FakePhysicsMeshSettings, FakePhysicsSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
@@ -526,17 +526,7 @@ function FakePhysicsModifierBox({
       {settings.enabled && (
         <>
           <div className="prop-row prop-static">
-            <span>
-              Section {settings.section} — {settings.section <= 1 ? 'ROOT, drives the chain unmodified' : 'lags behind its parent'}
-              {isBaked ? ', baked' : ', not baked yet'}
-            </span>
-          </div>
-          <div className="prop-row">
-            <NumberField
-              label="Section (1–5)"
-              value={settings.section}
-              onChange={(v) => updateFakePhysics(obj.id, { section: Math.min(5, Math.max(1, Math.round(v))) })}
-            />
+            <span>Lags behind its parent{isBaked ? ', baked' : ', not baked yet'}</span>
           </div>
           <div className="prop-row">
             <NumberField
@@ -565,9 +555,337 @@ function FakePhysicsModifierBox({
   )
 }
 
+const FAKE_PHYSICS_MESH_SECTION_NUMBERS = [1, 2, 3, 4, 5] as const
+const FAKE_PHYSICS_MESH_SECTION_SUFFIX: Record<number, string> = { 1: 'ROOT', 5: 'TIP' }
+
+const STIFFNESS_GRAPH_TOP = 8
+const STIFFNESS_GRAPH_BOTTOM = 82
+const STIFFNESS_GRAPH_LEFT = 20
+const STIFFNESS_GRAPH_RIGHT = 200
+const stiffnessPointX = (i: number) => STIFFNESS_GRAPH_LEFT + (i * (STIFFNESS_GRAPH_RIGHT - STIFFNESS_GRAPH_LEFT)) / 4
+const stiffnessValueToY = (v: number) => STIFFNESS_GRAPH_BOTTOM - v * (STIFFNESS_GRAPH_BOTTOM - STIFFNESS_GRAPH_TOP)
+
+/** A Catmull-Rom-through-Bezier smooth curve connecting `points` in order — purely decorative
+ *  (the five `sectionStiffness` values are the only data; this just visualizes them as a curve
+ *  instead of five disconnected dots, which reads much better for "tapering toward the tip"). */
+function smoothPath(points: { x: number; y: number }[]): string {
+  if (points.length < 2) return ''
+  let d = `M ${points[0].x} ${points[0].y}`
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[i + 2] ?? p2
+    const c1 = { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 }
+    const c2 = { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 }
+    d += ` C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`
+  }
+  return d
+}
+
+/** Advanced-mode Stiffness editor: a small draggable curve (Sections 1-5 left to right, Soft at
+ *  the bottom to Hard at the top) instead of five number fields — deliberately no numeric readout
+ *  at all (this is meant to be tuned by feel, not by typing exact values; see `NumberField` for
+ *  the still-numeric Simple-mode dial). Drag grouping matches `setFakeFlagDirection`'s pattern:
+ *  one `beginChange()` at pointerdown, then plain live-writes for every pointermove in between. */
+function FakePhysicsMeshStiffnessCurve({
+  objId,
+  values,
+  beginChange,
+  setSectionStiffnessLive,
+}: {
+  objId: string
+  values: FakePhysicsMeshSettings['sectionStiffness']
+  beginChange: () => void
+  setSectionStiffnessLive: (id: string, index: 0 | 1 | 2 | 3 | 4, value: number) => void
+}) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const draggingRef = useRef<number | null>(null)
+
+  function valueFromClientY(clientY: number): number {
+    const rect = svgRef.current!.getBoundingClientRect()
+    const svgY = ((clientY - rect.top) / rect.height) * 90
+    return Math.min(1, Math.max(0, (STIFFNESS_GRAPH_BOTTOM - svgY) / (STIFFNESS_GRAPH_BOTTOM - STIFFNESS_GRAPH_TOP)))
+  }
+
+  const points = values.map((v, i) => ({ x: stiffnessPointX(i), y: stiffnessValueToY(v) }))
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox="0 0 220 90"
+      style={{ width: '100%', height: 90, touchAction: 'none' }}
+      onPointerMove={(e) => {
+        if (draggingRef.current === null) return
+        setSectionStiffnessLive(objId, draggingRef.current as 0 | 1 | 2 | 3 | 4, valueFromClientY(e.clientY))
+      }}
+    >
+      <text x={2} y={12} fontSize={8} fill="#777">
+        Hard
+      </text>
+      <text x={2} y={STIFFNESS_GRAPH_BOTTOM} fontSize={8} fill="#777">
+        Soft
+      </text>
+      {[0, 1, 2, 3, 4].map((i) => (
+        <line
+          key={`v${i}`}
+          x1={stiffnessPointX(i)}
+          y1={STIFFNESS_GRAPH_TOP}
+          x2={stiffnessPointX(i)}
+          y2={STIFFNESS_GRAPH_BOTTOM}
+          stroke="#3a3b3e"
+          strokeDasharray="2,2"
+        />
+      ))}
+      {[0.25, 0.5, 0.75].map((f) => (
+        <line
+          key={`h${f}`}
+          x1={STIFFNESS_GRAPH_LEFT}
+          y1={STIFFNESS_GRAPH_TOP + f * (STIFFNESS_GRAPH_BOTTOM - STIFFNESS_GRAPH_TOP)}
+          x2={STIFFNESS_GRAPH_RIGHT}
+          y2={STIFFNESS_GRAPH_TOP + f * (STIFFNESS_GRAPH_BOTTOM - STIFFNESS_GRAPH_TOP)}
+          stroke="#3a3b3e"
+          strokeDasharray="2,2"
+        />
+      ))}
+      <rect
+        x={STIFFNESS_GRAPH_LEFT}
+        y={STIFFNESS_GRAPH_TOP}
+        width={STIFFNESS_GRAPH_RIGHT - STIFFNESS_GRAPH_LEFT}
+        height={STIFFNESS_GRAPH_BOTTOM - STIFFNESS_GRAPH_TOP}
+        fill="none"
+        stroke="#555"
+      />
+      <path d={smoothPath(points)} fill="none" stroke="#4ea1ff" strokeWidth={1.5} />
+      {points.map((p, i) => (
+        <circle
+          key={i}
+          cx={p.x}
+          cy={p.y}
+          r={5}
+          fill="#4ea1ff"
+          stroke="#111"
+          style={{ cursor: 'ns-resize' }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId)
+            draggingRef.current = i
+            beginChange()
+          }}
+          onPointerUp={(e) => {
+            e.currentTarget.releasePointerCapture(e.pointerId)
+            draggingRef.current = null
+          }}
+        />
+      ))}
+      {['1', '2', '3', '4', '5'].map((label, i) => (
+        <text key={label} x={stiffnessPointX(i)} y={STIFFNESS_GRAPH_BOTTOM + 10} fontSize={8} fill="#777" textAnchor="middle">
+          {label}
+        </text>
+      ))}
+    </svg>
+  )
+}
+
+/** One modifier's settings UI for Fake Physics (mesh) — same chrome-vs-content split as
+ *  `FakePhysicsModifierBox`, generalized from a chain of objects to 5 fixed vertex groups within
+ *  this one mesh. Unlike the object-chain version, there's no "only the ROOT gets a Bake button"
+ *  ambiguity to resolve (this modifier only ever describes one object's own mesh), so Bake lives
+ *  directly in this box instead of being hoisted into `ModifiersSection`. */
+function FakePhysicsMeshModifierBox({
+  obj,
+  mode,
+  settings,
+  removeModifier,
+  toggleFakePhysicsMeshEnabled,
+  updateFakePhysicsMesh,
+  setFakePhysicsMeshSectionStiffnessLive,
+  beginChange,
+  assignFakePhysicsMeshSection,
+  selectFakePhysicsMeshSection,
+  removeFakePhysicsMeshSectionVertices,
+  clearFakePhysicsMeshBake,
+  previewFakePhysicsMesh,
+  togglePreviewFakePhysicsMesh,
+  hasVertexSelection,
+  isBaked,
+}: {
+  obj: SceneObject
+  mode: AppMode
+  settings: FakePhysicsMeshSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  toggleFakePhysicsMeshEnabled: (id: string) => void
+  updateFakePhysicsMesh: (id: string, patch: Partial<FakePhysicsMeshSettings>) => void
+  setFakePhysicsMeshSectionStiffnessLive: (id: string, index: 0 | 1 | 2 | 3 | 4, value: number) => void
+  beginChange: () => void
+  assignFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  selectFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  removeFakePhysicsMeshSectionVertices: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  clearFakePhysicsMeshBake: (id: string) => void
+  previewFakePhysicsMesh: boolean
+  togglePreviewFakePhysicsMesh: () => void
+  hasVertexSelection: boolean
+  isBaked: boolean
+}) {
+  const inEditMode = mode === 'edit'
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings and any existing bake)' : 'Enable'}
+          onClick={() => toggleFakePhysicsMeshEnabled(obj.id)}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Fake Physics (Mesh)</span>
+        <button
+          className="icon-btn"
+          title="Remove this modifier (also clears its own bake)"
+          onClick={() => removeModifier(obj.id, 'fakePhysicsMesh')}
+        >
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row prop-static">
+            <span>{isBaked ? 'Baked' : 'Not baked yet'}</span>
+          </div>
+          <div className="prop-row">
+            <button
+              className={'icon-btn' + (previewFakePhysicsMesh ? ' active' : '')}
+              title="Live preview — drag this object in the viewport to see its lagging sections follow, no bake needed"
+              onClick={togglePreviewFakePhysicsMesh}
+            >
+              {previewFakePhysicsMesh ? <StopIcon size={14} /> : <PlayIcon size={14} />}
+              {previewFakePhysicsMesh ? 'Stop preview' : 'Preview'}
+            </button>
+          </div>
+          <div className="prop-row">
+            <label className="prop-field">
+              <span>Pivot</span>
+              <select
+                value={settings.pivotMode}
+                onChange={(e) => updateFakePhysicsMesh(obj.id, { pivotMode: e.target.value as 'head' | 'centroid' })}
+              >
+                <option value="head">Head (bending tail/rope)</option>
+                <option value="centroid">Section centroid (wobbling blob)</option>
+              </select>
+            </label>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Converge start"
+              value={settings.convergeStart}
+              step={0.05}
+              onChange={(v) => updateFakePhysicsMesh(obj.id, { convergeStart: Math.min(1, Math.max(0, v)) })}
+            />
+          </div>
+          <div className="prop-row prop-static">
+            <span>Stiffness</span>
+            <button
+              className={'icon-btn' + (settings.stiffnessMode === 'advanced' ? ' active' : '')}
+              title={
+                settings.stiffnessMode === 'simple'
+                  ? 'Switch to Advanced: tune each section (1-5) separately — lower toward the tip usually looks most natural'
+                  : 'Switch to Simple: one shared dial for all five sections'
+              }
+              onClick={() =>
+                updateFakePhysicsMesh(obj.id, {
+                  stiffnessMode: settings.stiffnessMode === 'simple' ? 'advanced' : 'simple',
+                })
+              }
+            >
+              {settings.stiffnessMode === 'simple' ? 'Simple' : 'Advanced'}
+            </button>
+          </div>
+          <div className="prop-row">
+            {settings.stiffnessMode === 'simple' ? (
+              <NumberField
+                label="Stiffness (all sections)"
+                value={settings.sectionStiffness[0]}
+                step={0.05}
+                onChange={(nv) => {
+                  const v = Math.min(1, Math.max(0, nv))
+                  updateFakePhysicsMesh(obj.id, { sectionStiffness: [v, v, v, v, v] })
+                }}
+              />
+            ) : (
+              <FakePhysicsMeshStiffnessCurve
+                objId={obj.id}
+                values={settings.sectionStiffness}
+                beginChange={beginChange}
+                setSectionStiffnessLive={setFakePhysicsMeshSectionStiffnessLive}
+              />
+            )}
+          </div>
+          <div className="prop-row">
+            {isBaked && (
+              <button title="Remove this object's baked mesh physics tracks" onClick={() => clearFakePhysicsMeshBake(obj.id)}>
+                Clear bake
+              </button>
+            )}
+          </div>
+          {obj.kind !== 'empty' && (
+            <>
+              <div className="prop-row prop-static">
+                <span>Vertex assignment (Edit Mode)</span>
+              </div>
+              {FAKE_PHYSICS_MESH_SECTION_NUMBERS.map((section) => {
+                const count = settings.sectionVertices[section - 1].length
+                return (
+                  <div className="prop-row" key={section}>
+                    <span className="shapekey-value-readout" style={{ width: 32, textAlign: 'left' }}>
+                      {FAKE_PHYSICS_MESH_SECTION_SUFFIX[section] ?? ''}
+                    </span>
+                    <button
+                      style={{ flex: 1, textAlign: 'center' }}
+                      disabled={!inEditMode || !hasVertexSelection}
+                      title={
+                        !inEditMode
+                          ? 'Switch to Edit Mode and select vertices first'
+                          : !hasVertexSelection
+                            ? 'Select the vertices for this section first'
+                            : `Assign the current selection to Section ${section}`
+                      }
+                      onClick={() => assignFakePhysicsMeshSection(obj.id, section)}
+                    >
+                      Section {section}
+                    </button>
+                    <span className="shapekey-value-readout" style={{ width: 48 }}>
+                      {count} vert{count === 1 ? '' : 's'}
+                    </span>
+                    <button
+                      className="icon-btn"
+                      disabled={!inEditMode || count === 0}
+                      title="Re-select this section's currently assigned vertices"
+                      onClick={() => selectFakePhysicsMeshSection(obj.id, section)}
+                    >
+                      <IslandSelectIcon size={14} />
+                    </button>
+                    <button
+                      className="icon-btn"
+                      disabled={!inEditMode || !hasVertexSelection}
+                      title="Remove the current selection from this section"
+                      onClick={() => removeFakePhysicsMeshSectionVertices(obj.id, section)}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  </div>
+                )
+              })}
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakeFlag: 'Fake Flag',
   fakePhysics: 'Fake Physics',
+  fakePhysicsMesh: 'Fake Physics (Mesh)',
 }
 
 /** Blender-style "add only what you use" modifier stack — replaces what used to be a permanently
@@ -591,9 +909,19 @@ function ModifiersSection(props: {
   togglePreviewFakeFlag: () => void
   toggleFakePhysicsEnabled: (id: string) => void
   updateFakePhysics: (id: string, patch: Partial<FakePhysicsSettings>) => void
-  bakeFakePhysics: (id: string) => void
   clearFakePhysicsBake: (id: string) => void
   fakePhysicsBakedObjectIds: Set<string>
+  toggleFakePhysicsMeshEnabled: (id: string) => void
+  updateFakePhysicsMesh: (id: string, patch: Partial<FakePhysicsMeshSettings>) => void
+  setFakePhysicsMeshSectionStiffnessLive: (id: string, index: 0 | 1 | 2 | 3 | 4, value: number) => void
+  beginChange: () => void
+  assignFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  selectFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  removeFakePhysicsMeshSectionVertices: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  clearFakePhysicsMeshBake: (id: string) => void
+  fakePhysicsMeshBakedObjectIds: Set<string>
+  previewFakePhysicsMesh: boolean
+  togglePreviewFakePhysicsMesh: () => void
 }) {
   const { obj, addModifier } = props
   const modifiers = obj.modifiers ?? []
@@ -605,6 +933,16 @@ function ModifiersSection(props: {
     <Section title="Modifiers">
       {modifiers.map((m) => {
         if (m.type === 'fakeFlag') return <FakeFlagModifierBox key={m.type} {...props} settings={m.settings} />
+        if (m.type === 'fakePhysicsMesh') {
+          return (
+            <FakePhysicsMeshModifierBox
+              key={m.type}
+              {...props}
+              settings={m.settings}
+              isBaked={props.fakePhysicsMeshBakedObjectIds.has(obj.id)}
+            />
+          )
+        }
         return (
           <FakePhysicsModifierBox
             key={m.type}
@@ -614,24 +952,6 @@ function ModifiersSection(props: {
           />
         )
       })}
-      {/* A Fake Physics chain's ROOT is normally a plain object with its own ordinary keyframes
-          and no fakePhysics modifier of its own (it's the thing everything else lags behind, not
-          something that itself lags) — so this lives outside FakePhysicsModifierBox. Only shown
-          when `obj` itself has no fakePhysics modifier: baking reads the clicked object's own
-          *base* `tracks` entry as the signal everything else follows, which is correct for a
-          ROOT but not for a mid-chain section (its own motion is physics-baked, not a base track,
-          so treating it as a fresh unlagged root would silently produce wrong results for its
-          descendants). Re-bake the whole chain from the true ROOT instead. */}
-      {props.hasActiveClip && !addedTypes.has('fakePhysics') && (
-        <div className="prop-row">
-          <button
-            title="Simulate every Fake-Physics descendant of this object (cascading down the parent/child chain) and bake dense keyframes. Use this on the chain's ROOT object — the one with the base motion everything else should lag behind."
-            onClick={() => props.bakeFakePhysics(obj.id)}
-          >
-            Bake Fake Physics from here
-          </button>
-        </div>
-      )}
       {availableTypes.length > 0 && (
         <div className="prop-row" style={{ position: 'relative' }}>
           <button onClick={() => setAddMenuOpen((o) => !o)}>+ Add Modifier ▾</button>
@@ -699,14 +1019,24 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const togglePreviewFakeFlag = useSceneStore((s) => s.togglePreviewFakeFlag)
   const toggleFakePhysicsEnabled = useSceneStore((s) => s.toggleFakePhysicsEnabled)
   const updateFakePhysics = useSceneStore((s) => s.updateFakePhysics)
-  const bakeFakePhysics = useSceneStore((s) => s.bakeFakePhysics)
   const clearFakePhysicsBake = useSceneStore((s) => s.clearFakePhysicsBake)
+  const toggleFakePhysicsMeshEnabled = useSceneStore((s) => s.toggleFakePhysicsMeshEnabled)
+  const updateFakePhysicsMesh = useSceneStore((s) => s.updateFakePhysicsMesh)
+  const assignFakePhysicsMeshSection = useSceneStore((s) => s.assignFakePhysicsMeshSection)
+  const selectFakePhysicsMeshSection = useSceneStore((s) => s.selectFakePhysicsMeshSection)
+  const removeFakePhysicsMeshSectionVertices = useSceneStore((s) => s.removeFakePhysicsMeshSectionVertices)
+  const clearFakePhysicsMeshBake = useSceneStore((s) => s.clearFakePhysicsMeshBake)
+  const previewFakePhysicsMesh = useSceneStore((s) => s.previewFakePhysicsMesh)
+  const togglePreviewFakePhysicsMesh = useSceneStore((s) => s.togglePreviewFakePhysicsMesh)
+  const setFakePhysicsMeshSectionStiffnessLive = useSceneStore((s) => s.setFakePhysicsMeshSectionStiffnessLive)
+  const beginChange = useSceneStore((s) => s.beginChange)
   const hasVertexSelection = useSceneStore(
     (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
   )
   const hasActiveClip = useSceneStore((s) => s.activeClipId !== null)
   const activeClip = useSceneStore((s) => s.clips.find((c) => c.id === s.activeClipId))
   const fakePhysicsBakedObjectIds = new Set((activeClip?.fakePhysicsTracks ?? []).map((t) => t.objectId))
+  const fakePhysicsMeshBakedObjectIds = new Set((activeClip?.fakePhysicsMeshTracks ?? []).map((t) => t.objectId))
   const playheadTime = useSceneStore((s) => s.playheadTime)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
@@ -878,9 +1208,19 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             togglePreviewFakeFlag={togglePreviewFakeFlag}
             toggleFakePhysicsEnabled={toggleFakePhysicsEnabled}
             updateFakePhysics={updateFakePhysics}
-            bakeFakePhysics={bakeFakePhysics}
             clearFakePhysicsBake={clearFakePhysicsBake}
             fakePhysicsBakedObjectIds={fakePhysicsBakedObjectIds}
+            toggleFakePhysicsMeshEnabled={toggleFakePhysicsMeshEnabled}
+            updateFakePhysicsMesh={updateFakePhysicsMesh}
+            setFakePhysicsMeshSectionStiffnessLive={setFakePhysicsMeshSectionStiffnessLive}
+            beginChange={beginChange}
+            assignFakePhysicsMeshSection={assignFakePhysicsMeshSection}
+            selectFakePhysicsMeshSection={selectFakePhysicsMeshSection}
+            removeFakePhysicsMeshSectionVertices={removeFakePhysicsMeshSectionVertices}
+            clearFakePhysicsMeshBake={clearFakePhysicsMeshBake}
+            fakePhysicsMeshBakedObjectIds={fakePhysicsMeshBakedObjectIds}
+            previewFakePhysicsMesh={previewFakePhysicsMesh}
+            togglePreviewFakePhysicsMesh={togglePreviewFakePhysicsMesh}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (

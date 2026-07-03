@@ -3,7 +3,6 @@ import type { AnimationClip, FakePhysicsSettings, Modifier, SceneObject } from '
 
 export const DEFAULT_FAKE_PHYSICS_SETTINGS: FakePhysicsSettings = {
   enabled: true,
-  section: 2,
   stiffness: 0.5,
   convergeStart: 0.7,
 }
@@ -15,39 +14,98 @@ export function getFakePhysics(obj: SceneObject): FakePhysicsSettings | undefine
     ?.settings
 }
 
-/** Maps the abstracted 0..1 "stiffness" dial to a damped harmonic oscillator's natural frequency
- *  (rad/s) and damping ratio. 1 = rigid: high frequency (near-instant response), critically damped
- *  (no overshoot). 0 = jelly: low frequency (long delay), underdamped (big wobbly overshoot before
- *  settling). */
-export function stiffnessToSpringParams(stiffness: number): { omega: number; zeta: number } {
-  const s = Math.min(1, Math.max(0, stiffness))
-  return { omega: 2 + s * 23, zeta: 0.15 + s * 0.85 }
+/** `stiffness === 1` is a hard cutoff meaning "fully rigid, no give at all" — handled as a special
+ *  case (see `stiffnessToSpringParams`) rather than just a very high `omega`, because a chain of
+ *  several sections each with their own *finite* response time compounds: even a per-section delay
+ *  as small as ~40ms (the old max) adds up across 4 cascaded sections into a lag that's clearly
+ *  visible under fast interactive dragging (each section target-chases an already-lagging target),
+ *  even though no single section overshoots. True rigidity needs exactly zero lag per section, not
+ *  just a very short one. */
+export interface RigidSpring {
+  rigid: true
+}
+export interface DampedSpring {
+  rigid: false
+  omega: number
+  zeta: number
+}
+export type SpringParams = RigidSpring | DampedSpring
+
+/** Maps the abstracted 0..1 "stiffness" dial to spring parameters: 1 is `{ rigid: true }` (snaps
+ *  to its target with zero lag, see `RigidSpring`'s doc). Below that, a damped harmonic
+ *  oscillator's natural frequency (rad/s) and damping ratio — lower stiffness means lower
+ *  frequency (longer delay) and lower damping (more underdamped, bigger wobbly overshoot before
+ *  settling).
+ *
+ *  `omega`'s curve is a gentle linear ramp (2..25) plus a steep `s^10` term that's negligible below
+ *  ~0.8 but rockets up near 1 — so the low/mid range keeps its original, already-tuned "how jelly"
+ *  feel, while the last stretch before the `rigid` cutoff ramps up fast enough that there's no
+ *  jarring cliff between "barely under 1" and "exactly 1" (an earlier version of this used a flat
+ *  linear ramp capped at 25 for the whole range, so 0.99 felt just as wobbly as 0.5 under fast
+ *  interactive dragging — see `RigidSpring`'s doc for why that compounds badly across sections).
+ *
+ *  The public 0..1 dial itself is remapped onto this curve's [0.7, 1] stretch (`DIAL_FLOOR` below)
+ *  before any of that — below (this curve's) 0.7, sections are so jelly-soft they're not a usable
+ *  setting in practice, just a dead zone at the bottom of the slider. Squeezing the dial into the
+ *  stretch that's actually useful means every notch of the slider does something perceptible. */
+const DIAL_FLOOR = 0.7
+
+export function stiffnessToSpringParams(stiffness: number): SpringParams {
+  const dial = Math.min(1, Math.max(0, stiffness))
+  if (dial >= 1) return { rigid: true }
+  const s = DIAL_FLOOR + dial * (1 - DIAL_FLOOR)
+  const omega = 2 + s * 23 + 220 * Math.pow(s, 10)
+  return { rigid: false, omega, zeta: 0.15 + s * 0.85 }
 }
 
-/** Internally sub-steps below this real integration is unstable/oscillates unphysically for stiff
- *  (high omega) springs at typical animation frame rates (24-30fps) — sub-stepping keeps the
- *  simulation's behavior consistent regardless of the clip's frame rate. */
+/** Floor sub-step rate for low-`omega` springs at typical animation frame rates (24-30fps) —
+ *  `stepSpring` also raises this further for high-`omega` springs (see `substepsFor`), since a
+ *  fixed rate that was tuned for the old omega<=25 range would under-resolve the much stiffer
+ *  springs `stiffnessToSpringParams` can now produce near `stiffness=1`. */
 const MIN_SUBSTEP_HZ = 120
+/** Caps how many radians of phase a single sub-step may advance through, regardless of `omega` —
+ *  keeps the semi-implicit Euler integration accurate (and avoids numerical ringing that would
+ *  look like an *artificial* wobble, on top of/instead of the physically-real one) for very stiff
+ *  springs, by sub-stepping proportionally more the higher `omega` gets. */
+const MAX_RADIANS_PER_SUBSTEP = 0.15
+
+function substepsFor(dt: number, omega: number): number {
+  return Math.max(1, Math.ceil(dt * MIN_SUBSTEP_HZ), Math.ceil((dt * omega) / MAX_RADIANS_PER_SUBSTEP))
+}
+
+/** Advances one damped-spring value by `dt` seconds toward `target`, sub-stepped for stability
+ *  independent of `dt` (see `MIN_SUBSTEP_HZ`) — semi-implicit Euler, or an instant snap for a
+ *  `RigidSpring`. The shared core behind both `simulateSpring` (looping this over a whole
+ *  pre-known array, for baking) and a live/unbaked preview (calling this once per real animation
+ *  frame, for interactive dragging). Returns the new `[value, velocity]` pair. */
+export function stepSpring(x: number, v: number, target: number, dt: number, params: SpringParams): [number, number] {
+  if (params.rigid) return [target, 0]
+  const { omega, zeta } = params
+  const substeps = substepsFor(dt, omega)
+  const subDt = dt / substeps
+  let cx = x
+  let cv = v
+  for (let s = 0; s < substeps; s++) {
+    const accel = omega * omega * (target - cx) - 2 * zeta * omega * cv
+    cv += accel * subDt
+    cx += cv * subDt
+  }
+  return [cx, cv]
+}
 
 /** Damped-spring-follows `target` (one value per frame, e.g. a rotation signal in radians) with
  *  zero initial velocity, starting exactly at `target[0]` — so a section always starts in sync
- *  with what it's following, then lags/overshoots as the target moves. Semi-implicit Euler,
- *  sub-stepped for stability independent of `dt`. */
-function simulateSpring(target: number[], dt: number, omega: number, zeta: number): number[] {
+ *  with what it's following, then lags/overshoots as the target moves (or, for a `RigidSpring`,
+ *  just tracks `target` exactly throughout). */
+export function simulateSpring(target: number[], dt: number, params: SpringParams): number[] {
   if (target.length === 0) return []
+  if (params.rigid) return target.slice()
   const result: number[] = new Array(target.length)
   let x = target[0]
   let v = 0
   result[0] = x
-  const substeps = Math.max(1, Math.ceil(dt * MIN_SUBSTEP_HZ))
-  const subDt = dt / substeps
   for (let i = 1; i < target.length; i++) {
-    const t = target[i]
-    for (let s = 0; s < substeps; s++) {
-      const accel = omega * omega * (t - x) - 2 * zeta * omega * v
-      v += accel * subDt
-      x += v * subDt
-    }
+    ;[x, v] = stepSpring(x, v, target[i], dt, params)
     result[i] = x
   }
   return result
@@ -57,7 +115,7 @@ function simulateSpring(target: number[], dt: number, omega: number, zeta: numbe
  *  toward `result[0]`, so baking a 'loop' clip doesn't leave a pop at the seam where frame N+1
  *  would otherwise jump back to frame 0's very different simulated value. `convergeStart >= 1`
  *  disables this (the raw simulated tail is kept as-is). */
-function applyConvergence(result: number[], convergeStart: number): number[] {
+export function applyConvergence(result: number[], convergeStart: number): number[] {
   const n = result.length
   if (convergeStart >= 1 || n < 2) return result
   const startIdx = Math.min(n - 1, Math.max(0, Math.floor(convergeStart * (n - 1))))
@@ -132,8 +190,8 @@ export function simulateFakePhysicsChain(
     for (const child of byParent.get(current.id) ?? []) {
       const settings = getFakePhysics(child)
       if (!settings?.enabled) continue
-      const { omega, zeta } = stiffnessToSpringParams(settings.stiffness)
-      const spring = (target: number[]) => applyConvergence(simulateSpring(target, dt, omega, zeta), settings.convergeStart)
+      const springParams = stiffnessToSpringParams(settings.stiffness)
+      const spring = (target: number[]) => applyConvergence(simulateSpring(target, dt, springParams), settings.convergeStart)
       const simulated: FakePhysicsSignal = {
         x: spring(parentSignal.x),
         y: spring(parentSignal.y),

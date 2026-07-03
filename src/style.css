@@ -520,6 +520,13 @@ input[type='range']:disabled {
   color: #c792ea;
 }
 
+/* this object has an enabled Fake Physics modifier — same "color cue" idea as .animated, but in
+   the Outliner: lets you scan a parent/child chain and see which links are physics-driven without
+   clicking into each one's Properties panel */
+.layer-name.fake-physics {
+  color: #ff6fa5;
+}
+
 .icon-btn {
   background: transparent;
   border: none;
@@ -779,6 +786,13 @@ input[type='range']:disabled {
   color: #111;
 }
 
+/* same pink as .layer-name.fake-physics in the Outliner — ties this action visually to the
+   objects it affects, at a glance */
+.timeline-header button.bake-all {
+  background: #ff6fa5;
+  color: #111;
+}
+
 .timeline-header button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -998,7 +1012,7 @@ input[type='range']:disabled {
    striped) fill signals "there's real generated data here," while still reading as distinct from
    a hand-keyed row so nobody tries to drag individual frames out of it. */
 .timeline-track-row.fake-physics-baked {
-  background: #4ea1ff14;
+  background: #ff6fa514;
 }
 
 .timeline-fake-physics-label {
@@ -1007,7 +1021,7 @@ input[type='range']:disabled {
   top: 50%;
   transform: translateY(-50%);
   font-size: 10px;
-  color: #4ea1ff;
+  color: #ff6fa5;
   white-space: nowrap;
   pointer-events: none;
 }

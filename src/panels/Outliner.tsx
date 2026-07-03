@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
+import { getFakePhysics } from '../scene/fakePhysics'
 import { VisibleTrueIcon, VisibleFalseIcon, TrashIcon } from './icons'
 
 /** Where a drag-over point falls within a row: near the top/bottom edge reorders this object as
@@ -102,7 +103,8 @@ export default function Outliner() {
         )}
         {obj.kind === 'empty' && <span title="Empty (no mesh)">✛</span>}
         <input
-          className="layer-name"
+          className={'layer-name' + (getFakePhysics(obj)?.enabled ? ' fake-physics' : '')}
+          title={getFakePhysics(obj)?.enabled ? 'Has an enabled Fake Physics modifier' : undefined}
           value={obj.name}
           onChange={(e) => renameObject(obj.id, e.target.value)}
           onClick={(e) => e.stopPropagation()}

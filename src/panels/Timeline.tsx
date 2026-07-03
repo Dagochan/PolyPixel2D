@@ -49,6 +49,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const setShapeKeyKeyframeTime = useSceneStore((s) => s.setShapeKeyKeyframeTime)
   const setShapeKeyKeyframeEasing = useSceneStore((s) => s.setShapeKeyKeyframeEasing)
   const setPlayhead = useSceneStore((s) => s.setPlayhead)
+  const bakeAllFakePhysics = useSceneStore((s) => s.bakeAllFakePhysics)
 
   const activeClip = clips.find((c) => c.id === activeClipId) ?? null
 
@@ -199,6 +200,8 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     // `fakePhysicsTracks` rather than `tracks` — but they're machine-generated and not meant for
     // hand-dragging, so this renders as a solid "baked" bar instead of individual diamonds.
     | { kind: 'fakePhysicsBaked'; objectId: string }
+    // Same idea as `fakePhysicsBaked`, for the mesh (vertex-section) variant's `fakePhysicsMeshTracks`.
+    | { kind: 'fakePhysicsMeshBaked'; objectId: string }
   const rowObjectIds: string[] = []
   for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
   for (const t of activeClip.shapeKeyTracks ?? []) {
@@ -208,6 +211,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if (getFakeFlag(o)?.enabled && !rowObjectIds.includes(o.id)) rowObjectIds.push(o.id)
   }
   for (const t of activeClip.fakePhysicsTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
+  for (const t of activeClip.fakePhysicsMeshTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   const rows: Row[] = []
@@ -222,6 +228,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if (obj && getFakeFlag(obj)?.enabled) rows.push({ kind: 'fakeFlag', objectId })
     if ((activeClip.fakePhysicsTracks ?? []).some((ft) => ft.objectId === objectId)) {
       rows.push({ kind: 'fakePhysicsBaked', objectId })
+    }
+    if ((activeClip.fakePhysicsMeshTracks ?? []).some((ft) => ft.objectId === objectId)) {
+      rows.push({ kind: 'fakePhysicsMeshBaked', objectId })
     }
   }
 
@@ -303,6 +312,13 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           />
         </label>
         <span className="timeline-frame-readout">frame {Math.round(playheadTime * frameRate)}</span>
+        <button
+          className="bake-all"
+          title="Simulate and bake every Fake Physics chain (object-chain and mesh) in the scene against this clip — always safe to re-run, since baking is fully deterministic from each modifier's current settings"
+          onClick={() => bakeAllFakePhysics()}
+        >
+          Bake All
+        </button>
         <div className="timeline-zoom-group">
           <button title="Zoom out" onClick={() => zoomBy(1 / 1.25)}>
             −
@@ -372,14 +388,26 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
+            if (row.kind === 'fakePhysicsBaked') {
+              return (
+                <div
+                  key={`fpb-${row.objectId}`}
+                  className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title="Fake Physics — baked, dense keyframes from a spring simulation. Regenerate via the Properties panel, not by hand."
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  {hasTransformRow ? '↳ Fake Physics (baked)' : `${obj?.name ?? '(deleted object)'} — Fake Physics (baked)`}
+                </div>
+              )
+            }
             return (
               <div
-                key={`fpb-${row.objectId}`}
+                key={`fpmb-${row.objectId}`}
                 className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
-                title="Fake Physics — baked, dense keyframes from a spring simulation. Regenerate via the Properties panel, not by hand."
+                title="Fake Physics (Mesh) — baked, dense keyframes from a spring simulation over 5 vertex sections. Regenerate via the Properties panel, not by hand."
                 onClick={() => selectObject(row.objectId)}
               >
-                {hasTransformRow ? '↳ Fake Physics (baked)' : `${obj?.name ?? '(deleted object)'} — Fake Physics (baked)`}
+                {hasTransformRow ? '↳ Fake Physics (mesh, baked)' : `${obj?.name ?? '(deleted object)'} — Fake Physics (mesh, baked)`}
               </div>
             )
           })}
@@ -465,12 +493,14 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       ? `sk-${row.objectId}-${row.shapeKeyId}`
                       : row.kind === 'fakeFlag'
                         ? `ff-${row.objectId}`
-                        : `fpb-${row.objectId}`
+                        : row.kind === 'fakePhysicsBaked'
+                          ? `fpb-${row.objectId}`
+                          : `fpmb-${row.objectId}`
                 }
                 className={
                   'timeline-track-row' +
                   (row.kind === 'fakeFlag' ? ' fake-flag' : '') +
-                  (row.kind === 'fakePhysicsBaked' ? ' fake-physics-baked' : '') +
+                  (row.kind === 'fakePhysicsBaked' || row.kind === 'fakePhysicsMeshBaked' ? ' fake-physics-baked' : '') +
                   (row.objectId === selectedObjectId ? ' selected' : '')
                 }
               >
@@ -481,6 +511,10 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 ) : row.kind === 'fakePhysicsBaked' ? (
                   <span className="timeline-fake-physics-label" title="Baked spring simulation — dense, machine-generated keyframes. Regenerate via Properties, not by hand.">
                     ● baked physics
+                  </span>
+                ) : row.kind === 'fakePhysicsMeshBaked' ? (
+                  <span className="timeline-fake-physics-label" title="Baked spring simulation over 5 vertex sections — dense, machine-generated keyframes. Regenerate via Properties, not by hand.">
+                    ● baked physics (mesh)
                   </span>
                 ) : (
                   row.keyframes.map((k) => (

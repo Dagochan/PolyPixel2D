@@ -12,8 +12,14 @@ export function mergeVertices(
   mesh: Mesh,
   orderedIndices: number[],
   mode: MergeMode,
-): { mesh: Mesh; survivorIndex: number } {
-  if (orderedIndices.length < 2) return { mesh, survivorIndex: orderedIndices[0] ?? -1 }
+): { mesh: Mesh; survivorIndex: number; oldToNew: Map<number, number> } {
+  if (orderedIndices.length < 2) {
+    return {
+      mesh,
+      survivorIndex: orderedIndices[0] ?? -1,
+      oldToNew: new Map(mesh.vertices.map((_, i) => [i, i])),
+    }
+  }
   const survivor = orderedIndices[0]
   const toMerge = new Set(orderedIndices)
 
@@ -62,5 +68,9 @@ export function mergeVertices(
   })
   const finalFaces = collapsedFaces.map((f) => f.map((i) => oldToNew.get(i)!))
 
-  return { mesh: { vertices: finalVertices, faces: finalFaces }, survivorIndex: oldToNew.get(survivor) ?? -1 }
+  return {
+    mesh: { vertices: finalVertices, faces: finalFaces },
+    survivorIndex: oldToNew.get(survivor) ?? -1,
+    oldToNew,
+  }
 }

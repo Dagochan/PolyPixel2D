@@ -5,6 +5,8 @@ import type {
   EasingType,
   EditElementType,
   FakeFlagSettings,
+  FakePhysicsMeshSettings,
+  FakePhysicsMeshTrack,
   FakePhysicsSettings,
   InsertSlot,
   LoopMode,
@@ -21,6 +23,11 @@ import type {
 import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
+import {
+  DEFAULT_FAKE_PHYSICS_MESH_SETTINGS,
+  getFakePhysicsMesh,
+  simulateFakePhysicsMeshSections,
+} from './fakePhysicsMesh'
 import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
@@ -30,8 +37,9 @@ import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
 import { dissolveVertices, dissolveEdges } from './dissolve'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
-import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, mergeMeshAsIsland, clampToMesh } from './meshUtils'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, pruneOrphanVerticesTracked, mergeMeshAsIsland, clampToMesh } from './meshUtils'
 import { findIslands, type Island } from './uv'
+import { remapObjectVertexData } from './remapVertexData'
 
 export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath'
 
@@ -96,6 +104,12 @@ interface SceneState {
   editingShapeKeyId: string | null
   /** Live, wall-clock-driven Fake Flag preview toggle — see `togglePreviewFakeFlag`. */
   previewFakeFlag: boolean
+  /** Live, direct-manipulation Fake Physics (mesh) preview toggle — see
+   *  `togglePreviewFakePhysicsMesh`. Unlike `previewFakeFlag` (a pure function of wall-clock time),
+   *  this drives the spring simulation off the object's *actual* live transform each rendered
+   *  frame, so dragging the object around makes its lagging sections visibly jiggle/follow —
+   *  nothing to key, no bake needed, just for quick iteration on Stiffness/Pivot before baking. */
+  previewFakePhysicsMesh: boolean
   history: SceneObject[][]
   future: SceneObject[][]
   activeTool: ActiveTool
@@ -367,6 +381,45 @@ interface SceneState {
    *  `tracks` motion (or its static pose). Doesn't touch descendants' bakes, which may then be
    *  stale relative to their parent until the chain is re-baked from its root. */
   clearFakePhysicsBake: (id: string) => void
+  /** Quick on/off for an already-added Fake Physics (mesh) modifier, without removing it. */
+  toggleFakePhysicsMeshEnabled: (id: string) => void
+  /** Merge a partial patch into this object's Fake Physics (mesh) settings — adds the modifier
+   *  (with defaults merged with `patch`) if it isn't already in the stack. Doesn't re-bake — an
+   *  existing bake is now stale until "Bake" is run again. */
+  updateFakePhysicsMesh: (id: string, patch: Partial<FakePhysicsMeshSettings>) => void
+  /** Live-write one section's stiffness (`index` 0-3, for Sections 2-5) without pushing an undo
+   *  checkpoint — called every pointermove while dragging a point on the Advanced-mode stiffness
+   *  curve; the caller does its own single `beginChange()` at drag start, matching
+   *  `setFakeFlagDirection`'s pattern. */
+  setFakePhysicsMeshSectionStiffnessLive: (id: string, index: 0 | 1 | 2 | 3 | 4, value: number) => void
+  /** Assign the current Edit Mode vertex/edge/face selection to section `section` (1-5) of this
+   *  object's Fake Physics (mesh) modifier — removes those vertices from whichever other section
+   *  they were previously in, since a vertex belongs to at most one section. */
+  assignFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  /** Re-select (in Edit Mode, vertex sub-mode) whichever vertices are currently assigned to
+   *  section `section`, so it's easy to see/re-pick what's already been assigned. */
+  selectFakePhysicsMeshSection: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  /** Remove the current Edit Mode vertex selection from section `section`'s assignment (the
+   *  section itself stays — only its member vertices shrink). */
+  removeFakePhysicsMeshSectionVertices: (id: string, section: 1 | 2 | 3 | 4 | 5) => void
+  /** Simulates this object's 5-section Fake Physics (mesh) chain against the active clip, and
+   *  writes the result into that clip's `fakePhysicsMeshTracks` — replacing any prior baked
+   *  sections for this object. A no-op if there's no active clip. */
+  bakeFakePhysicsMesh: (id: string) => void
+  /** Removes this object's baked Fake Physics (mesh) tracks (if any), reverting its mesh to
+   *  whatever shape keys/Fake Flag alone would produce. */
+  clearFakePhysicsMeshBake: (id: string) => void
+  /** Live, direct-manipulation Fake Physics (mesh) preview — see the `previewFakePhysicsMesh`
+   *  field doc. Toggling this never touches undo history (it's a view setting, not a scene edit). */
+  togglePreviewFakePhysicsMesh: () => void
+  /** Bakes every Fake Physics chain (object-chain — every ROOT-candidate object, i.e. one without
+   *  its own enabled `fakePhysics` modifier, walked for enabled-modifier descendants) and every
+   *  Fake Physics (mesh) modifier in the scene against the active clip, in one undo step. Always
+   *  safe to re-run: baking is fully deterministic from an object's current settings, so this
+   *  can't clobber hand-authored keyframes (those live in `tracks`, never touched here) or stomp
+   *  on an already-good bake (re-baking the same settings just reproduces the same result). A
+   *  no-op if there's no active clip. */
+  bakeAllFakePhysics: () => void
   /** Move the scrub position and apply the active clip's evaluated pose to every object it
    *  animates (objects with no track in the active clip are left untouched). This is pose
    *  *evaluation*, not a user edit — it doesn't push undo history. */
@@ -436,6 +489,72 @@ function withFakePhysicsSettings(o: SceneObject, updater: (settings: FakePhysics
   return { ...o, modifiers }
 }
 
+/** Same idea as `withFakeFlagSettings`, for the `fakePhysicsMesh` modifier. */
+function withFakePhysicsMeshSettings(
+  o: SceneObject,
+  updater: (settings: FakePhysicsMeshSettings) => FakePhysicsMeshSettings,
+): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'fakePhysicsMesh')
+  const settings = updater(existing?.settings ?? DEFAULT_FAKE_PHYSICS_MESH_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'fakePhysicsMesh' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'fakePhysicsMesh' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Runs `simulateFakePhysicsChain` rooted at `rootObjectId` and turns the result into
+ *  `ObjectAnimationTrack`s ready to merge into a clip's `fakePhysicsTracks` — the shared core
+ *  behind `bakeFakePhysics` (one root) and `bakeAllFakePhysics` (every root candidate in the
+ *  scene). Empty array if nothing simulates (e.g. no enabled-modifier descendants). */
+function buildFakePhysicsTracksForRoot(
+  objects: SceneObject[],
+  clip: AnimationClip,
+  rootObjectId: string,
+  frameCount: number,
+  cycle: { duration: number } | undefined,
+): ObjectAnimationTrack[] {
+  const simulated = simulateFakePhysicsChain(objects, clip, rootObjectId)
+  const newTracks: ObjectAnimationTrack[] = []
+  simulated.forEach((signal, objectId) => {
+    const obj = objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const baseTrack = clip.tracks.find((t) => t.objectId === objectId)
+    const keyframes = signal.rotation.map((rotation, f) => {
+      const time = (f / frameCount) * clip.duration
+      const baseTransform = (baseTrack && sampleTrack(baseTrack, time, cycle)) ?? obj.transform
+      return {
+        id: genId('fpkey'),
+        time,
+        transform: { ...baseTransform, x: signal.x[f], y: signal.y[f], rotation },
+        easing: 'linear' as const,
+      }
+    })
+    newTracks.push({ objectId, keyframes })
+  })
+  return newTracks
+}
+
+/** Same idea as `buildFakePhysicsTracksForRoot`, for one object's `simulateFakePhysicsMeshSections`
+ *  — the shared core behind `bakeFakePhysicsMesh` and `bakeAllFakePhysics`. */
+function buildFakePhysicsMeshTracksForObject(
+  obj: SceneObject,
+  clip: AnimationClip,
+  frameCount: number,
+): FakePhysicsMeshTrack[] {
+  const simulated = simulateFakePhysicsMeshSections(obj, clip)
+  const newTracks: FakePhysicsMeshTrack[] = []
+  simulated.forEach((signal, section) => {
+    const keyframes = signal.rotation.map((rotation, f) => ({
+      id: genId('fpmkey'),
+      time: (f / frameCount) * clip.duration,
+      transform: { x: signal.x[f], y: signal.y[f], rotation, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
+      easing: 'linear' as const,
+    }))
+    newTracks.push({ objectId: obj.id, section, keyframes })
+  })
+  return newTracks
+}
+
 const MAX_HISTORY = 50
 
 export const useSceneStore = create<SceneState>((set, get) => ({
@@ -448,6 +567,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   selectedFaces: new Set(),
   editingShapeKeyId: null,
   previewFakeFlag: false,
+  previewFakePhysicsMesh: false,
   history: [],
   future: [],
   activeTool: 'select',
@@ -1247,15 +1367,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!obj) return
 
     let mesh: Mesh
+    let oldToNew: Map<number, number>
     if (s.editElementType === 'vertex') {
       if (s.selectedVertices.size === 0) return
-      mesh = deleteVertices(obj.mesh, Array.from(s.selectedVertices))
+      ;({ mesh, oldToNew } = deleteVertices(obj.mesh, Array.from(s.selectedVertices)))
     } else if (s.editElementType === 'edge') {
       if (s.selectedEdges.size === 0) return
-      mesh = pruneOrphanVertices(deleteEdges(obj.mesh, Array.from(s.selectedEdges)))
+      ;({ mesh, oldToNew } = pruneOrphanVerticesTracked(deleteEdges(obj.mesh, Array.from(s.selectedEdges))))
     } else {
       if (s.selectedFaces.size === 0) return
-      mesh = pruneOrphanVertices(deleteFaces(obj.mesh, Array.from(s.selectedFaces)))
+      ;({ mesh, oldToNew } = pruneOrphanVerticesTracked(deleteFaces(obj.mesh, Array.from(s.selectedFaces))))
     }
 
     get().beginChange()
@@ -1274,7 +1395,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((st) => ({
-      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh, ...remapObjectVertexData(o, oldToNew) } : o,
+      ),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -1290,12 +1413,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!obj) return
 
     let mesh: Mesh
+    let oldToNew: Map<number, number>
     if (s.editElementType === 'vertex') {
       if (s.selectedVertices.size === 0) return
-      mesh = dissolveVertices(obj.mesh, Array.from(s.selectedVertices))
+      ;({ mesh, oldToNew } = dissolveVertices(obj.mesh, Array.from(s.selectedVertices)))
     } else if (s.editElementType === 'edge') {
       if (s.selectedEdges.size === 0) return
-      mesh = dissolveEdges(obj.mesh, Array.from(s.selectedEdges))
+      ;({ mesh, oldToNew } = dissolveEdges(obj.mesh, Array.from(s.selectedEdges)))
     } else {
       return // dissolve has no distinct meaning in face mode — use delete instead
     }
@@ -1316,7 +1440,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
 
     set((st) => ({
-      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh, ...remapObjectVertexData(o, oldToNew) } : o,
+      ),
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -1404,11 +1530,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
     // JS Sets preserve insertion order, so this is the actual selection order (click order).
     const orderedIndices = Array.from(s.selectedVertices)
-    const { mesh, survivorIndex } = mergeVerticesInMesh(obj.mesh, orderedIndices, mode)
+    const { mesh, survivorIndex, oldToNew } = mergeVerticesInMesh(obj.mesh, orderedIndices, mode)
 
     get().beginChange()
     set((st) => ({
-      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh, ...remapObjectVertexData(o, oldToNew) } : o,
+      ),
       selectedVertices: survivorIndex >= 0 ? new Set([survivorIndex]) : new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -1447,9 +1575,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!obj) return
     // no beginChange here: this is called right after a vertex drag, which already opened
     // its own undo step — folding the snap-merge into the same step feels like one action
-    const { mesh, survivorIndex } = mergeVerticesInMesh(obj.mesh, [keepIndex, mergeIndex], 'first')
+    const { mesh, survivorIndex, oldToNew } = mergeVerticesInMesh(obj.mesh, [keepIndex, mergeIndex], 'first')
     set((st) => ({
-      objects: st.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
+      objects: st.objects.map((o) =>
+        o.id === objectId ? { ...o, mesh, ...remapObjectVertexData(o, oldToNew) } : o,
+      ),
       selectedVertices: survivorIndex >= 0 ? new Set([survivorIndex]) : new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
@@ -1654,7 +1784,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         const modifier: Modifier =
           type === 'fakeFlag'
             ? { type: 'fakeFlag', settings: { ...DEFAULT_FAKE_FLAG_SETTINGS } }
-            : { type: 'fakePhysics', settings: { ...DEFAULT_FAKE_PHYSICS_SETTINGS } }
+            : type === 'fakePhysics'
+              ? { type: 'fakePhysics', settings: { ...DEFAULT_FAKE_PHYSICS_SETTINGS } }
+              : {
+                  type: 'fakePhysicsMesh',
+                  settings: { ...DEFAULT_FAKE_PHYSICS_MESH_SETTINGS, sectionVertices: [[], [], [], [], []] },
+                }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -1666,9 +1801,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) =>
         o.id === id ? { ...o, modifiers: (o.modifiers ?? []).filter((m) => m.type !== type) } : o,
       ),
-      // dropping a mid-preview Fake Flag shouldn't leave Preview silently armed — re-adding it
-      // later would otherwise immediately jump into motion with no warning
+      // removing the modifier that owns a bake also clears that bake — otherwise re-adding it
+      // later would silently resurrect stale keyframes with no modifier settings to explain them
+      clips:
+        type === 'fakePhysics' || type === 'fakePhysicsMesh'
+          ? s.clips.map((c) => {
+              if (c.id !== s.activeClipId) return c
+              return type === 'fakePhysics'
+                ? { ...c, fakePhysicsTracks: (c.fakePhysicsTracks ?? []).filter((t) => t.objectId !== id) }
+                : { ...c, fakePhysicsMeshTracks: (c.fakePhysicsMeshTracks ?? []).filter((t) => t.objectId !== id) }
+            })
+          : s.clips,
+      // dropping a mid-preview Fake Flag/Fake Physics (mesh) shouldn't leave Preview silently
+      // armed — re-adding it later would otherwise immediately jump into motion with no warning
       previewFakeFlag: type === 'fakeFlag' ? false : s.previewFakeFlag,
+      previewFakePhysicsMesh: type === 'fakePhysicsMesh' ? false : s.previewFakePhysicsMesh,
     }))
   },
 
@@ -1744,31 +1891,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const s = get()
     const clip = s.clips.find((c) => c.id === s.activeClipId)
     if (!clip || clip.duration <= 0 || clip.frameRate <= 0) return
-    const simulated = simulateFakePhysicsChain(s.objects, clip, id)
-    if (simulated.size === 0) return
-    get().beginChange()
     const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
     const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
+    const newTracks = buildFakePhysicsTracksForRoot(s.objects, clip, id, frameCount, cycle)
+    if (newTracks.length === 0) return
+    get().beginChange()
     set((st) => ({
       clips: st.clips.map((c) => {
         if (c.id !== st.activeClipId) return c
-        const newTracks: ObjectAnimationTrack[] = []
-        simulated.forEach((signal, objectId) => {
-          const obj = st.objects.find((o) => o.id === objectId)
-          if (!obj) return
-          const baseTrack = c.tracks.find((t) => t.objectId === objectId)
-          const keyframes = signal.rotation.map((rotation, f) => {
-            const time = (f / frameCount) * clip.duration
-            const baseTransform = (baseTrack && sampleTrack(baseTrack, time, cycle)) ?? obj.transform
-            return {
-              id: genId('fpkey'),
-              time,
-              transform: { ...baseTransform, x: signal.x[f], y: signal.y[f], rotation },
-              easing: 'linear' as const,
-            }
-          })
-          newTracks.push({ objectId, keyframes })
-        })
         const keepIds = new Set(newTracks.map((t) => t.objectId))
         return {
           ...c,
@@ -1785,6 +1915,170 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         c.id !== s.activeClipId
           ? c
           : { ...c, fakePhysicsTracks: (c.fakePhysicsTracks ?? []).filter((t) => t.objectId !== id) },
+      ),
+    }))
+  },
+
+  toggleFakePhysicsMeshEnabled: (id) => {
+    get().beginChange()
+    set((s) => {
+      const obj = s.objects.find((o) => o.id === id)
+      const nextEnabled = !obj || !getFakePhysicsMesh(obj)?.enabled
+      return {
+        objects: s.objects.map((o) =>
+          o.id === id ? withFakePhysicsMeshSettings(o, (fs) => ({ ...fs, enabled: !fs.enabled })) : o,
+        ),
+        // switching this object off while it was mid-preview shouldn't leave Preview silently
+        // armed — re-enabling it later would otherwise immediately jump into motion unannounced
+        previewFakePhysicsMesh: nextEnabled ? s.previewFakePhysicsMesh : false,
+      }
+    })
+  },
+
+  updateFakePhysicsMesh: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withFakePhysicsMeshSettings(o, (fs) => ({ ...fs, ...patch })) : o)),
+    }))
+  },
+
+  setFakePhysicsMeshSectionStiffnessLive: (id, index, value) =>
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? withFakePhysicsMeshSettings(o, (fs) => {
+              const next = [...fs.sectionStiffness] as FakePhysicsMeshSettings['sectionStiffness']
+              next[index] = Math.min(1, Math.max(0, value))
+              return { ...fs, sectionStiffness: next }
+            })
+          : o,
+      ),
+    })),
+
+  assignFakePhysicsMeshSection: (id, section) => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === id)
+    if (!obj) return
+    const picked = selectedVertexIndices(s, obj.mesh)
+    if (picked.length === 0) return
+    const pickedSet = new Set(picked)
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) =>
+        o.id === id
+          ? withFakePhysicsMeshSettings(o, (fs) => ({
+              ...fs,
+              sectionVertices: fs.sectionVertices.map((arr, idx) =>
+                idx === section - 1 ? Array.from(new Set([...arr, ...picked])) : arr.filter((v) => !pickedSet.has(v)),
+              ) as FakePhysicsMeshSettings['sectionVertices'],
+            }))
+          : o,
+      ),
+    }))
+  },
+
+  selectFakePhysicsMeshSection: (id, section) => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === id)
+    const settings = obj && getFakePhysicsMesh(obj)
+    if (!settings) return
+    set({
+      editElementType: 'vertex',
+      selectedVertices: new Set(settings.sectionVertices[section - 1]),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    })
+  },
+
+  removeFakePhysicsMeshSectionVertices: (id, section) => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === id)
+    if (!obj) return
+    const toRemove = new Set(selectedVertexIndices(s, obj.mesh))
+    if (toRemove.size === 0) return
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.map((o) =>
+        o.id === id
+          ? withFakePhysicsMeshSettings(o, (fs) => ({
+              ...fs,
+              sectionVertices: fs.sectionVertices.map((arr, idx) =>
+                idx === section - 1 ? arr.filter((v) => !toRemove.has(v)) : arr,
+              ) as FakePhysicsMeshSettings['sectionVertices'],
+            }))
+          : o,
+      ),
+    }))
+  },
+
+  bakeFakePhysicsMesh: (id) => {
+    const s = get()
+    const clip = s.clips.find((c) => c.id === s.activeClipId)
+    if (!clip || clip.duration <= 0 || clip.frameRate <= 0) return
+    const obj = s.objects.find((o) => o.id === id)
+    if (!obj) return
+    const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
+    const newTracks = buildFakePhysicsMeshTracksForObject(obj, clip, frameCount)
+    if (newTracks.length === 0) return
+    get().beginChange()
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== st.activeClipId) return c
+        return {
+          ...c,
+          fakePhysicsMeshTracks: [...(c.fakePhysicsMeshTracks ?? []).filter((t) => t.objectId !== id), ...newTracks],
+        }
+      }),
+    }))
+  },
+
+  clearFakePhysicsMeshBake: (id) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId
+          ? c
+          : { ...c, fakePhysicsMeshTracks: (c.fakePhysicsMeshTracks ?? []).filter((t) => t.objectId !== id) },
+      ),
+    }))
+  },
+
+  togglePreviewFakePhysicsMesh: () => set((s) => ({ previewFakePhysicsMesh: !s.previewFakePhysicsMesh })),
+
+  bakeAllFakePhysics: () => {
+    const s = get()
+    const clip = s.clips.find((c) => c.id === s.activeClipId)
+    if (!clip || clip.duration <= 0 || clip.frameRate <= 0) return
+    const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
+    const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
+
+    const chainTracks: ObjectAnimationTrack[] = []
+    for (const obj of s.objects) {
+      if (getFakePhysics(obj)?.enabled) continue // has its own modifier, not a root candidate
+      chainTracks.push(...buildFakePhysicsTracksForRoot(s.objects, clip, obj.id, frameCount, cycle))
+    }
+    const meshTracks: FakePhysicsMeshTrack[] = []
+    for (const obj of s.objects) {
+      if (!getFakePhysicsMesh(obj)?.enabled) continue
+      meshTracks.push(...buildFakePhysicsMeshTracksForObject(obj, clip, frameCount))
+    }
+    if (chainTracks.length === 0 && meshTracks.length === 0) return
+
+    get().beginChange()
+    const chainKeepIds = new Set(chainTracks.map((t) => t.objectId))
+    const meshKeepIds = new Set(meshTracks.map((t) => t.objectId))
+    set((st) => ({
+      clips: st.clips.map((c) =>
+        c.id !== st.activeClipId
+          ? c
+          : {
+              ...c,
+              fakePhysicsTracks: [...(c.fakePhysicsTracks ?? []).filter((t) => !chainKeepIds.has(t.objectId)), ...chainTracks],
+              fakePhysicsMeshTracks: [
+                ...(c.fakePhysicsMeshTracks ?? []).filter((t) => !meshKeepIds.has(t.objectId)),
+                ...meshTracks,
+              ],
+            },
       ),
     }))
   },

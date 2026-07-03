@@ -20,6 +20,14 @@ import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
+import {
+  createFakePhysicsMeshLiveState,
+  fakePhysicsMeshVertexDeltas,
+  fakePhysicsMeshVertexDeltasLive,
+  getFakePhysicsMesh,
+  stepFakePhysicsMeshLive,
+  type FakePhysicsMeshLiveState,
+} from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
 
 const HANDLE_SIZE = 8 // px
@@ -203,6 +211,14 @@ export default function Viewport() {
   const textureCacheRef = useRef(new Map<string, THREE.Texture>())
   const textureLoaderRef = useRef(new THREE.TextureLoader())
   const selectionBoxRef = useRef<HTMLDivElement>(null)
+  // Live (unbaked) Fake Physics Mesh preview state, keyed by object id — persists across rAF
+  // frames so the spring simulation keeps its position/velocity between renders instead of
+  // resetting every frame. Only touched while `previewFakePhysicsMesh` is on (see rebuildScene).
+  const fakePhysicsMeshLiveStatesRef = useRef(new Map<string, FakePhysicsMeshLiveState>())
+  // Wall-clock timestamp (seconds) of the previous rAF tick — needed to get a real per-frame dt
+  // for the live Fake Physics Mesh preview's spring integration (nothing else in this file needs
+  // dt: Fake Flag's sway/deform is a pure function of absolute time, not integrated frame-to-frame).
+  const lastFrameTimeRef = useRef<number | null>(null)
 
   function knifePointsEqual(a: KnifeCutPoint, b: KnifeCutPoint): boolean {
     if (a.type === 'vertex' && b.type === 'vertex') return a.index === b.index
@@ -975,6 +991,7 @@ export default function Viewport() {
       activeClipId,
       playheadTime,
       previewFakeFlag,
+      previewFakePhysicsMesh,
     } = useSceneStore.getState()
 
     if (referenceImage) addReferenceImage(scene, referenceImage)
@@ -987,6 +1004,16 @@ export default function Viewport() {
     const activeClip = clips.find((c) => c.id === activeClipId)
     const fakeFlagLoopDuration = activeClip?.duration ?? 0
     const fakeFlagTime = previewFakeFlag ? performance.now() / 1000 : playheadTime
+
+    // Fake Physics (Mesh) preview is different from Fake Flag's: it's not a pure function of time,
+    // it's a live spring simulation driven by the object's *actual* current transform each frame —
+    // so dragging an object makes its lagging sections visibly follow, with nothing baked/keyed.
+    // Needs a real per-frame dt (clamped: a dropped/very-late frame shouldn't make the spring jump
+    // wildly), which nothing else in this file tracks.
+    const nowSeconds = performance.now() / 1000
+    const physicsMeshDt = lastFrameTimeRef.current == null ? 0 : Math.min(0.1, nowSeconds - lastFrameTimeRef.current)
+    lastFrameTimeRef.current = nowSeconds
+    if (!previewFakePhysicsMesh) fakePhysicsMeshLiveStatesRef.current.clear()
 
     // Bake rotation-mode sway into a shadow `objects` array so every world-transform composition
     // below (including parent/child chains) automatically carries it, exactly like
@@ -1016,9 +1043,25 @@ export default function Viewport() {
       // *displayed* pose instead of the raw Basis
       const shapeKeyVerts = displayVertices(rawObj, editingShapeKeyId, isSelected)
       const flagDeltas = fakeFlagVertexDeltas(rawObj, fakeFlagTime, fakeFlagLoopDuration)
-      const displayVerts = flagDeltas
+      const swayedVerts = flagDeltas
         ? shapeKeyVerts.map((v, i) => ({ x: v.x + flagDeltas[i].x, y: v.y + flagDeltas[i].y }))
         : shapeKeyVerts
+      const physicsMeshSettings = getFakePhysicsMesh(rawObj)
+      const physicsMeshDeltas =
+        previewFakePhysicsMesh && physicsMeshSettings?.enabled
+          ? (() => {
+              let state = fakePhysicsMeshLiveStatesRef.current.get(rawObj.id)
+              if (!state) {
+                state = createFakePhysicsMeshLiveState(rawObj.transform)
+                fakePhysicsMeshLiveStatesRef.current.set(rawObj.id, state)
+              }
+              stepFakePhysicsMeshLive(state, physicsMeshSettings, rawObj.transform, physicsMeshDt)
+              return fakePhysicsMeshVertexDeltasLive(rawObj, physicsMeshSettings, state, rawObj.transform)
+            })()
+          : fakePhysicsMeshVertexDeltas(rawObj, activeClip, playheadTime)
+      const displayVerts = physicsMeshDeltas
+        ? swayedVerts.map((v, i) => ({ x: v.x + physicsMeshDeltas[i].x, y: v.y + physicsMeshDeltas[i].y }))
+        : swayedVerts
       const obj: SceneObject =
         displayVerts === rawObj.mesh.vertices ? rawObj : { ...rawObj, mesh: { ...rawObj.mesh, vertices: displayVerts } }
 

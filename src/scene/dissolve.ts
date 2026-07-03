@@ -1,5 +1,5 @@
 import type { Mesh } from './types'
-import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices } from './meshUtils'
+import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVerticesTracked } from './meshUtils'
 
 function rotateStartingAt(arr: number[], value: number): number[] {
   const idx = arr.indexOf(value)
@@ -130,17 +130,24 @@ function dissolveOneVertex(mesh: Mesh, v: number): Mesh {
 }
 
 /** Dissolve vertices: removes each vertex and merges the faces around it into one, instead of
- *  deleting every face that touched it (see `deleteVertices` in deleteElements.ts for that). */
-export function dissolveVertices(mesh: Mesh, vertexIndices: number[]): Mesh {
+ *  deleting every face that touched it (see `deleteVertices` in deleteElements.ts for that).
+ *  Also returns the old->new vertex index map — see `remapObjectVertexData`. */
+export function dissolveVertices(
+  mesh: Mesh,
+  vertexIndices: number[],
+): { mesh: Mesh; oldToNew: Map<number, number> } {
   let current: Mesh = mesh
   for (const v of vertexIndices) current = dissolveOneVertex(current, v)
-  return pruneOrphanVertices(current)
+  return pruneOrphanVerticesTracked(current)
 }
 
 /** Dissolve edges: for each edge shared by exactly two (consistently-wound) faces, merges those
  *  two faces into one and removes the edge. A boundary edge (one face, or none) has nothing to
  *  merge into and is left as-is, matching Blender's dissolve-edge behavior. */
-export function dissolveEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
+export function dissolveEdges(
+  mesh: Mesh,
+  edgeKeys: string[],
+): { mesh: Mesh; oldToNew: Map<number, number> } {
   let faces = mesh.faces.map((f) => [...f])
   const touchedVertices = new Set<number>()
   for (const key of edgeKeys) {
@@ -184,5 +191,5 @@ export function dissolveEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
     }
   }
 
-  return pruneOrphanVertices({ vertices: mesh.vertices.map((v) => ({ ...v })), faces })
+  return pruneOrphanVerticesTracked({ vertices: mesh.vertices.map((v) => ({ ...v })), faces })
 }

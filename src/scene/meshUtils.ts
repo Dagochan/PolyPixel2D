@@ -109,11 +109,14 @@ export function triangulate(mesh: Mesh): number[] {
   return indices
 }
 
-/** Drop any vertex not referenced by at least one face, and reindex faces to match. */
-export function pruneOrphanVertices(mesh: Mesh): Mesh {
+function pruneOrphanVerticesTrackedInternal(mesh: Mesh): { mesh: Mesh; oldToNew: Map<number, number> } {
   const used = new Set<number>()
   for (const face of mesh.faces) for (const i of face) used.add(i)
-  if (used.size === mesh.vertices.length) return mesh // nothing to prune
+  if (used.size === mesh.vertices.length) {
+    const oldToNew = new Map<number, number>()
+    mesh.vertices.forEach((_, i) => oldToNew.set(i, i))
+    return { mesh, oldToNew } // nothing to prune
+  }
 
   const oldToNew = new Map<number, number>()
   const vertices = mesh.vertices.filter((_, i) => used.has(i))
@@ -122,7 +125,20 @@ export function pruneOrphanVertices(mesh: Mesh): Mesh {
     if (used.has(i)) oldToNew.set(i, next++)
   }
   const faces = mesh.faces.map((f) => f.map((i) => oldToNew.get(i)!))
-  return { vertices, faces }
+  return { mesh: { vertices, faces }, oldToNew }
+}
+
+/** Drop any vertex not referenced by at least one face, and reindex faces to match. */
+export function pruneOrphanVertices(mesh: Mesh): Mesh {
+  return pruneOrphanVerticesTrackedInternal(mesh).mesh
+}
+
+/** Same as `pruneOrphanVertices`, but also returns the old->new vertex index map so callers that
+ *  might actually drop/reorder vertices (delete, dissolve, merge — unlike cuts/extrude, which only
+ *  append) can remap index-keyed per-object data (shape keys, UV base vertices, modifier vertex
+ *  refs) via `remapObjectVertexData`. */
+export function pruneOrphanVerticesTracked(mesh: Mesh): { mesh: Mesh; oldToNew: Map<number, number> } {
+  return pruneOrphanVerticesTrackedInternal(mesh)
 }
 
 /** Merge `addition` into `base` as a disconnected island, offset by `at` (local mesh space). */
