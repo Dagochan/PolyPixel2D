@@ -3,7 +3,7 @@ import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
-import type { AppMode, FakeFlagSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
+import type { AppMode, FakeFlagSettings, FakePhysicsSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
 import UvEditor from './UvEditor'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
@@ -487,14 +487,100 @@ function FakeFlagModifierBox({
   )
 }
 
+/** One modifier's settings UI for Fake Physics — same chrome-vs-content split as
+ *  `FakeFlagModifierBox`. Unlike Fake Flag this isn't live: "Bake" runs the damped-spring
+ *  simulation across the active clip and writes dense keyframes, so changing settings here doesn't
+ *  do anything visible until you bake (or re-bake) again. */
+function FakePhysicsModifierBox({
+  obj,
+  settings,
+  removeModifier,
+  toggleFakePhysicsEnabled,
+  updateFakePhysics,
+  clearFakePhysicsBake,
+  isBaked,
+}: {
+  obj: SceneObject
+  settings: FakePhysicsSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  toggleFakePhysicsEnabled: (id: string) => void
+  updateFakePhysics: (id: string, patch: Partial<FakePhysicsSettings>) => void
+  clearFakePhysicsBake: (id: string) => void
+  isBaked: boolean
+}) {
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings and any existing bake)' : 'Enable'}
+          onClick={() => toggleFakePhysicsEnabled(obj.id)}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Fake Physics</span>
+        <button className="icon-btn" title="Remove this modifier (also clears its own bake)" onClick={() => removeModifier(obj.id, 'fakePhysics')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row prop-static">
+            <span>
+              Section {settings.section} — {settings.section <= 1 ? 'ROOT, drives the chain unmodified' : 'lags behind its parent'}
+              {isBaked ? ', baked' : ', not baked yet'}
+            </span>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Section (1–5)"
+              value={settings.section}
+              onChange={(v) => updateFakePhysics(obj.id, { section: Math.min(5, Math.max(1, Math.round(v))) })}
+            />
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Stiffness"
+              value={settings.stiffness}
+              step={0.05}
+              onChange={(v) => updateFakePhysics(obj.id, { stiffness: Math.min(1, Math.max(0, v)) })}
+            />
+            <NumberField
+              label="Converge start"
+              value={settings.convergeStart}
+              step={0.05}
+              onChange={(v) => updateFakePhysics(obj.id, { convergeStart: Math.min(1, Math.max(0, v)) })}
+            />
+          </div>
+          {isBaked && (
+            <div className="prop-row">
+              <button title="Remove this object's own baked keyframes, reverting it to its base motion" onClick={() => clearFakePhysicsBake(obj.id)}>
+                Clear bake
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+const MODIFIER_LABELS: Record<Modifier['type'], string> = {
+  fakeFlag: 'Fake Flag',
+  fakePhysics: 'Fake Physics',
+}
+
 /** Blender-style "add only what you use" modifier stack — replaces what used to be a permanently
  *  visible Fake Flag section, so an object that doesn't use any opt-in effect isn't paying rent
- *  for one in its Properties panel. Add a second modifier type here (and to the store's
- *  `addModifier`/`Modifier` union) by following `FakeFlagModifierBox`'s shape. */
+ *  for one in its Properties panel. Add a new modifier type by adding it to the `Modifier` union
+ *  and the store's `addModifier`, giving it a `MODIFIER_LABELS` entry, and adding its own
+ *  `*ModifierBox` component (following `FakeFlagModifierBox`'s or `FakePhysicsModifierBox`'s shape).
+ */
 function ModifiersSection(props: {
   obj: SceneObject
   mode: AppMode
   hasVertexSelection: boolean
+  hasActiveClip: boolean
   addModifier: (id: string, type: Modifier['type']) => void
   removeModifier: (id: string, type: Modifier['type']) => void
   toggleFakeFlagEnabled: (id: string) => void
@@ -503,19 +589,64 @@ function ModifiersSection(props: {
   clearFakeFlagAnchor: (id: string) => void
   previewFakeFlag: boolean
   togglePreviewFakeFlag: () => void
+  toggleFakePhysicsEnabled: (id: string) => void
+  updateFakePhysics: (id: string, patch: Partial<FakePhysicsSettings>) => void
+  bakeFakePhysics: (id: string) => void
+  clearFakePhysicsBake: (id: string) => void
+  fakePhysicsBakedObjectIds: Set<string>
 }) {
   const { obj, addModifier } = props
   const modifiers = obj.modifiers ?? []
-  const hasFakeFlag = modifiers.some((m) => m.type === 'fakeFlag')
+  const addedTypes = new Set(modifiers.map((m) => m.type))
+  const availableTypes = (Object.keys(MODIFIER_LABELS) as Modifier['type'][]).filter((t) => !addedTypes.has(t))
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
 
   return (
     <Section title="Modifiers">
-      {modifiers.map((m) =>
-        m.type === 'fakeFlag' ? <FakeFlagModifierBox key={m.type} {...props} settings={m.settings} /> : null,
-      )}
-      {!hasFakeFlag && (
+      {modifiers.map((m) => {
+        if (m.type === 'fakeFlag') return <FakeFlagModifierBox key={m.type} {...props} settings={m.settings} />
+        return (
+          <FakePhysicsModifierBox
+            key={m.type}
+            {...props}
+            settings={m.settings}
+            isBaked={props.fakePhysicsBakedObjectIds.has(obj.id)}
+          />
+        )
+      })}
+      {/* A Fake Physics chain's ROOT is normally a plain object with its own ordinary keyframes
+          and no fakePhysics modifier of its own (it's the thing everything else lags behind, not
+          something that itself lags) — so this needs to work regardless of whether `obj` has any
+          modifier at all, not just live inside FakePhysicsModifierBox. */}
+      {props.hasActiveClip && (
         <div className="prop-row">
-          <button onClick={() => addModifier(obj.id, 'fakeFlag')}>+ Add Modifier ▾</button>
+          <button
+            title="Simulate every Fake-Physics descendant of this object (cascading down the parent/child chain) and bake dense keyframes. Use this on the chain's ROOT object — the one with the base motion everything else should lag behind."
+            onClick={() => props.bakeFakePhysics(obj.id)}
+          >
+            Bake Fake Physics from here
+          </button>
+        </div>
+      )}
+      {availableTypes.length > 0 && (
+        <div className="prop-row" style={{ position: 'relative' }}>
+          <button onClick={() => setAddMenuOpen((o) => !o)}>+ Add Modifier ▾</button>
+          {addMenuOpen && (
+            <div className="dropdown-menu">
+              {availableTypes.map((t) => (
+                <div
+                  key={t}
+                  className="dropdown-item"
+                  onClick={() => {
+                    addModifier(obj.id, t)
+                    setAddMenuOpen(false)
+                  }}
+                >
+                  {MODIFIER_LABELS[t]}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </Section>
@@ -562,11 +693,16 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const clearFakeFlagAnchor = useSceneStore((s) => s.clearFakeFlagAnchor)
   const previewFakeFlag = useSceneStore((s) => s.previewFakeFlag)
   const togglePreviewFakeFlag = useSceneStore((s) => s.togglePreviewFakeFlag)
+  const toggleFakePhysicsEnabled = useSceneStore((s) => s.toggleFakePhysicsEnabled)
+  const updateFakePhysics = useSceneStore((s) => s.updateFakePhysics)
+  const bakeFakePhysics = useSceneStore((s) => s.bakeFakePhysics)
+  const clearFakePhysicsBake = useSceneStore((s) => s.clearFakePhysicsBake)
   const hasVertexSelection = useSceneStore(
     (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
   )
   const hasActiveClip = useSceneStore((s) => s.activeClipId !== null)
   const activeClip = useSceneStore((s) => s.clips.find((c) => c.id === s.activeClipId))
+  const fakePhysicsBakedObjectIds = new Set((activeClip?.fakePhysicsTracks ?? []).map((t) => t.objectId))
   const playheadTime = useSceneStore((s) => s.playheadTime)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
@@ -727,6 +863,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             obj={obj}
             mode={mode}
             hasVertexSelection={hasVertexSelection}
+            hasActiveClip={hasActiveClip}
             addModifier={addModifier}
             removeModifier={removeModifier}
             toggleFakeFlagEnabled={toggleFakeFlagEnabled}
@@ -735,6 +872,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             clearFakeFlagAnchor={clearFakeFlagAnchor}
             previewFakeFlag={previewFakeFlag}
             togglePreviewFakeFlag={togglePreviewFakeFlag}
+            toggleFakePhysicsEnabled={toggleFakePhysicsEnabled}
+            updateFakePhysics={updateFakePhysics}
+            bakeFakePhysics={bakeFakePhysics}
+            clearFakePhysicsBake={clearFakePhysicsBake}
+            fakePhysicsBakedObjectIds={fakePhysicsBakedObjectIds}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (

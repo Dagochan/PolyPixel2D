@@ -112,12 +112,36 @@ export interface FakeFlagSettings {
   anchorVertices?: number[]
 }
 
+/** "Section+delay" secondary-motion sway (a tail, hair, a loose sleeve) — cascaded from a chain
+ *  ROOT down through its Fake-Physics-tagged descendants (real `parentId` chain, walked at bake
+ *  time; `section` is a display/organization label, not what the simulation follows). Unlike Fake
+ *  Flag this isn't evaluated live: "Bake" runs a damped-spring simulation across the active clip
+ *  and writes dense keyframes into `AnimationClip.fakePhysicsTracks`, so it needs re-baking after
+ *  the chain's base motion or these settings change. */
+export interface FakePhysicsSettings {
+  enabled: boolean
+  /** 1 (ROOT — this object's own motion drives the chain, unmodified, nothing to bake for it) to
+   *  5 (TIP). Purely a display label; baking walks the actual `parentId` chain regardless of
+   *  whether section numbers are contiguous. */
+  section: number
+  /** 0..1 abstracted spring feel — 1 is rigid (follows its parent almost instantly, no
+   *  overshoot), 0 is jelly (big delay, big wobbly overshoot before settling). Maps internally to
+   *  a damping ratio + natural frequency. */
+  stiffness: number
+  /** 0..1 fraction into the clip's duration where the baked pose starts blending back toward its
+   *  own time-0 pose, so a 'loop' clip's seam doesn't pop. 1 = no forced convergence (only safe
+   *  for a 'none'/'pingpong' clip, or one already naturally settled by the end). */
+  convergeStart: number
+}
+
 /** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
  *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
- *  app ever grows (Fake Flag today, Fake Physics/FakeBehind later). At most one modifier per
+ *  app ever grows (Fake Flag/Fake Physics today, FakeBehind later). At most one modifier per
  *  `type` on a given object (re-adding the same type is a no-op) — a discriminated union so each
  *  arm's `settings` type-narrows automatically. */
-export type Modifier = { type: 'fakeFlag'; settings: FakeFlagSettings }
+export type Modifier =
+  | { type: 'fakeFlag'; settings: FakeFlagSettings }
+  | { type: 'fakePhysics'; settings: FakePhysicsSettings }
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
@@ -274,4 +298,10 @@ export interface AnimationClip {
   tracks: ObjectAnimationTrack[]
   /** Shape-key weight tracks — absent/undefined on older saved projects, treated as empty. */
   shapeKeyTracks?: ShapeKeyTrack[]
+  /** Dense, machine-generated Fake Physics keyframes (see `FakePhysicsSettings`) — kept entirely
+   *  separate from the user's own `tracks` so re-baking or clearing the physics layer never
+   *  touches hand-authored keyframes. Same shape as `ObjectAnimationTrack`; at eval time these
+   *  take priority over `tracks` for the same `objectId` (see `sampleClipAtTime`), since the bake
+   *  already folded the object's own base motion into the simulation as its ROOT input. */
+  fakePhysicsTracks?: ObjectAnimationTrack[]
 }

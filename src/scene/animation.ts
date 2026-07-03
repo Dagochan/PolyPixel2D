@@ -139,6 +139,12 @@ export function sampleClipAtTime(
     const sampled = sampleTrack(track, resolved, cycle)
     if (sampled) transforms.set(track.objectId, sampled)
   }
+  // Fake Physics tracks are machine-baked from (among other things) the object's own `tracks`
+  // entry, so they're the authoritative motion once they exist — override, not blend.
+  for (const track of clip.fakePhysicsTracks ?? []) {
+    const sampled = sampleTrack(track, resolved, cycle)
+    if (sampled) transforms.set(track.objectId, sampled)
+  }
   const shapeKeyValues = new Map<string, number>()
   for (const track of clip.shapeKeyTracks ?? []) {
     const sampled = sampleShapeKeyTrack(track, resolved, cycle)

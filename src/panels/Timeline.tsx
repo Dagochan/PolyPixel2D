@@ -195,6 +195,10 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     // exists purely so an object driven only by Fake Flag isn't invisible in the timeline, and so
     // anyone scrubbing/reading the clip knows a procedural effect is riding along.
     | { kind: 'fakeFlag'; objectId: string }
+    // Fake Physics *does* have real dense (one-per-frame) keyframes once baked, in
+    // `fakePhysicsTracks` rather than `tracks` — but they're machine-generated and not meant for
+    // hand-dragging, so this renders as a solid "baked" bar instead of individual diamonds.
+    | { kind: 'fakePhysicsBaked'; objectId: string }
   const rowObjectIds: string[] = []
   for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
   for (const t of activeClip.shapeKeyTracks ?? []) {
@@ -202,6 +206,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   }
   for (const o of objects) {
     if (getFakeFlag(o)?.enabled && !rowObjectIds.includes(o.id)) rowObjectIds.push(o.id)
+  }
+  for (const t of activeClip.fakePhysicsTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   const rows: Row[] = []
   for (const objectId of rowObjectIds) {
@@ -213,6 +220,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
       rows.push({ kind: 'shapeKey', objectId, shapeKeyId: skt.shapeKeyId, keyName, keyframes: skt.keyframes })
     }
     if (obj && getFakeFlag(obj)?.enabled) rows.push({ kind: 'fakeFlag', objectId })
+    if ((activeClip.fakePhysicsTracks ?? []).some((ft) => ft.objectId === objectId)) {
+      rows.push({ kind: 'fakePhysicsBaked', objectId })
+    }
   }
 
   return (
@@ -344,19 +354,32 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
-            // Fake Flag has no keyframe track — if this object also has a Transform track, this
-            // is a sub-row under that row's name (like a shape key); otherwise it's the only row
-            // for this object, so it needs the object's own name to say which object it is.
+            // Fake Flag/Fake Physics have no user-facing keyframe track of their own — if this
+            // object also has a Transform track, this is a sub-row under that row's name (like a
+            // shape key); otherwise it's the only row for this object, so it needs the object's
+            // own name to say which object it is.
             const hasTransformRow = activeClip.tracks.some((t) => t.objectId === row.objectId)
             const obj = objects.find((o) => o.id === row.objectId)
+            if (row.kind === 'fakeFlag') {
+              return (
+                <div
+                  key={`ff-${row.objectId}`}
+                  className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title="Fake Flag — a procedural sin-wave sway driven directly by time, not keyframes"
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  {hasTransformRow ? '↳ Fake Flag' : `${obj?.name ?? '(deleted object)'} — Fake Flag`}
+                </div>
+              )
+            }
             return (
               <div
-                key={`ff-${row.objectId}`}
+                key={`fpb-${row.objectId}`}
                 className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
-                title="Fake Flag — a procedural sin-wave sway driven directly by time, not keyframes"
+                title="Fake Physics — baked, dense keyframes from a spring simulation. Regenerate via the Properties panel, not by hand."
                 onClick={() => selectObject(row.objectId)}
               >
-                {hasTransformRow ? '↳ Fake Flag' : `${obj?.name ?? '(deleted object)'} — Fake Flag`}
+                {hasTransformRow ? '↳ Fake Physics (baked)' : `${obj?.name ?? '(deleted object)'} — Fake Physics (baked)`}
               </div>
             )
           })}
@@ -440,17 +463,24 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     ? `t-${row.objectId}`
                     : row.kind === 'shapeKey'
                       ? `sk-${row.objectId}-${row.shapeKeyId}`
-                      : `ff-${row.objectId}`
+                      : row.kind === 'fakeFlag'
+                        ? `ff-${row.objectId}`
+                        : `fpb-${row.objectId}`
                 }
                 className={
                   'timeline-track-row' +
                   (row.kind === 'fakeFlag' ? ' fake-flag' : '') +
+                  (row.kind === 'fakePhysicsBaked' ? ' fake-physics-baked' : '') +
                   (row.objectId === selectedObjectId ? ' selected' : '')
                 }
               >
                 {row.kind === 'fakeFlag' ? (
                   <span className="timeline-fake-flag-label" title="Procedural — driven directly by time, nothing to key">
                     ≈ sin wave, no keyframes
+                  </span>
+                ) : row.kind === 'fakePhysicsBaked' ? (
+                  <span className="timeline-fake-physics-label" title="Baked spring simulation — dense, machine-generated keyframes. Regenerate via Properties, not by hand.">
+                    ● baked physics
                   </span>
                 ) : (
                   row.keyframes.map((k) => (

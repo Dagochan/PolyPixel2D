@@ -5,10 +5,12 @@ import type {
   EasingType,
   EditElementType,
   FakeFlagSettings,
+  FakePhysicsSettings,
   InsertSlot,
   LoopMode,
   Mesh,
   Modifier,
+  ObjectAnimationTrack,
   ReferenceImage,
   SceneObject,
   ShapeKey,
@@ -16,8 +18,9 @@ import type {
   UvIslandTransform,
   Vec2,
 } from './types'
-import { resolvePlaybackTime, sampleClipAtTime, shapeKeyTrackKey } from './animation'
+import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
+import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
@@ -347,6 +350,23 @@ interface SceneState {
    *  user see the sway/flutter without laying down any keyframes first. Toggling this never
    *  touches undo history (it's a view setting, not a scene edit). */
   togglePreviewFakeFlag: () => void
+  /** Quick on/off for an already-added Fake Physics modifier, without removing it. Disabling it
+   *  doesn't clear any existing bake — the object just stops taking part in future bakes of its
+   *  chain until re-enabled. */
+  toggleFakePhysicsEnabled: (id: string) => void
+  /** Merge a partial patch into this object's Fake Physics settings — adds the modifier (with
+   *  defaults merged with `patch`) if it isn't already in the stack. Note this does *not*
+   *  re-bake — the existing baked keyframes (if any) are now stale until "Bake" is run again. */
+  updateFakePhysics: (id: string, patch: Partial<FakePhysicsSettings>) => void
+  /** Simulates the Fake Physics chain rooted at `id` (every enabled-modifier descendant, cascading
+   *  down the real `parentId` hierarchy) against the active clip, and writes the result into that
+   *  clip's `fakePhysicsTracks` — replacing any prior baked entries for the objects touched. A
+   *  no-op if there's no active clip. */
+  bakeFakePhysics: (id: string) => void
+  /** Removes just this object's own baked Fake Physics track (if any), reverting it to its base
+   *  `tracks` motion (or its static pose). Doesn't touch descendants' bakes, which may then be
+   *  stale relative to their parent until the chain is re-baked from its root. */
+  clearFakePhysicsBake: (id: string) => void
   /** Move the scrub position and apply the active clip's evaluated pose to every object it
    *  animates (objects with no track in the active clip are left untouched). This is pose
    *  *evaluation*, not a user edit — it doesn't push undo history. */
@@ -403,6 +423,16 @@ function withFakeFlagSettings(o: SceneObject, updater: (settings: FakeFlagSettin
   const modifiers = existing
     ? o.modifiers!.map((m) => (m.type === 'fakeFlag' ? { ...m, settings } : m))
     : [...(o.modifiers ?? []), { type: 'fakeFlag' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Same idea as `withFakeFlagSettings`, for the `fakePhysics` modifier. */
+function withFakePhysicsSettings(o: SceneObject, updater: (settings: FakePhysicsSettings) => FakePhysicsSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'fakePhysics')
+  const settings = updater(existing?.settings ?? DEFAULT_FAKE_PHYSICS_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'fakePhysics' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'fakePhysics' as const, settings }]
   return { ...o, modifiers }
 }
 
@@ -1621,7 +1651,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id || o.modifiers?.some((m) => m.type === type)) return o
-        const modifier: Modifier = type === 'fakeFlag' ? { type: 'fakeFlag', settings: { ...DEFAULT_FAKE_FLAG_SETTINGS } } : type
+        const modifier: Modifier =
+          type === 'fakeFlag'
+            ? { type: 'fakeFlag', settings: { ...DEFAULT_FAKE_FLAG_SETTINGS } }
+            : { type: 'fakePhysics', settings: { ...DEFAULT_FAKE_PHYSICS_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -1690,6 +1723,71 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   togglePreviewFakeFlag: () => set((s) => ({ previewFakeFlag: !s.previewFakeFlag })),
+
+  toggleFakePhysicsEnabled: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? withFakePhysicsSettings(o, (fs) => ({ ...fs, enabled: !fs.enabled })) : o,
+      ),
+    }))
+  },
+
+  updateFakePhysics: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withFakePhysicsSettings(o, (fs) => ({ ...fs, ...patch })) : o)),
+    }))
+  },
+
+  bakeFakePhysics: (id) => {
+    const s = get()
+    const clip = s.clips.find((c) => c.id === s.activeClipId)
+    if (!clip || clip.duration <= 0 || clip.frameRate <= 0) return
+    const simulated = simulateFakePhysicsChain(s.objects, clip, id)
+    if (simulated.size === 0) return
+    get().beginChange()
+    const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
+    const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== st.activeClipId) return c
+        const newTracks: ObjectAnimationTrack[] = []
+        simulated.forEach((signal, objectId) => {
+          const obj = st.objects.find((o) => o.id === objectId)
+          if (!obj) return
+          const baseTrack = c.tracks.find((t) => t.objectId === objectId)
+          const keyframes = signal.rotation.map((rotation, f) => {
+            const time = (f / frameCount) * clip.duration
+            const baseTransform = (baseTrack && sampleTrack(baseTrack, time, cycle)) ?? obj.transform
+            return {
+              id: genId('fpkey'),
+              time,
+              transform: { ...baseTransform, x: signal.x[f], y: signal.y[f], rotation },
+              easing: 'linear' as const,
+            }
+          })
+          newTracks.push({ objectId, keyframes })
+        })
+        const keepIds = new Set(newTracks.map((t) => t.objectId))
+        return {
+          ...c,
+          fakePhysicsTracks: [...(c.fakePhysicsTracks ?? []).filter((t) => !keepIds.has(t.objectId)), ...newTracks],
+        }
+      }),
+    }))
+  },
+
+  clearFakePhysicsBake: (id) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId
+          ? c
+          : { ...c, fakePhysicsTracks: (c.fakePhysicsTracks ?? []).filter((t) => t.objectId !== id) },
+      ),
+    }))
+  },
 
   setPlayhead: (time) => {
     const s = get()

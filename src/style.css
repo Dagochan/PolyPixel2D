@@ -994,6 +994,24 @@ input[type='range']:disabled {
   pointer-events: none;
 }
 
+/* Fake Physics *does* have real dense keyframes once baked, unlike Fake Flag — a solid (not
+   striped) fill signals "there's real generated data here," while still reading as distinct from
+   a hand-keyed row so nobody tries to drag individual frames out of it. */
+.timeline-track-row.fake-physics-baked {
+  background: #4ea1ff14;
+}
+
+.timeline-fake-physics-label {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: #4ea1ff;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .timeline-gridline {
   position: absolute;
   top: 0;
