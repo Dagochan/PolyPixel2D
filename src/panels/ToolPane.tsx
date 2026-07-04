@@ -53,7 +53,7 @@ export default function ToolPane() {
           disabled={!selectedObj || selectedObj.kind === 'path'}
           title={
             selectedObj?.kind === 'path'
-              ? "A Path's Head/Tail always match its start/end control point — nothing to drag here"
+              ? "A Path's Head/Tail are fully derived from its start/end control point — nothing to drag here"
               : 'Pivot mode (drag to edit the Head/Tail position)'
           }
           onClick={() => setMode('pivot')}

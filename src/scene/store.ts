@@ -24,7 +24,7 @@ import type {
 } from './types'
 import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
 import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
-import { boundsVertices, pathHeadTail } from './pathCurve'
+import { boundsVertices, pathTail } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -573,6 +573,30 @@ function withFakeBehindSettings(o: SceneObject, updater: (settings: FakeBehindSe
   return { ...o, modifiers }
 }
 
+/** Moves `o`'s Head to `localHead` while keeping the mesh visually in place — compensates
+ *  `transform.x`/`y` by however far the head moved, transformed through the current rotation/
+ *  scale, so this is a pure "which point is the pivot" change, not a visible shift. Shared by
+ *  `setHead` (user drag/Properties edit) and `setMode`'s Path Head resync (see its doc). */
+function withHeadAt(o: SceneObject, localHead: Vec2): SceneObject {
+  const clamped = clampToMesh(o.mesh, localHead)
+  const t = o.transform
+  const dx = clamped.x - t.head.x
+  const dy = clamped.y - t.head.y
+  const sx = dx * t.scaleX
+  const sy = dy * t.scaleY
+  const cos = Math.cos(t.rotation)
+  const sin = Math.sin(t.rotation)
+  return {
+    ...o,
+    transform: {
+      ...t,
+      head: clamped,
+      x: t.x + (sx * cos - sy * sin),
+      y: t.y + (sx * sin + sy * cos),
+    },
+  }
+}
+
 /** Runs `simulateFakePhysicsChain` rooted at `rootObjectId` and turns the result into
  *  `ObjectAnimationTrack`s ready to merge into a clip's `fakePhysicsTracks` — the shared core
  *  behind `bakeFakePhysics` (one root) and `bakeAllFakePhysics` (every root candidate in the
@@ -805,17 +829,16 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     get().beginChange()
     const objects = get().objects
     const vertices = points.map((p) => ({ ...p }))
-    const { head, tail } = pathHeadTail(vertices)
     const obj: SceneObject = {
       id: genId('obj'),
       name: `Path_${objects.length + 1}`,
       kind: 'path',
       mesh: { vertices, faces: [] },
-      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { ...vertices[0] } },
       zOrder: objects.length,
       visible: true,
       material: { color: DEFAULT_MATERIAL_COLOR },
-      tail,
+      tail: pathTail(vertices),
       parentId: null,
       connected: true,
     }
@@ -827,7 +850,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id) return o
         const vertices = o.mesh.vertices.map((v, i) => (i === index ? localPosition : v))
-        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+        return { ...o, mesh: { ...o.mesh, vertices }, tail: pathTail(vertices) }
       }),
     })),
 
@@ -837,7 +860,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id) return o
         const vertices = [...o.mesh.vertices.slice(0, index), localPosition, ...o.mesh.vertices.slice(index)]
-        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+        return { ...o, mesh: { ...o.mesh, vertices }, tail: pathTail(vertices) }
       }),
     }))
   },
@@ -850,7 +873,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) => {
         if (o.id !== id) return o
         const vertices = o.mesh.vertices.filter((_, i) => i !== index)
-        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+        return { ...o, mesh: { ...o.mesh, vertices }, tail: pathTail(vertices) }
       }),
     }))
   },
@@ -1290,28 +1313,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   setHead: (id, localHead) =>
     set((s) => ({
-      objects: s.objects.map((o) => {
-        if (o.id !== id) return o
-        const clamped = clampToMesh(o.mesh, localHead)
-        const t = o.transform
-        const dx = clamped.x - t.head.x
-        const dy = clamped.y - t.head.y
-        const sx = dx * t.scaleX
-        const sy = dy * t.scaleY
-        const cos = Math.cos(t.rotation)
-        const sin = Math.sin(t.rotation)
-        // keep the mesh visually in place: compensate the world position by how far
-        // the head moved, transformed through the current rotation/scale
-        return {
-          ...o,
-          transform: {
-            ...t,
-            head: clamped,
-            x: t.x + (sx * cos - sy * sin),
-            y: t.y + (sx * sin + sy * cos),
-          },
-        }
-      }),
+      objects: s.objects.map((o) => (o.id === id ? withHeadAt(o, localHead) : o)),
     })),
 
   setTail: (id, localTail) => {
@@ -1367,12 +1369,25 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       const obj = get().objects.find((o) => o.id === get().selectedObjectId)
       if (obj?.kind === 'empty') return
     }
-    set({
-      mode,
-      selectedVertices: new Set(),
-      selectedEdges: new Set(),
-      selectedFaces: new Set(),
-      editPivot: null,
+    set((s) => {
+      // leaving Edit mode on a Path: resync its Head to the current start control point (see
+      // `pathTail`'s doc for why this can't just live-sync on every point edit the way `tail`
+      // does — Head is the render pivot, so continuously re-pointing it at the vertex being
+      // dragged makes that vertex look frozen while everything else shifts). `withHeadAt`
+      // compensates position the same way a manual Pivot-mode drag would, so nothing jumps.
+      const editedObj = s.objects.find((o) => o.id === s.selectedObjectId)
+      const objects =
+        s.mode === 'edit' && mode !== 'edit' && editedObj?.kind === 'path'
+          ? s.objects.map((o) => (o.id === editedObj.id ? withHeadAt(o, o.mesh.vertices[0]) : o))
+          : s.objects
+      return {
+        mode,
+        objects,
+        selectedVertices: new Set(),
+        selectedEdges: new Set(),
+        selectedFaces: new Set(),
+        editPivot: null,
+      }
     })
   },
   setEditElementType: (editElementType) =>

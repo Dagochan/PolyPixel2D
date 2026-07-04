@@ -86,14 +86,23 @@ export function boundsVertices(obj: SceneObject): Vec2[] {
   return obj.kind === 'path' ? evaluatePathCurve(obj.mesh.vertices) : obj.mesh.vertices
 }
 
-/** A `kind: 'path'` object's `transform.head`/`tail` are permanently locked to its first/last
- *  control point (2026-07-04 — the obvious, only-sensible reading of "start"/"end" for a curve
- *  meant to be followed start-to-end by other objects' modifiers). Call this after any edit that
- *  changes `vertices` (add/insert/remove/move a point) and merge the result back into the
- *  object, so the two never drift out of sync with the actual endpoints. `vertices` must have at
- *  least 1 point (true for any `kind: 'path'` object past creation — see `addPath`). */
-export function pathHeadTail(vertices: Vec2[]): { head: Vec2; tail: Vec2 } {
-  return { head: { ...vertices[0] }, tail: { ...vertices[vertices.length - 1] } }
+/** A `kind: 'path'` object's `tail` is permanently locked to its *last* control point (2026-07-04
+ *  — the obvious reading of "end" for a curve meant to be followed start-to-end by other objects'
+ *  modifiers, e.g. a connected child snapping to wherever the path currently ends). Call this
+ *  after any edit that changes `vertices` (add/insert/remove/move a point) and merge the result
+ *  back into the object's `tail` field, so it never drifts out of sync with the actual endpoint.
+ *
+ *  There's no equivalent live sync for the *first* point into `transform.head` — Head doubles as
+ *  the pivot subtracted from every vertex when rendering (see `transformUtils.applyTransform`),
+ *  so continuously re-pointing it at the very vertex being dragged makes that vertex appear
+ *  frozen at the object's local origin while every *other* vertex silently shifts the opposite
+ *  way each edit (dragging the start point looks like the whole curve scales instead of that one
+ *  point moving). Tail has no such conflict — nothing else is rendered relative to it — so
+ *  syncing it continuously is safe. Head is instead resynced only once, when Edit mode is
+ *  exited (see `setMode`'s doc), using the same position-compensated move as a manual Pivot-mode
+ *  drag (`withHeadAt`), so it reflects the current start point without fighting live edits. */
+export function pathTail(vertices: Vec2[]): Vec2 {
+  return { ...vertices[vertices.length - 1] }
 }
 
 const CENTRIPETAL_ALPHA = 0.5
