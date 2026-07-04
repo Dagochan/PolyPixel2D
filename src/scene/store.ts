@@ -112,8 +112,8 @@ interface SceneState {
    *  frame, so dragging the object around makes its lagging sections visibly jiggle/follow —
    *  nothing to key, no bake needed, just for quick iteration on Stiffness/Pivot before baking. */
   previewFakePhysicsMesh: boolean
-  history: SceneObject[][]
-  future: SceneObject[][]
+  history: HistorySnapshot[]
+  future: HistorySnapshot[]
   activeTool: ActiveTool
   /** Reference frame for the object-mode move gizmo's axis arrows (Blender-style). 'local'
    *  (default) follows the object's own world rotation; 'world' is always the scene's X/Y axes.
@@ -480,6 +480,19 @@ function cloneObjects(objects: SceneObject[]): SceneObject[] {
   }))
 }
 
+/** Undo/redo snapshot — covers both `objects` and `clips`, since actions like baking or keying
+ *  only mutate `clips` and previously went untracked (see `beginChange`'s doc). `clips` is plain,
+ *  cycle-free JSON data (keyframes/tracks, no functions/Sets), so `structuredClone` is a cheap,
+ *  correct deep copy without needing a bespoke cloner like `cloneObjects`. */
+interface HistorySnapshot {
+  objects: SceneObject[]
+  clips: AnimationClip[]
+}
+
+function snapshotScene(s: { objects: SceneObject[]; clips: AnimationClip[] }): HistorySnapshot {
+  return { objects: cloneObjects(s.objects), clips: structuredClone(s.clips) }
+}
+
 /** Returns `o` with its Fake Flag modifier's settings replaced by `updater(current settings)` —
  *  adding the modifier (seeded from `DEFAULT_FAKE_FLAG_SETTINGS`) first if `o` doesn't have one
  *  yet, so every Fake-Flag-settings setter can stay a one-liner regardless of whether the object
@@ -606,7 +619,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   beginChange: () =>
     set((s) => ({
-      history: [...s.history.slice(-(MAX_HISTORY - 1)), cloneObjects(s.objects)],
+      history: [...s.history.slice(-(MAX_HISTORY - 1)), snapshotScene(s)],
       future: [],
     })),
 
@@ -616,8 +629,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       const prev = s.history[s.history.length - 1]
       return {
         history: s.history.slice(0, -1),
-        future: [cloneObjects(s.objects), ...s.future],
-        objects: prev,
+        future: [snapshotScene(s), ...s.future],
+        objects: prev.objects,
+        clips: prev.clips,
       }
     }),
 
@@ -627,8 +641,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       const next = s.future[0]
       return {
         future: s.future.slice(1),
-        history: [...s.history, cloneObjects(s.objects)],
-        objects: next,
+        history: [...s.history, snapshotScene(s)],
+        objects: next.objects,
+        clips: next.clips,
       }
     }),
 
@@ -636,7 +651,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => {
       if (s.history.length === 0) return {}
       const prev = s.history[s.history.length - 1]
-      return { history: s.history.slice(0, -1), objects: prev }
+      return { history: s.history.slice(0, -1), objects: prev.objects, clips: prev.clips }
     }),
 
   addRect: (width, height, segX, segY) => {
