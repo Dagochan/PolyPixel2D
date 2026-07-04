@@ -6,6 +6,8 @@ import { getWorldTransform, worldBounds } from '../scene/transformUtils'
 import { computeSplitUVIslands } from '../scene/uv'
 import { quantizeImageData } from '../scene/quantize'
 import { resolveInsertSlots } from '../scene/insertSlots'
+import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
+import { boundsVertices } from '../scene/pathCurve'
 import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 
 /** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
@@ -50,7 +52,7 @@ export default function PixelPreview() {
     // the WebGL canvas itself is never attached to the DOM — it's only an offscreen source that
     // gets drawn (and optionally palette-quantized) onto the visible 2D canvas each frame, since
     // quantization needs pixel readback that a displayed WebGL canvas doesn't offer directly
-    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true, stencil: true })
     renderer.setPixelRatio(1)
     rendererRef.current = renderer
 
@@ -83,7 +85,7 @@ export default function PixelPreview() {
         for (const obj of objects) {
           if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
           const t = getWorldTransform(obj, objects)
-          const b = worldBounds(obj.mesh.vertices, t)
+          const b = worldBounds(boundsVertices(obj), t)
           if (b.minX < minX) minX = b.minX
           if (b.minY < minY) minY = b.minY
           if (b.maxX > maxX) maxX = b.maxX
@@ -217,6 +219,7 @@ function buildFillMaterial(
   obj: SceneObject,
   textureCache: Map<string, THREE.Texture>,
   textureLoader: THREE.TextureLoader,
+  maskBits: Map<string, number>,
 ): THREE.MeshBasicMaterial {
   let texture: THREE.Texture | undefined
   if (obj.material.textureUrl) {
@@ -231,7 +234,7 @@ function buildFillMaterial(
       textureCache.set(obj.material.textureUrl, texture)
     }
   }
-  return new THREE.MeshBasicMaterial({
+  const material = new THREE.MeshBasicMaterial({
     color: obj.material.color,
     map: texture,
     side: THREE.DoubleSide,
@@ -239,6 +242,44 @@ function buildFillMaterial(
     // transparent areas render as whatever opaque RGB they happen to store underneath
     transparent: !!texture,
   })
+  applyFakeBehindStencil(material, obj, maskBits)
+  return material
+}
+
+/** Same stencil-buffer trick as `Viewport.tsx`'s function of the same name — see its doc for the
+ *  full mechanics. No selection concept here (this is a read-only preview render, not an editing
+ *  viewport), so unlike `Viewport.tsx` a mask is *always* fully invisible (no translucent guide),
+ *  just like every other deform this preview doesn't visualize. */
+function applyFakeBehindStencil(mat: THREE.MeshBasicMaterial, obj: SceneObject, maskBits: Map<string, number>) {
+  const ownBit = maskBits.get(obj.id)
+  if (ownBit != null) {
+    const bit = ownBit
+    mat.colorWrite = false
+    mat.depthWrite = false
+    mat.depthTest = false
+    mat.stencilWrite = true
+    mat.stencilRef = bit
+    mat.stencilFunc = THREE.AlwaysStencilFunc
+    mat.stencilZPass = THREE.ReplaceStencilOp
+    mat.stencilFail = THREE.KeepStencilOp
+    mat.stencilZFail = THREE.KeepStencilOp
+    mat.stencilFuncMask = 0xff
+    mat.stencilWriteMask = bit
+    return
+  }
+  const settings = getFakeBehind(obj)
+  if (!settings?.enabled || settings.maskObjectIds.length === 0) return
+  let bits = 0
+  for (const maskId of settings.maskObjectIds) bits |= maskBits.get(maskId) ?? 0
+  if (bits === 0) return
+  mat.stencilWrite = true
+  mat.stencilRef = 0
+  mat.stencilFunc = THREE.EqualStencilFunc
+  mat.stencilFuncMask = bits
+  mat.stencilWriteMask = 0
+  mat.stencilZPass = THREE.KeepStencilOp
+  mat.stencilFail = THREE.KeepStencilOp
+  mat.stencilZFail = THREE.KeepStencilOp
 }
 
 function drawIsland(
@@ -249,6 +290,7 @@ function drawIsland(
   material: THREE.MeshBasicMaterial,
   islandIdx: number,
   z: number,
+  maskBits: Map<string, number>,
 ) {
   const worldTransform = getWorldTransform(obj, objects)
   const pivot = worldTransform.head
@@ -259,6 +301,9 @@ function drawIsland(
   geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
   geom.setIndex(triangulate(islandMesh))
   const mesh = new THREE.Mesh(geom, material)
+  // see `Viewport.tsx`'s `buildIslandMesh` doc — a FakeBehind mask must stencil-write before any
+  // target reads it, independent of normal zOrder
+  if (maskBits.has(obj.id)) mesh.renderOrder = -100000
   mesh.position.set(worldTransform.x, worldTransform.y, z)
   mesh.rotation.z = worldTransform.rotation
   mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
@@ -276,15 +321,16 @@ function drawAllIslands(
   microStep: number,
   textureCache: Map<string, THREE.Texture>,
   textureLoader: THREE.TextureLoader,
+  maskBits: Map<string, number>,
 ) {
   const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
-  const material = buildFillMaterial(obj, textureCache, textureLoader)
+  const material = buildFillMaterial(obj, textureCache, textureLoader, maskBits)
   const islandOrder = perIsland
     .map((_, i) => i)
     .sort((a, b) => (obj.islandZOrders?.[a] ?? a) - (obj.islandZOrders?.[b] ?? b))
   islandOrder.forEach((islandIdx, i) => {
     if (obj.islandVisible?.[islandIdx] === false) return
-    drawIsland(scene, obj, objects, perIsland, material, islandIdx, baseZ + i * microStep)
+    drawIsland(scene, obj, objects, perIsland, material, islandIdx, baseZ + i * microStep, maskBits)
   })
 }
 
@@ -297,6 +343,18 @@ function rebuildScene(
   disposeSceneContents(scene)
   scene.clear()
 
+  // see `Viewport.tsx`'s identical setup in `rebuildScene` for the full doc on this bit
+  // assignment scheme
+  const referencedMaskIds = collectFakeBehindMaskIds(objects)
+  const maskBits = new Map<string, number>()
+  let maskCount = 0
+  for (const o of objects) {
+    if (referencedMaskIds.has(o.id) && maskCount < MAX_FAKE_BEHIND_MASKS) {
+      maskBits.set(o.id, 1 << maskCount)
+      maskCount++
+    }
+  }
+
   const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
   const sorted = [...objects].filter((o) => !consumedIds.has(o.id)).sort((a, b) => a.zOrder - b.zOrder)
 
@@ -304,14 +362,14 @@ function rebuildScene(
     if (!obj.visible || obj.kind === 'empty') return
     const inserts = insertsByHost.get(obj.id) ?? []
     if (inserts.length === 0) {
-      drawAllIslands(scene, obj, objects, depthIndex, 0.001, textureCache, textureLoader)
+      drawAllIslands(scene, obj, objects, depthIndex, 0.001, textureCache, textureLoader, maskBits)
       return
     }
 
     // this host has at least one filled insert slot — islands and inserted objects must be
     // interleaved by rank so an insert sandwiched between two islands actually renders between them
     const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
-    const material = buildFillMaterial(obj, textureCache, textureLoader)
+    const material = buildFillMaterial(obj, textureCache, textureLoader, maskBits)
     type Entry =
       | { kind: 'island'; islandIdx: number; rank: number }
       | { kind: 'insert'; object: SceneObject; rank: number }
@@ -324,9 +382,9 @@ function rebuildScene(
       const z = depthIndex + i * 0.001
       if (entry.kind === 'island') {
         if (obj.islandVisible?.[entry.islandIdx] === false) return
-        drawIsland(scene, obj, objects, perIsland, material, entry.islandIdx, z)
+        drawIsland(scene, obj, objects, perIsland, material, entry.islandIdx, z, maskBits)
       } else if (entry.object.visible) {
-        drawAllIslands(scene, entry.object, objects, z, 0.0001, textureCache, textureLoader)
+        drawAllIslands(scene, entry.object, objects, z, 0.0001, textureCache, textureLoader, maskBits)
       }
     })
   })

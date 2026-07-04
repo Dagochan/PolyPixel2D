@@ -12,6 +12,7 @@ import {
   RectPrimitiveIcon,
   CirclePrimitiveIcon,
   HairPathPrimitiveIcon,
+  PathPrimitiveIcon,
 } from './icons'
 
 export default function Toolbar() {
@@ -34,6 +35,8 @@ export default function Toolbar() {
   const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
   const gridVisible = useSceneStore((s) => s.gridVisible)
   const setGridVisible = useSceneStore((s) => s.setGridVisible)
+  const wireframeVisible = useSceneStore((s) => s.wireframeVisible)
+  const setWireframeVisible = useSceneStore((s) => s.setWireframeVisible)
   const loadProject = useSceneStore((s) => s.loadProject)
   const undo = useSceneStore((s) => s.undo)
   const redo = useSceneStore((s) => s.redo)
@@ -248,6 +251,10 @@ export default function Toolbar() {
           Show grid
           <input type="checkbox" checked={gridVisible} onChange={(e) => setGridVisible(e.target.checked)} />
         </label>
+        <label className="seg-input" title="Toggle every mesh's edge wireframe overlay in the viewport">
+          Show wireframe
+          <input type="checkbox" checked={wireframeVisible} onChange={(e) => setWireframeVisible(e.target.checked)} />
+        </label>
       </div>
 
       {mode === 'object' && (
@@ -366,6 +373,16 @@ export default function Toolbar() {
               }}
             >
               ✛ Empty
+            </div>
+            <div
+              className="dropdown-item"
+              title="Add a Path: click to lay down control points, drag any of them to reposition, Enter to confirm — a bare curve (no mesh), meant to be referenced by other objects' Path Follow/Path Deform modifiers"
+              onClick={() => {
+                setActiveTool('place-path')
+                closeAddMenu()
+              }}
+            >
+              <PathPrimitiveIcon size={14} /> Path
             </div>
           </div>
         )}

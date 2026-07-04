@@ -20,6 +20,7 @@ import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
+import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
   createFakePhysicsMeshLiveState,
   fakePhysicsMeshVertexDeltas,
@@ -29,6 +30,7 @@ import {
   type FakePhysicsMeshLiveState,
 } from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
+import { boundsVertices, evaluatePathCurve, nearestSegmentInsertIndex } from '../scene/pathCurve'
 
 const HANDLE_SIZE = 8 // px
 const VERTEX_HIT_RADIUS = 8 // px
@@ -104,6 +106,8 @@ type DragMode =
   | { kind: 'move-shapekey-arc-pivot'; objectId: string; keyId: string }
   | { kind: 'move-fake-flag-direction'; objectId: string; startDirection: number; startAngle: number }
   | { kind: 'move-hairpath-cp'; index: number }
+  | { kind: 'move-path-cp'; index: number }
+  | { kind: 'move-path-point'; objectId: string; index: number }
   | { kind: 'move-pixel-frame'; startWorld: Vec2; startFrame: PixelFrame }
   | { kind: 'resize-pixel-frame'; corner: 'tl' | 'tr' | 'bl' | 'br'; startFrame: PixelFrame }
   | {
@@ -190,6 +194,10 @@ export default function Viewport() {
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
   const sceneRef = useRef<THREE.Scene>(new THREE.Scene())
+  // Rebuilt fresh every `rebuildScene` — each FakeBehind mask object's id mapped to its unique
+  // stencil-buffer bit (see `fakeBehind.ts`'s doc). Read by `applyFakeBehindStencil` for both the
+  // main per-object loop and `buildFillMaterialFor` (nested/insert objects).
+  const fakeBehindMaskBitsRef = useRef<Map<string, number>>(new Map())
   const viewRef = useRef<ViewState>({ panX: 0, panY: 0, zoom: 1 })
   const dragRef = useRef<DragMode>({ kind: 'none' })
   const loopCutHoverRef = useRef<LoopCutHover | null>(null)
@@ -207,6 +215,9 @@ export default function Viewport() {
   const hairPathRef = useRef<Vec2[]>([])
   // root width for the in-progress Hair Path — Shift+wheel adjusts this live while drawing
   const hairPathWidthRef = useRef(HAIR_PATH_DEFAULT_WIDTH)
+  // control points for the in-progress Path primitive, in world space — same click-to-place/
+  // drag-to-reposition flow as Hair Path, but no width (a Path is a bare curve, no ribbon)
+  const pathDrawRef = useRef<Vec2[]>([])
   const elementModalRef = useRef<ElementModal | null>(null)
   const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
   const placePreviewRef = useRef<Vec2 | null>(null)
@@ -275,6 +286,18 @@ export default function Viewport() {
       }
     }
     store.addHairPath(points, width, constantWidth)
+    store.setActiveTool('select')
+  }
+
+  /** Confirm the in-progress Path: needs at least 2 control points. Always a new standalone
+   *  object — unlike Hair Path there's no island-merge variant (a Path isn't fillable geometry
+   *  to begin with, so "merging into a host mesh" doesn't apply). */
+  function finalizePath() {
+    const store = useSceneStore.getState()
+    const points = pathDrawRef.current
+    pathDrawRef.current = []
+    if (points.length < 2) return
+    store.addPath(points)
     store.setActiveTool('select')
   }
 
@@ -652,7 +675,7 @@ export default function Viewport() {
 
   useEffect(() => {
     const container = containerRef.current!
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, stencil: true })
     renderer.setPixelRatio(window.devicePixelRatio)
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
@@ -749,6 +772,9 @@ export default function Viewport() {
         hairPathRef.current = []
         hairPathWidthRef.current = HAIR_PATH_DEFAULT_WIDTH
       }
+      if (activeTool === 'place-path') {
+        pathDrawRef.current = []
+      }
     }
 
     // Chrome/Edge trigger native middle-click auto-scroll directly off `mousedown`,
@@ -760,7 +786,31 @@ export default function Viewport() {
     // fires a legacy `mousedown`, so that's the event we must listen to for button 2.
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 1) e.preventDefault()
-      if (e.button === 2) cancelActiveDrag()
+      if (e.button === 2) {
+        // right-click an already-confirmed Path's control point (Edit mode only) deletes it
+        // directly — no separate "select it first" step, since a plain click gave no visual
+        // feedback of having selected anything (that's what dragging is for: the drag itself is
+        // the feedback). Only when nothing else is mid-drag, so this doesn't fight the Blender-
+        // style "right-click cancels the current drag" behavior just below.
+        if (dragRef.current.kind === 'none') {
+          const store = useSceneStore.getState()
+          const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+          if (store.mode === 'edit' && obj?.kind === 'path') {
+            const rect = containerRef.current!.getBoundingClientRect()
+            const world = screenToWorld(e.clientX, e.clientY, rect, viewRef.current)
+            const worldTransform = getWorldTransform(obj, store.objects)
+            const hitIndex = obj.mesh.vertices.findIndex((v) => {
+              const p = applyTransform(v, worldTransform)
+              return pxDistSq(world.x, world.y, p.x, p.y) < HAIR_PATH_CP_HIT_RADIUS_PX ** 2
+            })
+            if (hitIndex >= 0) {
+              store.removePathPoint(obj.id, hitIndex)
+              return
+            }
+          }
+        }
+        cancelActiveDrag()
+      }
     }
     const onAuxClick = (e: MouseEvent) => {
       if (e.button === 1) e.preventDefault()
@@ -805,6 +855,7 @@ export default function Viewport() {
       if (e.key === 'Enter') {
         if (useSceneStore.getState().activeTool === 'knife') finalizeKnife()
         if (useSceneStore.getState().activeTool === 'place-hairpath') finalizeHairPath()
+        if (useSceneStore.getState().activeTool === 'place-path') finalizePath()
         if (elementModalRef.current) confirmElementModal()
       }
       // while grabbing (G), X/Y constrains the move to that world axis; pressing the same
@@ -910,13 +961,66 @@ export default function Viewport() {
       }
     }
     const { meshOpacity } = useSceneStore.getState()
-    return new THREE.MeshBasicMaterial({
+    const material = new THREE.MeshBasicMaterial({
       color: targetObj.material.color,
       map: texture,
       side: THREE.DoubleSide,
       transparent: meshOpacity < 1 || !!texture,
       opacity: meshOpacity,
     })
+    applyFakeBehindStencil(material, targetObj, false)
+    return material
+  }
+
+  /** Configures `mat`'s stencil state for FakeBehind (see `FakeBehindSettings`'s doc). Whether
+   *  `obj` is "a mask" isn't a role flag on the object — it's derived from being referenced by
+   *  some *other* object's `maskObjectIds` (see `collectFakeBehindMaskIds`), so any object can
+   *  become a mask just by being picked in another object's Fake Behind modifier:
+   *  - a referenced object (`maskBits.has(obj.id)`) writes its unique bit into the stencil buffer
+   *    instead of drawing color (`colorWrite` stays off unless `isSelected`, for a translucent
+   *    edit guide) — every island mesh built from `mat` also gets pushed to a very-negative
+   *    `renderOrder` in `buildIslandMesh`, so it's guaranteed to draw (and stencil-write) before
+   *    any target reads it.
+   *  - a target object (enabled `fakeBehind` modifier, non-empty `maskObjectIds`) discards
+   *    fragments wherever any of its referenced masks' bits are set.
+   *  No-op (leaves `mat`'s default non-stencil state) for every other object. */
+  function applyFakeBehindStencil(mat: THREE.MeshBasicMaterial, obj: SceneObject, isSelected: boolean) {
+    const maskBits = fakeBehindMaskBitsRef.current
+    const ownBit = maskBits.get(obj.id)
+    if (ownBit != null) {
+      const bit = ownBit
+      mat.colorWrite = isSelected
+      if (isSelected) {
+        mat.color.set(0xffcc00)
+        mat.map = null
+        mat.transparent = true
+        mat.opacity = 0.35
+      }
+      mat.depthWrite = false
+      mat.depthTest = false
+      mat.stencilWrite = true
+      mat.stencilRef = bit
+      mat.stencilFunc = THREE.AlwaysStencilFunc
+      mat.stencilZPass = THREE.ReplaceStencilOp
+      mat.stencilFail = THREE.KeepStencilOp
+      mat.stencilZFail = THREE.KeepStencilOp
+      mat.stencilFuncMask = 0xff
+      mat.stencilWriteMask = bit
+      return
+    }
+    const settings = getFakeBehind(obj)
+    if (!settings?.enabled || settings.maskObjectIds.length === 0) return
+    let bits = 0
+    for (const maskId of settings.maskObjectIds) bits |= maskBits.get(maskId) ?? 0
+    if (bits === 0) return
+    mat.stencilWrite = true
+    mat.stencilRef = 0
+    mat.stencilFunc = THREE.EqualStencilFunc
+    mat.stencilFuncMask = bits
+    mat.stencilWriteMask = 0
+    mat.stencilZPass = THREE.KeepStencilOp
+    mat.stencilFail = THREE.KeepStencilOp
+    mat.stencilZFail = THREE.KeepStencilOp
   }
 
   function buildIslandMesh(
@@ -935,6 +1039,10 @@ export default function Viewport() {
     geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
     geom.setIndex(triangulate(islandMesh))
     const mesh = new THREE.Mesh(geom, material)
+    // a FakeBehind mask must stencil-write before any target reads it, regardless of normal
+    // zOrder — pushing it far ahead in THREE's renderOrder sort (independent of the depth buffer)
+    // guarantees that ordering without touching every other object's zOrder-derived Z position.
+    if (fakeBehindMaskBitsRef.current.has(targetObj.id)) mesh.renderOrder = -100000
     mesh.position.set(worldTransform.x, worldTransform.y, z)
     mesh.rotation.z = worldTransform.rotation
     mesh.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
@@ -989,6 +1097,7 @@ export default function Viewport() {
       referenceImage,
       meshOpacity,
       gridVisible,
+      wireframeVisible,
       clips,
       activeClipId,
       playheadTime,
@@ -1028,6 +1137,22 @@ export default function Viewport() {
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
 
+    // Assign each object currently referenced as a FakeBehind mask (by any other object's
+    // `maskObjectIds` — see `collectFakeBehindMaskIds`) a unique stencil-buffer bit (8-bit
+    // buffer, so at most `MAX_FAKE_BEHIND_MASKS` concurrent masks — extras beyond that are
+    // silently inert, same as a dangling `maskObjectIds` reference). Read by
+    // `applyFakeBehindStencil` below.
+    const referencedMaskIds = collectFakeBehindMaskIds(objects)
+    const maskBits = new Map<string, number>()
+    let maskCount = 0
+    for (const o of objects) {
+      if (referencedMaskIds.has(o.id) && maskCount < MAX_FAKE_BEHIND_MASKS) {
+        maskBits.set(o.id, 1 << maskCount)
+        maskCount++
+      }
+    }
+    fakeBehindMaskBitsRef.current = maskBits
+
     sorted.forEach((rawObj, depthIndex) => {
       if (!rawObj.visible) return
       const group = new THREE.Group()
@@ -1037,6 +1162,24 @@ export default function Viewport() {
 
       if (rawObj.kind === 'empty') {
         addEmptyGizmo(group, worldTransform, isSelected)
+        scene.add(group)
+        return
+      }
+
+      if (rawObj.kind === 'path') {
+        const worldPoints = rawObj.mesh.vertices.map((v) => applyTransform(v, worldTransform))
+        addPathCurveLine(group, evaluatePathCurve(worldPoints), 0.5, isSelected)
+        if (isSelected) {
+          const pxToWorld = 1 / viewRef.current.zoom
+          worldPoints.forEach((p) => {
+            const dot = new THREE.Mesh(
+              new THREE.CircleGeometry(3 * pxToWorld, 12),
+              new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }),
+            )
+            dot.position.set(p.x, p.y, 0.51)
+            group.add(dot)
+          })
+        }
         scene.add(group)
         return
       }
@@ -1094,6 +1237,7 @@ export default function Viewport() {
         transparent: meshOpacity < 1 || !!texture,
         opacity: meshOpacity,
       })
+      applyFakeBehindStencil(mat, obj, isSelected)
 
       // a hidden island (per-island eye toggle in the Properties panel) draws nothing at all —
       // fill, wireframe, and edit-mode overlays alike — so collect its vertex/face indices once
@@ -1179,22 +1323,24 @@ export default function Viewport() {
         })
       }
 
-      const wireMesh = obj.mesh
-      const edgePositions: number[] = []
-      for (const [a, b] of getEdges(wireMesh)) {
-        if (hiddenVertices.has(a) || lockedVertices.has(a)) continue // an edge's endpoints are always in the same island
-        const va = wireMesh.vertices[a]
-        const vb = wireMesh.vertices[b]
-        edgePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
+      if (wireframeVisible) {
+        const wireMesh = obj.mesh
+        const edgePositions: number[] = []
+        for (const [a, b] of getEdges(wireMesh)) {
+          if (hiddenVertices.has(a) || lockedVertices.has(a)) continue // an edge's endpoints are always in the same island
+          const va = wireMesh.vertices[a]
+          const vb = wireMesh.vertices[b]
+          edgePositions.push(va.x - pivot.x, va.y - pivot.y, 0, vb.x - pivot.x, vb.y - pivot.y, 0)
+        }
+        const edgeGeom = new THREE.BufferGeometry()
+        edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
+        const edgeMat = new THREE.LineBasicMaterial({ color: isSelected ? 0xffffff : 0x000000, opacity: 0.6, transparent: true })
+        const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
+        edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (perIsland.length - 1) * 0.001)
+        edgeLines.rotation.z = worldTransform.rotation
+        edgeLines.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
+        group.add(edgeLines)
       }
-      const edgeGeom = new THREE.BufferGeometry()
-      edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
-      const edgeMat = new THREE.LineBasicMaterial({ color: isSelected ? 0xffffff : 0x000000, opacity: 0.6, transparent: true })
-      const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
-      edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (perIsland.length - 1) * 0.001)
-      edgeLines.rotation.z = worldTransform.rotation
-      edgeLines.scale.set(worldTransform.scaleX, worldTransform.scaleY, 1)
-      group.add(edgeLines)
 
       // edit-mode overlays
       if (mode === 'edit' && isSelected) {
@@ -1383,6 +1529,13 @@ export default function Viewport() {
     if (activeTool === 'place-hairpath') {
       addHairPathPreview(scene, hairPathRef.current)
     }
+
+    // path preview: same dots-at-control-points idea, plus the live Centripetal Catmull-Rom
+    // curve itself (solid, not dashed — a Path's real, persisted rendering also uses a solid
+    // line, so the preview matches what confirming it will actually look like)
+    if (activeTool === 'place-path') {
+      addPathDrawPreview(scene, pathDrawRef.current)
+    }
   }
 
   function addHairPathPreview(scene: THREE.Scene, points: Vec2[]) {
@@ -1415,6 +1568,83 @@ export default function Viewport() {
     const outline = new THREE.LineSegments(geom, mat)
     outline.computeLineDistances()
     scene.add(outline)
+  }
+
+  function addPathDrawPreview(scene: THREE.Scene, points: Vec2[]) {
+    const pxToWorld = 1 / viewRef.current.zoom
+    points.forEach((p) => {
+      const dot = new THREE.Mesh(
+        new THREE.CircleGeometry(3 * pxToWorld, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }),
+      )
+      dot.position.set(p.x, p.y, 0.71)
+      scene.add(dot)
+    })
+    if (points.length < 2) return
+    addPathCurveLine(scene, evaluatePathCurve(points), 0.7, false)
+  }
+
+  /** Shared curve-line builder for both the in-progress draw preview and a confirmed Path
+   *  object's persisted rendering — just a plain `LineSegments` through consecutive samples
+   *  (`evaluatePathCurve`'s dense polyline approximation), no fill (a Path has no `mesh.faces`). */
+  function addPathCurveLine(target: THREE.Scene | THREE.Group, samples: Vec2[], z: number, isSelected: boolean) {
+    const positions: number[] = []
+    for (let i = 0; i < samples.length - 1; i++) {
+      const a = samples[i]
+      const b = samples[i + 1]
+      positions.push(a.x, a.y, z, b.x, b.y, z)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    const color = isSelected ? 0xffaa33 : 0xdda85a
+    const opacity = isSelected ? 1 : 0.8
+    // dashed rather than solid — a Path is a reference curve for other objects' modifiers to
+    // follow, not visible rendered content of its own (same "this is a guide, not the art" cue
+    // as the Hair Path draw preview's dashed outline)
+    const pxToWorld = 1 / viewRef.current.zoom
+    const mat = new THREE.LineDashedMaterial({
+      color,
+      depthTest: false,
+      transparent: true,
+      opacity,
+      dashSize: 6 * pxToWorld,
+      gapSize: 4 * pxToWorld,
+    })
+    const line = new THREE.LineSegments(geom, mat)
+    line.computeLineDistances()
+    target.add(line)
+
+    // arrowhead at the end point (last control point, i.e. `mesh.vertices[length - 1]`) — the
+    // only visual cue for a Path's otherwise-invisible start/end direction, which will matter
+    // once Path Follow/Path Deform read it as a 0..1 progression from start to end
+    if (samples.length >= 2) {
+      const tip = samples[samples.length - 1]
+      const prev = samples[samples.length - 2]
+      const dx = tip.x - prev.x
+      const dy = tip.y - prev.y
+      const len = Math.hypot(dx, dy)
+      if (len > 0) {
+        const dir = { x: dx / len, y: dy / len }
+        const perp = { x: -dir.y, y: dir.x }
+        const pxToWorld = 1 / viewRef.current.zoom
+        const headLen = 10 * pxToWorld
+        const headWidth = 5 * pxToWorld
+        const base = { x: tip.x - dir.x * headLen, y: tip.y - dir.y * headLen }
+        const headGeom = new THREE.BufferGeometry()
+        headGeom.setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(
+            [
+              tip.x, tip.y, z,
+              base.x + perp.x * headWidth, base.y + perp.y * headWidth, z,
+              base.x - perp.x * headWidth, base.y - perp.y * headWidth, z,
+            ],
+            3,
+          ),
+        )
+        target.add(new THREE.Mesh(headGeom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity })))
+      }
+    }
   }
 
   function addPlacePreview(scene: THREE.Scene, obj: SceneObject, pending: PendingPrimitive, at: Vec2) {
@@ -1718,10 +1948,12 @@ export default function Viewport() {
   function getGizmoGeom(obj: SceneObject) {
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     // an Empty has no vertices, so getBounds would return +/-Infinity — fall back to a small
-    // fixed box around its head so the gizmo still renders at a sane, finite size
+    // fixed box around its head so the gizmo still renders at a sane, finite size. A Path uses
+    // its evaluated curve samples rather than raw control points — see `boundsVertices`'s doc.
+    const boundVerts = boundsVertices(obj)
     const lb =
-      obj.mesh.vertices.length > 0
-        ? getBounds(obj.mesh)
+      boundVerts.length > 0
+        ? getBounds({ vertices: boundVerts, faces: [] })
         : { minX: -EMPTY_GIZMO_SIZE, maxX: EMPTY_GIZMO_SIZE, minY: -EMPTY_GIZMO_SIZE, maxY: EMPTY_GIZMO_SIZE }
     const center = { x: worldTransform.x, y: worldTransform.y }
     const pxToWorld = 1 / viewRef.current.zoom
@@ -2545,6 +2777,19 @@ export default function Viewport() {
       return
     }
 
+    // Path: identical click-to-add/click-to-drag flow as Hair Path above, just without a width
+    if (useSceneStore.getState().activeTool === 'place-path') {
+      const world = getWorldPos(e)
+      const path = pathDrawRef.current
+      const hitIndex = path.findIndex((p) => pxDistSq(world.x, world.y, p.x, p.y) < HAIR_PATH_CP_HIT_RADIUS_PX ** 2)
+      if (hitIndex >= 0) {
+        dragRef.current = { kind: 'move-path-cp', index: hitIndex }
+      } else {
+        pathDrawRef.current = [...path, world]
+      }
+      return
+    }
+
     const store0 = useSceneStore.getState()
     if (store0.mode === 'edit' && store0.activeTool === 'knife') {
       const hover = knifeHoverRef.current
@@ -2625,6 +2870,30 @@ export default function Viewport() {
       }
     }
 
+    // an already-confirmed Path's control points, in Edit mode: click-drag an existing one to
+    // reposition it (right-click one instead to delete it — see `onMouseDown`'s doc below); click
+    // the curve line itself to insert a new point there; both checked before the generic
+    // edit-mode vertex/edge/face hit-tests below, since a Path has no faces for those to find
+    // anything in.
+    if (mode === 'edit' && rawSelectedObj?.kind === 'path') {
+      const worldTransform = getWorldTransform(rawSelectedObj, objects)
+      const worldPoints = rawSelectedObj.mesh.vertices.map((v) => applyTransform(v, worldTransform))
+      const hitIndex = worldPoints.findIndex((p) => pxDistSq(world.x, world.y, p.x, p.y) < HAIR_PATH_CP_HIT_RADIUS_PX ** 2)
+      if (hitIndex >= 0) {
+        useSceneStore.getState().beginChange()
+        dragRef.current = { kind: 'move-path-point', objectId: rawSelectedObj.id, index: hitIndex }
+        return
+      }
+      const samples = evaluatePathCurve(worldPoints)
+      for (let i = 0; i < samples.length - 1; i++) {
+        if (pxDistToSegment(world.x, world.y, samples[i].x, samples[i].y, samples[i + 1].x, samples[i + 1].y) < GIZMO_HIT_TOLERANCE) {
+          const insertIndex = nearestSegmentInsertIndex(worldPoints, world)
+          useSceneStore.getState().insertPathPoint(rawSelectedObj.id, insertIndex, inverseTransform(world, worldTransform))
+          return
+        }
+      }
+    }
+
     // Fake Flag's direction-handle ring (drawn in rebuildScene) — draggable in any mode whenever
     // it's shown, so it takes priority right after the (edit-mode-only) Arc pivot check above.
     // Grabbable anywhere on the ring's circumference, Blender-rotate-gizmo style, not just at the
@@ -2648,8 +2917,10 @@ export default function Viewport() {
     }
 
     // pivot mode: head/tail dots are the only draggable handles here (no move/rotate/scale gizmo
-    // is rendered in this mode, so there's nothing else to hit-test against)
-    if (mode === 'pivot' && selectedObj) {
+    // is rendered in this mode, so there's nothing else to hit-test against). Not for a Path,
+    // though — its head/tail are permanently locked to its start/end control point (see
+    // `pathHeadTail`'s doc), so there's nothing here to drag independently.
+    if (mode === 'pivot' && selectedObj && selectedObj.kind !== 'path') {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
       const { center } = getGizmoGeom(selectedObj)
 
@@ -2902,6 +3173,18 @@ export default function Viewport() {
         if (dx * dx + dy * dy <= hitRadius * hitRadius) return obj.id
         continue
       }
+      if (obj.kind === 'path') {
+        // has no fillable faces to point-in-polygon test — hit-test distance to the curve line
+        // itself instead (in screen pixels, so the tolerance stays constant regardless of zoom)
+        const worldPoints = obj.mesh.vertices.map((v) => applyTransform(v, worldTransform))
+        const samples = evaluatePathCurve(worldPoints)
+        for (let i = 0; i < samples.length - 1; i++) {
+          if (pxDistToSegment(world.x, world.y, samples[i].x, samples[i].y, samples[i + 1].x, samples[i + 1].y) < GIZMO_HIT_TOLERANCE) {
+            return obj.id
+          }
+        }
+        continue
+      }
       const local = inverseTransform(world, worldTransform)
       if (pointInPolygonFaces(local, obj)) return obj.id
     }
@@ -3113,6 +3396,21 @@ export default function Viewport() {
 
     if (drag.kind === 'move-hairpath-cp') {
       hairPathRef.current = hairPathRef.current.map((p, i) => (i === drag.index ? world : p))
+      return
+    }
+
+    if (drag.kind === 'move-path-cp') {
+      pathDrawRef.current = pathDrawRef.current.map((p, i) => (i === drag.index ? world : p))
+      return
+    }
+
+    if (drag.kind === 'move-path-point') {
+      const store = useSceneStore.getState()
+      const obj = store.objects.find((o) => o.id === drag.objectId)
+      if (obj) {
+        const worldTransform = getWorldTransform(obj, store.objects)
+        store.setPathPointPosition(drag.objectId, drag.index, inverseTransform(world, worldTransform))
+      }
       return
     }
 

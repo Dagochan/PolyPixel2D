@@ -174,6 +174,17 @@ export function HairPathPrimitiveIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function PathPrimitiveIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3,19 C3,19 7,19 9,13 C11,7 13,5 15,5 C17,5 17,9 21,9" strokeWidth="1.5" />
+      <circle cx="3" cy="19" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="9" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="21" cy="9" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
 export function RingCutIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor">

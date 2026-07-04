@@ -3,7 +3,16 @@ import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
-import type { AppMode, FakeFlagSettings, FakePhysicsMeshSettings, FakePhysicsSettings, InsertSlot, Modifier, SceneObject } from '../scene/types'
+import type {
+  AppMode,
+  FakeBehindSettings,
+  FakeFlagSettings,
+  FakePhysicsMeshSettings,
+  FakePhysicsSettings,
+  InsertSlot,
+  Modifier,
+  SceneObject,
+} from '../scene/types'
 import UvEditor from './UvEditor'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
@@ -882,10 +891,115 @@ function FakePhysicsMeshModifierBox({
   )
 }
 
+/** Label shown in the "+ Add Modifier" dropdown. `fakePhysics`/`fakePhysicsMesh` deliberately
+ *  share the same "Fake Physics" label — `ModifiersSection` only ever offers one or the other in
+ *  a given `AppMode` (never both at once), so there's no ambiguity, and the shared label reads as
+ *  "one feature" rather than two competing ones. Each modifier box's own header title (a separate
+ *  hardcoded string, not this map) still distinguishes them once added, for the rare case an
+ *  object ends up with both (added in different mode visits). */
 const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakeFlag: 'Fake Flag',
   fakePhysics: 'Fake Physics',
-  fakePhysicsMesh: 'Fake Physics (Mesh)',
+  fakePhysicsMesh: 'Fake Physics',
+  fakeBehind: 'Fake Behind',
+}
+
+/** One modifier's settings UI for FakeBehind. Rather than checkbox-listing every object in the
+ *  scene (unusable once a scene has more than a handful of objects), masks are added by dragging
+ *  a row from the Outliner onto the drop target here — it's already draggable with the object's
+ *  id in `dataTransfer` (see `Outliner.tsx`'s row `onDragStart`), so this just reuses that same
+ *  payload. A "+ Add mask" dropdown covers the same action for when dragging isn't convenient.
+ *  Any object can become a mask this way (no separate "mark as mask" step) — see
+ *  `collectFakeBehindMaskIds`'s doc. No live/baked state to show (unlike Fake Physics): it's a
+ *  pure screen-space overlap test evaluated fresh every frame — see `FakeBehindSettings`'s doc. */
+function FakeBehindModifierBox({
+  obj,
+  objects,
+  settings,
+  removeModifier,
+  toggleFakeBehindEnabled,
+  addFakeBehindMaskRef,
+  removeFakeBehindMaskRef,
+}: {
+  obj: SceneObject
+  objects: SceneObject[]
+  settings: FakeBehindSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  toggleFakeBehindEnabled: (id: string) => void
+  addFakeBehindMaskRef: (id: string, maskId: string) => void
+  removeFakeBehindMaskRef: (id: string, maskId: string) => void
+}) {
+  const [dragOver, setDragOver] = useState(false)
+  // `m` is `undefined` for a dangling reference (mask object deleted) — still shown, removable,
+  // same tolerant-reference convention as elsewhere (see `FakeBehindSettings.maskObjectIds` doc)
+  const maskRows = settings.maskObjectIds.map((id) => ({ id, obj: objects.find((o) => o.id === id) }))
+  const availableToAdd = objects.filter((o) => o.id !== obj.id && !settings.maskObjectIds.includes(o.id))
+
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its mask list)' : 'Enable'}
+          onClick={() => toggleFakeBehindEnabled(obj.id)}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Fake Behind</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'fakeBehind')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row prop-static">
+            <span>Hidden where it overlaps the masks below, on screen</span>
+          </div>
+          {maskRows.map(({ id, obj: m }) => (
+            <div className="prop-row fake-behind-mask-row" key={id}>
+              <span className={'fake-behind-mask-row-name' + (m ? '' : ' missing')}>{m?.name ?? '(deleted object)'}</span>
+              <button className="icon-btn" title="Remove this mask" onClick={() => removeFakeBehindMaskRef(obj.id, id)}>
+                <TrashIcon size={14} />
+              </button>
+            </div>
+          ))}
+          <div
+            className={'fake-behind-drop-target' + (dragOver ? ' drag-over' : '')}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOver(false)
+              const draggedId = e.dataTransfer.getData('text/plain')
+              if (draggedId) addFakeBehindMaskRef(obj.id, draggedId)
+            }}
+          >
+            Drag an object here from the Outliner to add it as a mask
+          </div>
+          {availableToAdd.length > 0 && (
+            <div className="prop-row">
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) addFakeBehindMaskRef(obj.id, e.target.value)
+                }}
+              >
+                <option value="">+ Add mask...</option>
+                {availableToAdd.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 /** Blender-style "add only what you use" modifier stack — replaces what used to be a permanently
@@ -896,6 +1010,7 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
  */
 function ModifiersSection(props: {
   obj: SceneObject
+  objects: SceneObject[]
   mode: AppMode
   hasVertexSelection: boolean
   hasActiveClip: boolean
@@ -922,11 +1037,25 @@ function ModifiersSection(props: {
   fakePhysicsMeshBakedObjectIds: Set<string>
   previewFakePhysicsMesh: boolean
   togglePreviewFakePhysicsMesh: () => void
+  toggleFakeBehindEnabled: (id: string) => void
+  addFakeBehindMaskRef: (id: string, maskId: string) => void
+  removeFakeBehindMaskRef: (id: string, maskId: string) => void
 }) {
-  const { obj, addModifier } = props
+  const { obj, objects, mode, addModifier } = props
   const modifiers = obj.modifiers ?? []
   const addedTypes = new Set(modifiers.map((m) => m.type))
-  const availableTypes = (Object.keys(MODIFIER_LABELS) as Modifier['type'][]).filter((t) => !addedTypes.has(t))
+  // Fake Physics' object-chain and mesh-section versions are two different mechanisms sharing one
+  // "Fake Physics" label (see `MODIFIER_LABELS`'s doc) — offering both at once, regardless of
+  // mode, would read as duplicate/confusing candidates for what's meant to be one feature. Instead
+  // only the version relevant to the current mode is offered: `fakePhysicsMesh` needs an Edit Mode
+  // vertex selection to mean anything (and a mesh to select from), `fakePhysics` is about the
+  // object-hierarchy chain, which is edited in Object/Pivot mode.
+  const availableTypes = (Object.keys(MODIFIER_LABELS) as Modifier['type'][]).filter((t) => {
+    if (addedTypes.has(t)) return false
+    if (t === 'fakePhysicsMesh') return mode === 'edit' && obj.kind !== 'empty'
+    if (t === 'fakePhysics') return mode !== 'edit'
+    return true
+  })
   const [addMenuOpen, setAddMenuOpen] = useState(false)
 
   return (
@@ -942,6 +1071,9 @@ function ModifiersSection(props: {
               isBaked={props.fakePhysicsMeshBakedObjectIds.has(obj.id)}
             />
           )
+        }
+        if (m.type === 'fakeBehind') {
+          return <FakeBehindModifierBox key={m.type} {...props} settings={m.settings} />
         }
         return (
           <FakePhysicsModifierBox
@@ -1029,6 +1161,9 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const previewFakePhysicsMesh = useSceneStore((s) => s.previewFakePhysicsMesh)
   const togglePreviewFakePhysicsMesh = useSceneStore((s) => s.togglePreviewFakePhysicsMesh)
   const setFakePhysicsMeshSectionStiffnessLive = useSceneStore((s) => s.setFakePhysicsMeshSectionStiffnessLive)
+  const toggleFakeBehindEnabled = useSceneStore((s) => s.toggleFakeBehindEnabled)
+  const addFakeBehindMaskRef = useSceneStore((s) => s.addFakeBehindMaskRef)
+  const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
   const beginChange = useSceneStore((s) => s.beginChange)
   const hasVertexSelection = useSceneStore(
     (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
@@ -1175,26 +1310,44 @@ export default function Properties({ style }: { style?: CSSProperties }) {
           </Section>
 
           <Section title="Head (local coordinates)">
+            {obj.kind === 'path' && (
+              <div className="prop-row prop-static">
+                <span>Locked to this Path's start (Head) and end (Tail) control point</span>
+              </div>
+            )}
             <div className="prop-row">
               <NumberField
                 label="Head X"
                 value={obj.transform.head.x}
+                disabled={obj.kind === 'path'}
                 onChange={(v) => setHead(obj.id, { x: v, y: obj.transform.head.y })}
               />
               <NumberField
                 label="Head Y"
                 value={obj.transform.head.y}
+                disabled={obj.kind === 'path'}
                 onChange={(v) => setHead(obj.id, { x: obj.transform.head.x, y: v })}
               />
             </div>
             <div className="prop-row">
-              <NumberField label="Tail X" value={obj.tail.x} onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })} />
-              <NumberField label="Tail Y" value={obj.tail.y} onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })} />
+              <NumberField
+                label="Tail X"
+                value={obj.tail.x}
+                disabled={obj.kind === 'path'}
+                onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })}
+              />
+              <NumberField
+                label="Tail Y"
+                value={obj.tail.y}
+                disabled={obj.kind === 'path'}
+                onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })}
+              />
             </div>
           </Section>
 
           <ModifiersSection
             obj={obj}
+            objects={objects}
             mode={mode}
             hasVertexSelection={hasVertexSelection}
             hasActiveClip={hasActiveClip}
@@ -1221,6 +1374,9 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             fakePhysicsMeshBakedObjectIds={fakePhysicsMeshBakedObjectIds}
             previewFakePhysicsMesh={previewFakePhysicsMesh}
             togglePreviewFakePhysicsMesh={togglePreviewFakePhysicsMesh}
+            toggleFakeBehindEnabled={toggleFakeBehindEnabled}
+            addFakeBehindMaskRef={addFakeBehindMaskRef}
+            removeFakeBehindMaskRef={removeFakeBehindMaskRef}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (
@@ -1267,6 +1423,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
           {obj.kind === 'empty' ? (
             <div className="prop-row prop-static">
               <span>Empty (no mesh, a dummy object for hierarchy)</span>
+            </div>
+          ) : obj.kind === 'path' ? (
+            <div className="prop-row prop-static">
+              <span>Path ({obj.mesh.vertices.length} control points) — no mesh, meant to be referenced by other objects' Path Follow/Path Deform modifiers</span>
             </div>
           ) : (
             <>

@@ -184,6 +184,23 @@ export interface FakePhysicsMeshSettings {
   sectionVertices: [number[], number[], number[], number[], number[]]
 }
 
+/** Screen-space occlusion fake, independent of actual Z-order (see project spec) — e.g. a rope
+ *  that's always drawn in front of a tree trunk it should appear to wind behind. Rather than
+ *  reordering draw order (which would hide the *whole* rope, not just the wrapped segment), this
+ *  references one or more mask objects (any `SceneObject`, no separate "is a mask" flag — see
+ *  `maskObjectIds`): wherever this object's fragments overlap one of those masks on screen,
+ *  they're discarded (via the stencil buffer — see `Viewport.tsx`), regardless of which one is
+ *  actually drawn on top. Not baked/simulated — a pure function of the current frame's
+ *  screen-space overlap, so it stays correct as objects animate. */
+export interface FakeBehindSettings {
+  enabled: boolean
+  /** Ids of any `SceneObject`s that cut this object away where they overlap it on screen — being
+   *  referenced here is what makes an object "a mask" (see `collectFakeBehindMaskIds`), not a
+   *  role flag stored on the mask itself. A dangling id (mask deleted) simply contributes nothing
+   *  — same tolerant-reference convention as `parentId`/`InsertSlot.targetSlotName`. */
+  maskObjectIds: string[]
+}
+
 /** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
  *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
  *  app ever grows (Fake Flag/Fake Physics today, FakeBehind later). At most one modifier per
@@ -193,6 +210,7 @@ export type Modifier =
   | { type: 'fakeFlag'; settings: FakeFlagSettings }
   | { type: 'fakePhysics'; settings: FakePhysicsSettings }
   | { type: 'fakePhysicsMesh'; settings: FakePhysicsMeshSettings }
+  | { type: 'fakeBehind'; settings: FakeBehindSettings }
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
@@ -215,8 +233,13 @@ export interface SceneObject {
    *  object. 'empty' is a mesh-less hierarchy-only dummy (e.g. a rig root) — it still has the
    *  same `transform`/`tail`/`mesh` fields (mesh always `{vertices: [], faces: []}`) so every
    *  existing transform/hierarchy/Head-Tail code path keeps working unchanged; only edit mode and
-   *  mesh/material/UV-dependent UI are gated off by this flag. */
-  kind?: 'mesh' | 'empty'
+   *  mesh/material/UV-dependent UI are gated off by this flag. 'path' is a curve — like 'empty'
+   *  it has no fillable geometry (`mesh.faces` stays empty), but reuses `mesh.vertices` to store
+   *  its ordered control points (local space) rather than leaving it empty, since a path's whole
+   *  purpose is holding that point list — see `scene/pathCurve.ts` for how they're evaluated into
+   *  a smooth curve (Centripetal Catmull-Rom — see project spec). Meant to be referenced by other
+   *  objects' Path Follow/Path Deform modifiers (not yet implemented). */
+  kind?: 'mesh' | 'empty' | 'path'
   mesh: Mesh
   transform: Transform
   zOrder: number

@@ -4,6 +4,7 @@ import type {
   AppMode,
   EasingType,
   EditElementType,
+  FakeBehindSettings,
   FakeFlagSettings,
   FakePhysicsMeshSettings,
   FakePhysicsMeshTrack,
@@ -22,6 +23,8 @@ import type {
   Vec2,
 } from './types'
 import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
+import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
+import { boundsVertices, pathHeadTail } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -43,7 +46,7 @@ import { findIslands, type Island } from './uv'
 import { remapObjectVertexData } from './remapVertexData'
 import { getWorldTransform, worldBounds } from './transformUtils'
 
-export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath'
+export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath' | 'place-path'
 
 export type { ReferenceImage }
 
@@ -140,6 +143,11 @@ interface SceneState {
   /** Whether the background grid (major + sub-grid lines) is drawn in the viewport. Purely
    *  visual — independent of `gridSnapEnabled`, which keeps working even while the grid is hidden. */
   gridVisible: boolean
+  /** Whether every mesh's edge wireframe overlay is drawn in the viewport (Object mode included —
+   *  it's not just an Edit Mode thing). Purely visual, e.g. for judging a FakeBehind cutout's
+   *  actual silhouette without the edge lines cluttering the read. Edit Mode's other selection
+   *  overlays (vertex/edge/face handles) are untouched by this — only the plain edge wireframe. */
+  wireframeVisible: boolean
   /** Whether the pixel preview panel (low-res, nearest-neighbor render simulating the final
    *  dot-art output) is shown. */
   pixelPreviewEnabled: boolean
@@ -182,6 +190,21 @@ interface SceneState {
   addImportedMesh: (mesh: Mesh, name: string) => void
   /** Adds a mesh-less hierarchy-only dummy object (e.g. a rig root), positioned at the origin. */
   addEmpty: () => void
+  /** Adds a new `kind: 'path'` object — `points` (world space, since the new object's transform
+   *  is identity, same convention as `addHairPath`) become its `mesh.vertices` (ordered control
+   *  points, `mesh.faces` stays empty — see `SceneObject.kind`'s doc). No-op if fewer than 2
+   *  points (a single point can't define a curve). */
+  addPath: (points: Vec2[]) => void
+  /** Live-write one control point's local-space position on an already-confirmed `kind: 'path'`
+   *  object — called every pointermove while dragging it in Edit mode; the caller does its own
+   *  single `beginChange()` at drag start, matching `setFakeFlagDirection`'s pattern. */
+  setPathPointPosition: (id: string, index: number, localPosition: Vec2) => void
+  /** Insert a new control point at `index` (so it lands between the previous `index - 1` and
+   *  `index`) on a `kind: 'path'` object. */
+  insertPathPoint: (id: string, index: number, localPosition: Vec2) => void
+  /** Remove control point `index` from a `kind: 'path'` object — no-op if that would leave fewer
+   *  than 2 points (a path needs at least 2 to mean anything). */
+  removePathPoint: (id: string, index: number) => void
   /** Merge a rect/circle into the given object's mesh as a new disconnected island, instead of
    *  creating a separate object — used when adding a primitive while already in edit mode. */
   addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
@@ -196,6 +219,7 @@ interface SceneState {
   setGridSubdivisions: (n: number) => void
   setGridSnapEnabled: (enabled: boolean) => void
   setGridVisible: (visible: boolean) => void
+  setWireframeVisible: (visible: boolean) => void
   setPixelPreviewEnabled: (enabled: boolean) => void
   setPixelPreviewResolution: (n: number) => void
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
@@ -434,6 +458,16 @@ interface SceneState {
    *  on an already-good bake (re-baking the same settings just reproduces the same result). A
    *  no-op if there's no active clip. */
   bakeAllFakePhysics: () => void
+  /** Quick on/off for an already-added FakeBehind modifier, without removing it (its
+   *  `maskObjectIds` survive being disabled). */
+  toggleFakeBehindEnabled: (id: string) => void
+  /** Add `maskId` to this object's FakeBehind `maskObjectIds` (no-op if already present or if
+   *  `maskId === id`) — adds the modifier (enabled, with just this mask) if it isn't already in
+   *  the stack. Used by both the drag-and-drop-from-Outliner drop target and the "+ Add mask"
+   *  dropdown fallback. */
+  addFakeBehindMaskRef: (id: string, maskId: string) => void
+  /** Remove `maskId` from this object's FakeBehind `maskObjectIds` (no-op if absent). */
+  removeFakeBehindMaskRef: (id: string, maskId: string) => void
   /** Move the scrub position and apply the active clip's evaluated pose to every object it
    *  animates (objects with no track in the active clip are left untouched). This is pose
    *  *evaluation*, not a user edit — it doesn't push undo history. */
@@ -529,6 +563,16 @@ function withFakePhysicsMeshSettings(
   return { ...o, modifiers }
 }
 
+/** Same idea as `withFakeFlagSettings`, for the `fakeBehind` modifier. */
+function withFakeBehindSettings(o: SceneObject, updater: (settings: FakeBehindSettings) => FakeBehindSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'fakeBehind')
+  const settings = updater(existing?.settings ?? DEFAULT_FAKE_BEHIND_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'fakeBehind' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'fakeBehind' as const, settings }]
+  return { ...o, modifiers }
+}
+
 /** Runs `simulateFakePhysicsChain` rooted at `rootObjectId` and turns the result into
  *  `ObjectAnimationTrack`s ready to merge into a clip's `fakePhysicsTracks` — the shared core
  *  behind `bakeFakePhysics` (one root) and `bakeAllFakePhysics` (every root candidate in the
@@ -607,6 +651,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   gridSubdivisions: 10,
   gridSnapEnabled: false,
   gridVisible: true,
+  wireframeVisible: true,
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
@@ -755,6 +800,61 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
   },
 
+  addPath: (points) => {
+    if (points.length < 2) return
+    get().beginChange()
+    const objects = get().objects
+    const vertices = points.map((p) => ({ ...p }))
+    const { head, tail } = pathHeadTail(vertices)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Path_${objects.length + 1}`,
+      kind: 'path',
+      mesh: { vertices, faces: [] },
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      tail,
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  setPathPointPosition: (id, index, localPosition) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const vertices = o.mesh.vertices.map((v, i) => (i === index ? localPosition : v))
+        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+      }),
+    })),
+
+  insertPathPoint: (id, index, localPosition) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const vertices = [...o.mesh.vertices.slice(0, index), localPosition, ...o.mesh.vertices.slice(index)]
+        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+      }),
+    }))
+  },
+
+  removePathPoint: (id, index) => {
+    const obj = get().objects.find((o) => o.id === id)
+    if (!obj || obj.mesh.vertices.length <= 2) return
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const vertices = o.mesh.vertices.filter((_, i) => i !== index)
+        return { ...o, mesh: { ...o.mesh, vertices }, transform: { ...o.transform, head: pathHeadTail(vertices).head }, tail: pathHeadTail(vertices).tail }
+      }),
+    }))
+  },
+
   addRectIsland: (objectId, at, width, height, segX, segY) => {
     const obj = get().objects.find((o) => o.id === objectId)
     if (!obj) return
@@ -795,6 +895,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setGridSubdivisions: (n) => set({ gridSubdivisions: Math.max(1, Math.min(100, Math.round(n))) }),
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
   setGridVisible: (visible) => set({ gridVisible: visible }),
+  setWireframeVisible: (visible) => set({ wireframeVisible: visible }),
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
   setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(1024, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
@@ -808,7 +909,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       for (const obj of s.objects) {
         if (!obj.visible || obj.kind === 'empty' || obj.mesh.vertices.length === 0) continue
         const t = getWorldTransform(obj, s.objects)
-        const b = worldBounds(obj.mesh.vertices, t)
+        const b = worldBounds(boundsVertices(obj), t)
         if (b.minX < minX) minX = b.minX
         if (b.minY < minY) minY = b.minY
         if (b.maxX > maxX) maxX = b.maxX
@@ -1842,10 +1943,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
             ? { type: 'fakeFlag', settings: { ...DEFAULT_FAKE_FLAG_SETTINGS } }
             : type === 'fakePhysics'
               ? { type: 'fakePhysics', settings: { ...DEFAULT_FAKE_PHYSICS_SETTINGS } }
-              : {
-                  type: 'fakePhysicsMesh',
-                  settings: { ...DEFAULT_FAKE_PHYSICS_MESH_SETTINGS, sectionVertices: [[], [], [], [], []] },
-                }
+              : type === 'fakePhysicsMesh'
+                ? {
+                    type: 'fakePhysicsMesh',
+                    settings: { ...DEFAULT_FAKE_PHYSICS_MESH_SETTINGS, sectionVertices: [[], [], [], [], []] },
+                  }
+                : { type: 'fakeBehind', settings: { ...DEFAULT_FAKE_BEHIND_SETTINGS, maskObjectIds: [] } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -2135,6 +2238,40 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                 ...meshTracks,
               ],
             },
+      ),
+    }))
+  },
+
+  toggleFakeBehindEnabled: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id ? withFakeBehindSettings(o, (fs) => ({ ...fs, enabled: !fs.enabled })) : o,
+      ),
+    }))
+  },
+
+  addFakeBehindMaskRef: (id, maskId) => {
+    if (id === maskId) return // an object can't mask itself
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? withFakeBehindSettings(o, (fs) =>
+              fs.maskObjectIds.includes(maskId) ? fs : { ...fs, maskObjectIds: [...fs.maskObjectIds, maskId] },
+            )
+          : o,
+      ),
+    }))
+  },
+
+  removeFakeBehindMaskRef: (id, maskId) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === id
+          ? withFakeBehindSettings(o, (fs) => ({ ...fs, maskObjectIds: fs.maskObjectIds.filter((m) => m !== maskId) }))
+          : o,
       ),
     }))
   },

@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
 import { getFakePhysics } from '../scene/fakePhysics'
+import { collectFakeBehindMaskIds } from '../scene/fakeBehind'
 import { VisibleTrueIcon, VisibleFalseIcon, TrashIcon } from './icons'
 
 /** Where a drag-over point falls within a row: near the top/bottom edge reorders this object as
@@ -27,6 +28,10 @@ export default function Outliner() {
   const reorder = useSceneStore((s) => s.reorder)
   const [dragOver, setDragOver] = useState<{ id: string; zone: DropZone } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // objects currently referenced by some other object's Fake Behind `maskObjectIds` — being a
+  // mask is derived from that reference, not a role flag stored on the object itself (see
+  // `collectFakeBehindMaskIds`'s doc), so this is recomputed whenever the scene changes
+  const fakeBehindMaskIds = useMemo(() => collectFakeBehindMaskIds(objects), [objects])
 
   const toggleCollapsed = (id: string) => {
     setCollapsed((prev) => {
@@ -102,9 +107,25 @@ export default function Outliner() {
           <span className="collapse-toggle-spacer" />
         )}
         {obj.kind === 'empty' && <span title="Empty (no mesh)">✛</span>}
+        {obj.kind === 'path' && <span title="Path (curve, no mesh)">〜</span>}
+        {fakeBehindMaskIds.has(obj.id) && (
+          <span className="fake-behind-mask-badge" title="Referenced as a Fake Behind mask by another object">
+            M
+          </span>
+        )}
         <input
-          className={'layer-name' + (getFakePhysics(obj)?.enabled ? ' fake-physics' : '')}
-          title={getFakePhysics(obj)?.enabled ? 'Has an enabled Fake Physics modifier' : undefined}
+          className={
+            'layer-name' +
+            (getFakePhysics(obj)?.enabled ? ' fake-physics' : '') +
+            (fakeBehindMaskIds.has(obj.id) ? ' fake-behind-mask' : '')
+          }
+          title={
+            fakeBehindMaskIds.has(obj.id)
+              ? 'Referenced as a Fake Behind mask by another object'
+              : getFakePhysics(obj)?.enabled
+                ? 'Has an enabled Fake Physics modifier'
+                : undefined
+          }
           value={obj.name}
           onChange={(e) => renameObject(obj.id, e.target.value)}
           onClick={(e) => e.stopPropagation()}
