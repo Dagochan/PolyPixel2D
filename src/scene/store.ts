@@ -15,7 +15,7 @@ import type {
   Mesh,
   Modifier,
   ObjectAnimationTrack,
-  PathDeformSettings,
+  PathDeformRailSettings,
   PixelFrame,
   ReferenceImage,
   SceneObject,
@@ -28,7 +28,7 @@ import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } 
 import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
 import { boundsVertices, pathTail } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
-import { DEFAULT_PATH_DEFORM_SETTINGS } from './pathDeform'
+import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS } from './pathDeformRail'
 import { DEFAULT_FFD_SETTINGS } from './ffd'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -411,9 +411,9 @@ interface SceneState {
   assignFakeFlagAnchor: (id: string) => void
   /** Clear the anchor list, switching back to object-rotation mode. */
   clearFakeFlagAnchor: (id: string) => void
-  /** Merge a partial patch into this object's Path Deform settings — adds the modifier (with
-   *  defaults merged with `patch`) if it isn't already in the stack. */
-  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+  /** Merge a partial patch into this object's Path Deform (Rail) settings — adds the modifier
+   *  (with defaults merged with `patch`) if it isn't already in the stack. */
+  updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
   /** Merge a partial patch into this object's FFD settings — adds the modifier (with defaults
    *  merged with `patch`) if it isn't already in the stack. Setting `cageObjectId` to a cage
    *  that doesn't yet have a `cageRestVertices` snapshot seeds one from its current
@@ -589,13 +589,16 @@ function withFakePhysicsMeshSettings(
   return { ...o, modifiers }
 }
 
-/** Same idea as `withFakeFlagSettings`, for the `pathDeform` modifier. */
-function withPathDeformSettings(o: SceneObject, updater: (settings: PathDeformSettings) => PathDeformSettings): SceneObject {
-  const existing = o.modifiers?.find((m) => m.type === 'pathDeform')
-  const settings = updater(existing?.settings ?? DEFAULT_PATH_DEFORM_SETTINGS)
+/** Same idea as `withFakeFlagSettings`, for the `pathDeformRail` modifier. */
+function withPathDeformRailSettings(
+  o: SceneObject,
+  updater: (settings: PathDeformRailSettings) => PathDeformRailSettings,
+): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'pathDeformRail')
+  const settings = updater(existing?.settings ?? DEFAULT_PATH_DEFORM_RAIL_SETTINGS)
   const modifiers = existing
-    ? o.modifiers!.map((m) => (m.type === 'pathDeform' ? { ...m, settings } : m))
-    : [...(o.modifiers ?? []), { type: 'pathDeform' as const, settings }]
+    ? o.modifiers!.map((m) => (m.type === 'pathDeformRail' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'pathDeformRail' as const, settings }]
   return { ...o, modifiers }
 }
 
@@ -2065,8 +2068,8 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                   }
                 : type === 'fakeBehind'
                   ? { type: 'fakeBehind', settings: { ...DEFAULT_FAKE_BEHIND_SETTINGS, maskObjectIds: [] } }
-                  : type === 'pathDeform'
-                    ? { type: 'pathDeform', settings: { ...DEFAULT_PATH_DEFORM_SETTINGS } }
+                  : type === 'pathDeformRail'
+                    ? { type: 'pathDeformRail', settings: { ...DEFAULT_PATH_DEFORM_RAIL_SETTINGS } }
                     : { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
@@ -2149,10 +2152,10 @@ export const useSceneStore = create<SceneState>((set, get) => ({
 
   togglePreviewFakeFlag: () => set((s) => ({ previewFakeFlag: !s.previewFakeFlag })),
 
-  updatePathDeform: (id, patch) => {
+  updatePathDeformRail: (id, patch) => {
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === id ? withPathDeformSettings(o, (ps) => ({ ...ps, ...patch })) : o)),
+      objects: s.objects.map((o) => (o.id === id ? withPathDeformRailSettings(o, (ps) => ({ ...ps, ...patch })) : o)),
     }))
   },
 

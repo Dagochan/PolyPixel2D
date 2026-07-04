@@ -201,54 +201,44 @@ export interface FakeBehindSettings {
   maskObjectIds: string[]
 }
 
-/** Bends a mesh's Basis vertices along a `kind: 'path'` object's curve (see project spec — the
- *  "Blender Curve Modifier" analogue). Not baked/simulated — a pure function of the current
- *  path shape, so it stays correct as it animates (e.g. via Path Follow on the path object once
- *  that exists, or the path's own control points being keyframed).
- *
- *  Reads each vertex's position along the deform directly and continuously from its own local
- *  `mesh.vertices` coordinates (`axis` picks which local axis runs "along" the path) — the same
- *  convention Blender's Curve Modifier uses. An earlier version instead required picking an
- *  ordered "spine" vertex chain and projected each vertex onto it; that discrete polyline faceted
- *  visibly at every hand-picked spine point (and pinched/stretched further on tight bends no
- *  matter how the polyline was smoothed), so it was dropped in favor of this continuous,
- *  selection-free mapping — closer to how a lattice/cage deformer (e.g. Cinema 4D's Spline Wrap,
- *  per the user's recollection) reads a cage's local coordinates. */
-export interface PathDeformSettings {
+/** Bends a `kind: 'lattice'` cage's Basis vertices along a `kind: 'path'` object's curve (see
+ *  project spec). Not baked/simulated — a pure function of the current path shape, so it stays
+ *  correct as it animates (e.g. via the path's own control points being keyframed). Only ever
+ *  offered on a `kind: 'lattice'` cage (see `ModifiersSection`'s `availableTypes`) — see
+ *  `pathDeformRail.ts`'s doc for why a cage's sparse control grid is the right scope for this
+ *  (an earlier, more general version that applied directly to any mesh's vertices — matching
+ *  Blender's Curve Modifier — was removed once this cage-only approach proved to bend more
+ *  cleanly, including through tight bends, with no fold-prevention clamp needed). */
+export interface PathDeformRailSettings {
   enabled: boolean
-  /** Id of the `kind: 'path'` object this mesh bends along. `null` = not yet assigned (modifier
-   *  is a no-op until one is picked). Tolerant reference — a deleted path just makes this a no-op,
-   *  same convention as `parentId`/`FakeBehindSettings.maskObjectIds`. */
+  /** Id of the `kind: 'path'` object this cage bends along. `null` = not yet assigned. Tolerant
+   *  reference — a deleted path just makes this a no-op, same convention as
+   *  `parentId`/`FakeBehindSettings.maskObjectIds`. */
   pathObjectId: string | null
-  /** Which of this mesh's own local axes runs "along" the path — the other becomes the lateral
-   *  distance from it (fed into `center`/the fold-prevention clamp). 'x' (default) matches
-   *  Blender's Curve Modifier default. */
+  /** Which of this cage's own local axes runs "along" the path — the other becomes the lateral
+   *  distance from it. 'x' (default) matches Blender's Curve Modifier default. */
   axis: 'x' | 'y'
-  /** Extra signed distance added to every vertex's own lateral offset (`axis`'s other coordinate),
-   *  along the path's local normal — the "for free" whole-mesh offset from the project spec (e.g.
-   *  nudging a guardrail to one side of the road it follows). 0 = vertices sit exactly as far
-   *  from the path as their own local coordinate placed them. Named "Center" in the UI (not
-   *  "Offset") specifically to avoid colliding with `pathOffset`'s naming — other DCCs commonly
-   *  call *that* concept "Offset" (progress along a curve), which this app calls `pathOffset`
-   *  instead; see that field's doc. */
-  center: number
-  /** true (default) — this mesh's own local-axis extent is rescaled to span the *entire* path
-   *  (start to end), i.e. the mesh stretches/shrinks to fit whatever length the path currently
-   *  has. false — the mesh keeps its own real local-axis distances as physical path arc length;
-   *  it's placed as a fixed-length window starting `pathOffset` world units along the path
-   *  instead, sliding independently of the path's total length. This is the "crawl/feed along the
-   *  path" mode: keyframing `pathOffset` over time advances the mesh from the path's start toward
-   *  its end while only the currently-overlapping section is bent, rather than the whole mesh
-   *  stretching across the whole path every frame. */
+  /** false (default) — this object's own local-axis coordinate maps directly onto the path,
+   *  local-axis-min → path start. true — that mapping is mirrored (local-axis-max → path start),
+   *  for a mesh whose modeled "front" sits at the opposite end of `axis` from what the path's
+   *  start/end direction expects (e.g. a fish modeled tail-first along local X, but the path's
+   *  arrow — see the Path object's own start/end indicator — points the other way). Purely a
+   *  reinterpretation of which end is which; doesn't change the path/rails themselves. Applies to
+   *  whichever local axis `axis` currently reads as "along" the path — the UI always labels this
+   *  button "Flip X"/"Flip Y" to match, regardless of which one that is (see `flipLateral` for the
+   *  other axis). */
+  flip: boolean
+  /** Same idea as `flip`, but for the *lateral* axis (the one `axis` doesn't pick) — mirrors which
+   *  side is "positive" lateral distance, e.g. swapping which side of the path a mesh modeled
+   *  mirror-flipped ends up on. Independent of `flip`/`axis` so either physical local axis (X or Y)
+   *  can be flipped regardless of which one is currently "along" the path. */
+  flipLateral: boolean
+  /** true (default) — this object's own local-axis extent rescales to span the entire path.
+   *  false — kept as real local-axis distance, placed `pathOffset` world units along the path
+   *  instead, sliding independently of the path's total length. */
   stretch: boolean
-  /** Arc-length distance (world units, along the target path) this mesh's own local-axis 0 is
-   *  placed at. Only meaningful when `stretch` is false — ignored otherwise. Named to match the
-   *  "Offset" terminology other DCCs use for progress-along-a-curve (Blender's Curve modifier
-   *  included) — not to be confused with this modifier's own `center`, which is a different,
-   *  perpendicular concept. Vertices whose own local-axis coordinate + this falls outside the
-   *  path's own length extrapolate past its ends (see `pathDeform.ts`'s `samplePolyline`), so a
-   *  partially-fed mesh's leading/trailing ends still resolve to *something* rather than clamping
-   *  flat. */
+  /** Arc-length distance (world units, along the target path) this cage's own local-axis 0 is
+   *  placed at. Only meaningful when `stretch` is false — ignored otherwise. */
   pathOffset: number
 }
 
@@ -284,7 +274,7 @@ export type Modifier =
   | { type: 'fakePhysics'; settings: FakePhysicsSettings }
   | { type: 'fakePhysicsMesh'; settings: FakePhysicsMeshSettings }
   | { type: 'fakeBehind'; settings: FakeBehindSettings }
-  | { type: 'pathDeform'; settings: PathDeformSettings }
+  | { type: 'pathDeformRail'; settings: PathDeformRailSettings }
   | { type: 'ffd'; settings: FfdSettings }
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be

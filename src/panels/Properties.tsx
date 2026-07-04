@@ -12,7 +12,7 @@ import type {
   FfdSettings,
   InsertSlot,
   Modifier,
-  PathDeformSettings,
+  PathDeformRailSettings,
   SceneObject,
 } from '../scene/types'
 import UvEditor from './UvEditor'
@@ -904,27 +904,26 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakePhysics: 'Fake Physics',
   fakePhysicsMesh: 'Fake Physics',
   fakeBehind: 'Fake Behind',
-  pathDeform: 'Path Deform',
+  pathDeformRail: 'Path Deform (Rail)',
   ffd: 'FFD (Cage)',
 }
 
-/** One modifier's settings UI for Path Deform — see `PathDeformSettings`'s doc for the underlying
- *  math. Unlike the modifier's first version, there's no vertex selection/Edit Mode step: `axis`
- *  reads each vertex's own local coordinates directly and continuously. The target path is picked
- *  from a dropdown of every `kind: 'path'` object in the scene (there's no drag-and-drop precedent
- *  to reuse here since a path is a single reference, not a growable list like FakeBehind's masks). */
-function PathDeformModifierBox({
+/** One modifier's settings UI for Path Deform (Rail) — see `PathDeformRailSettings`'s doc. Only
+ *  ever offered on a `kind: 'lattice'` cage (see `ModifiersSection`'s `availableTypes`), so unlike
+ *  an ordinary Blender-style Curve Modifier there's no "Center" field — the two rails are generated at exactly the
+ *  cage's own half-width, with no free lateral shift to offer. */
+function PathDeformRailModifierBox({
   obj,
   objects,
   settings,
   removeModifier,
-  updatePathDeform,
+  updatePathDeformRail,
 }: {
   obj: SceneObject
   objects: SceneObject[]
-  settings: PathDeformSettings
+  settings: PathDeformRailSettings
   removeModifier: (id: string, type: Modifier['type']) => void
-  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+  updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
 }) {
   const pathObjects = objects.filter((o) => o.kind === 'path')
 
@@ -934,12 +933,12 @@ function PathDeformModifierBox({
         <button
           className={'icon-btn' + (settings.enabled ? ' active' : '')}
           title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
-          onClick={() => updatePathDeform(obj.id, { enabled: !settings.enabled })}
+          onClick={() => updatePathDeformRail(obj.id, { enabled: !settings.enabled })}
         >
           {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
         </button>
-        <span className="modifier-box-title">Path Deform</span>
-        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'pathDeform')}>
+        <span className="modifier-box-title">Path Deform (Rail)</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'pathDeformRail')}>
           <TrashIcon size={14} />
         </button>
       </div>
@@ -948,7 +947,7 @@ function PathDeformModifierBox({
           <div className="prop-row">
             <select
               value={settings.pathObjectId ?? ''}
-              onChange={(e) => updatePathDeform(obj.id, { pathObjectId: e.target.value || null })}
+              onChange={(e) => updatePathDeformRail(obj.id, { pathObjectId: e.target.value || null })}
             >
               <option value="">(no path assigned)</option>
               {pathObjects.map((p) => (
@@ -961,38 +960,45 @@ function PathDeformModifierBox({
           <div className="prop-row">
             <button
               className={'icon-btn' + (settings.axis === 'x' ? ' active' : '')}
-              title="Local X runs along the path (Blender's Curve Modifier default)"
-              onClick={() => updatePathDeform(obj.id, { axis: 'x' })}
+              title="Local X runs along the path"
+              onClick={() => updatePathDeformRail(obj.id, { axis: 'x' })}
             >
               Axis: X
             </button>
             <button
               className={'icon-btn' + (settings.axis === 'y' ? ' active' : '')}
               title="Local Y runs along the path"
-              onClick={() => updatePathDeform(obj.id, { axis: 'y' })}
+              onClick={() => updatePathDeformRail(obj.id, { axis: 'y' })}
             >
               Axis: Y
             </button>
-          </div>
-          <div className="prop-row">
-            <NumberField
-              label="Center"
-              value={settings.center}
-              onChange={(v) => updatePathDeform(obj.id, { center: v })}
-            />
+            <button
+              className={'icon-btn' + (settings.flip ? ' active' : '')}
+              title={`Flip ${settings.axis.toUpperCase()} — mirror which end of local ${settings.axis.toUpperCase()} maps to the path's start (e.g. a mesh modeled facing the opposite way from the path's start/end arrow)`}
+              onClick={() => updatePathDeformRail(obj.id, { flip: !settings.flip })}
+            >
+              Flip {settings.axis.toUpperCase()}
+            </button>
+            <button
+              className={'icon-btn' + (settings.flipLateral ? ' active' : '')}
+              title={`Flip ${(settings.axis === 'x' ? 'y' : 'x').toUpperCase()} — mirror which side of the path this cage's lateral extent maps to (e.g. a mesh modeled mirror-flipped left/right of the path)`}
+              onClick={() => updatePathDeformRail(obj.id, { flipLateral: !settings.flipLateral })}
+            >
+              Flip {(settings.axis === 'x' ? 'y' : 'x').toUpperCase()}
+            </button>
           </div>
           <div className="prop-row">
             <button
               className={'icon-btn' + (settings.stretch ? ' active' : '')}
-              title="Stretch — the spine's whole length rescales to span the entire path"
-              onClick={() => updatePathDeform(obj.id, { stretch: true })}
+              title="Stretch — the cage's whole length rescales to span each rail's entire length"
+              onClick={() => updatePathDeformRail(obj.id, { stretch: true })}
             >
               Stretch
             </button>
             <button
               className={'icon-btn' + (!settings.stretch ? ' active' : '')}
-              title="Fixed length — the spine keeps its own length and slides along the path from Path Offset, e.g. to crawl/feed a mesh from the path's start toward its end over time"
-              onClick={() => updatePathDeform(obj.id, { stretch: false })}
+              title="Fixed length — the cage keeps its own length and slides along the rails from Path Offset"
+              onClick={() => updatePathDeformRail(obj.id, { stretch: false })}
             >
               Fixed length
             </button>
@@ -1002,7 +1008,7 @@ function PathDeformModifierBox({
               <NumberField
                 label="Path Offset"
                 value={settings.pathOffset}
-                onChange={(v) => updatePathDeform(obj.id, { pathOffset: v })}
+                onChange={(v) => updatePathDeformRail(obj.id, { pathOffset: v })}
               />
             </div>
           )}
@@ -1232,7 +1238,7 @@ function ModifiersSection(props: {
   toggleFakeBehindEnabled: (id: string) => void
   addFakeBehindMaskRef: (id: string, maskId: string) => void
   removeFakeBehindMaskRef: (id: string, maskId: string) => void
-  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+  updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
 }) {
@@ -1249,7 +1255,8 @@ function ModifiersSection(props: {
     if (addedTypes.has(t)) return false
     if (t === 'fakePhysicsMesh') return mode === 'edit' && obj.kind !== 'empty'
     if (t === 'fakePhysics') return mode !== 'edit'
-    if (t === 'pathDeform') return obj.kind !== 'empty' && obj.kind !== 'path'
+    // Only ever offered on a `kind: 'lattice'` cage — see `PathDeformRailSettings`'s doc.
+    if (t === 'pathDeformRail') return obj.kind === 'lattice'
     return true
   })
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -1271,8 +1278,8 @@ function ModifiersSection(props: {
         if (m.type === 'fakeBehind') {
           return <FakeBehindModifierBox key={m.type} {...props} settings={m.settings} />
         }
-        if (m.type === 'pathDeform') {
-          return <PathDeformModifierBox key={m.type} {...props} settings={m.settings} />
+        if (m.type === 'pathDeformRail') {
+          return <PathDeformRailModifierBox key={m.type} {...props} settings={m.settings} />
         }
         if (m.type === 'ffd') {
           return <FfdModifierBox key={m.type} {...props} settings={m.settings} />
@@ -1366,7 +1373,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const toggleFakeBehindEnabled = useSceneStore((s) => s.toggleFakeBehindEnabled)
   const addFakeBehindMaskRef = useSceneStore((s) => s.addFakeBehindMaskRef)
   const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
-  const updatePathDeform = useSceneStore((s) => s.updatePathDeform)
+  const updatePathDeformRail = useSceneStore((s) => s.updatePathDeformRail)
   const updateFfd = useSceneStore((s) => s.updateFfd)
   const resizeLattice = useSceneStore((s) => s.resizeLattice)
   const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
@@ -1583,7 +1590,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             toggleFakeBehindEnabled={toggleFakeBehindEnabled}
             addFakeBehindMaskRef={addFakeBehindMaskRef}
             removeFakeBehindMaskRef={removeFakeBehindMaskRef}
-            updatePathDeform={updatePathDeform}
+            updatePathDeformRail={updatePathDeformRail}
             updateFfd={updateFfd}
             resetFfdCageRest={resetFfdCageRest}
           />

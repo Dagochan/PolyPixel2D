@@ -1,5 +1,5 @@
 import { applyTransform, getWorldTransform, inverseTransform } from './transformUtils'
-import { pathDeformVertexDeltas } from './pathDeform'
+import { pathDeformRailVertexDeltas } from './pathDeformRail'
 import type { FfdSettings, SceneObject, Vec2 } from './types'
 
 /** This object's FFD settings, if it has that modifier in its stack (see `Modifier`) —
@@ -27,21 +27,21 @@ function bilerp(p00: Vec2, p10: Vec2, p01: Vec2, p11: Vec2, tx: number, ty: numb
  *  normalized position within the cage's *rest* grid's bounding box, then bilinearly
  *  re-interpolated from the cage's *current* grid at that same normalized position. Evaluated
  *  entirely in world space so the deforming object's transform and the cage's don't need to
- *  coincide (same convention as FakeBehind/Fake Physics/Path Deform). `null` when inactive
+ *  coincide (same convention as FakeBehind/Fake Physics/Path Deform (Rail)). `null` when inactive
  *  (disabled, no cage assigned, cage isn't a `kind: 'lattice'` object, cage has no frozen rest
  *  grid yet, or the cage's vertex count doesn't match its own `latticeCols * latticeRows`).
  *
- *  If the cage itself has a Path Deform modifier, that's folded in here (its own pure function of
- *  (cage, allObjects), so it's cheap to just re-evaluate) before reading the cage's "current"
- *  grid — otherwise a path-bent cage would only ever *look* bent in the viewport (Path Deform, like
- *  FFD, is a display-time transform that never touches `mesh.vertices`) without anything actually
- *  following it, since this function reads `cage.mesh.vertices` directly. This is what lets a
- *  Lattice be bent along a Path and have whatever FFD-references it follow along — the cage's
- *  regular, evenly-spaced grid is a much better-behaved target for Path Deform's own arc-length
- *  math than an arbitrary silhouette mesh is (see project spec's discussion of pinch/stretch on
- *  tight bends), and every object referencing that cage inherits the same smooth bend via the
- *  bilinear interpolation below. Other cage modifiers (shape keys, Fake Flag, Fake Physics) are
- *  *not* folded in — those carry per-frame animation state this pure function has no access to. */
+ *  If the cage itself has a Path Deform (Rail) modifier, that's folded in here (its own pure
+ *  function of (cage, allObjects), so it's cheap to just re-evaluate) before reading the cage's
+ *  "current" grid — otherwise a path-bent cage would only ever *look* bent in the viewport (Path
+ *  Deform (Rail), like FFD, is a display-time transform that never touches `mesh.vertices`)
+ *  without anything actually following it, since this function reads `cage.mesh.vertices`
+ *  directly. This is what lets a Lattice be bent along a Path and have whatever FFD-references it
+ *  follow along — the cage's regular, evenly-spaced grid is a much better-behaved target for that
+ *  bend's own arc-length math than an arbitrary silhouette mesh is (see project spec), and every
+ *  object referencing that cage inherits the same smooth bend via the bilinear interpolation
+ *  below. Other cage modifiers (shape keys, Fake Flag, Fake Physics) are *not* folded in — those
+ *  carry per-frame animation state this pure function has no access to. */
 export function ffdVertexDeltas(obj: SceneObject, allObjects: SceneObject[]): Vec2[] | null {
   const settings = getFfd(obj)
   if (!settings?.enabled || !settings.cageObjectId) return null
@@ -69,7 +69,7 @@ export function ffdVertexDeltas(obj: SceneObject, allObjects: SceneObject[]): Ve
 
   const objWorld = getWorldTransform(obj, allObjects)
   const cageWorld = getWorldTransform(cage, allObjects)
-  const cagePathDeformDeltas = pathDeformVertexDeltas(cage, allObjects)
+  const cagePathDeformDeltas = pathDeformRailVertexDeltas(cage, allObjects)
   const current = cagePathDeformDeltas
     ? cage.mesh.vertices.map((v, i) => ({ x: v.x + cagePathDeformDeltas[i].x, y: v.y + cagePathDeformDeltas[i].y }))
     : cage.mesh.vertices

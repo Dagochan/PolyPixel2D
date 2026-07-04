@@ -20,7 +20,7 @@ import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
-import { pathDeformVertexDeltas } from '../scene/pathDeform'
+import { pathDeformRailVertexDeltas } from '../scene/pathDeformRail'
 import { ffdVertexDeltas } from '../scene/ffd'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
@@ -1225,7 +1225,7 @@ export default function Viewport() {
       const physicsDeformedVerts = physicsMeshDeltas
         ? swayedVerts.map((v, i) => ({ x: v.x + physicsMeshDeltas[i].x, y: v.y + physicsMeshDeltas[i].y }))
         : swayedVerts
-      const pathDeformDeltas = pathDeformVertexDeltas(rawObj, objects)
+      const pathDeformDeltas = pathDeformRailVertexDeltas(rawObj, objects)
       const pathDeformedVerts = pathDeformDeltas
         ? physicsDeformedVerts.map((v, i) => ({ x: v.x + pathDeformDeltas[i].x, y: v.y + pathDeformDeltas[i].y }))
         : physicsDeformedVerts
