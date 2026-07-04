@@ -1523,22 +1523,15 @@ export default function Properties({ style }: { style?: CSSProperties }) {
           </Section>
 
           <Section title="Head (local coordinates)">
-            {obj.kind === 'path' && (
-              <div className="prop-row prop-static">
-                <span>Locked to this Path's start (Head) and end (Tail) control point</span>
-              </div>
-            )}
             <div className="prop-row">
               <NumberField
                 label="Head X"
                 value={obj.transform.head.x}
-                disabled={obj.kind === 'path'}
                 onChange={(v) => setHead(obj.id, { x: v, y: obj.transform.head.y })}
               />
               <NumberField
                 label="Head Y"
                 value={obj.transform.head.y}
-                disabled={obj.kind === 'path'}
                 onChange={(v) => setHead(obj.id, { x: obj.transform.head.x, y: v })}
               />
             </div>
@@ -1546,13 +1539,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               <NumberField
                 label="Tail X"
                 value={obj.tail.x}
-                disabled={obj.kind === 'path'}
                 onChange={(v) => setTail(obj.id, { x: v, y: obj.tail.y })}
               />
               <NumberField
                 label="Tail Y"
                 value={obj.tail.y}
-                disabled={obj.kind === 'path'}
                 onChange={(v) => setTail(obj.id, { x: obj.tail.x, y: v })}
               />
             </div>

@@ -55,12 +55,8 @@ export default function ToolPane() {
         </button>
         <button
           className={mode === 'pivot' ? 'active' : ''}
-          disabled={!selectedObj || selectedObj.kind === 'path'}
-          title={
-            selectedObj?.kind === 'path'
-              ? "A Path's Head/Tail are fully derived from its start/end control point — nothing to drag here"
-              : 'Pivot mode (drag to edit the Head/Tail position)'
-          }
+          disabled={!selectedObj}
+          title="Pivot mode (drag to edit the Head/Tail position)"
           onClick={() => setMode('pivot')}
         >
           <PivotModeIcon />

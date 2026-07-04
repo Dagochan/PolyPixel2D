@@ -2952,12 +2952,12 @@ export default function Viewport() {
     }
 
     // pivot mode: head/tail dots are the only draggable handles here (no move/rotate/scale gizmo
-    // is rendered in this mode, so there's nothing else to hit-test against). Not for a Path,
-    // though — both its Head and Tail are fully derived from its control points (Tail lives-syncs
-    // to the end point always; Head resyncs to the start point once Edit mode is exited — see
-    // `pathTail`'s and `setMode`'s docs), so there's nothing here for a manual drag to do that
-    // wouldn't just get overwritten the next time the point itself is edited.
-    if (mode === 'pivot' && selectedObj && selectedObj.kind !== 'path') {
+    // is rendered in this mode, so there's nothing else to hit-test against). A Path's Head/Tail
+    // are ordinary, freely-draggable pivots here just like any other object's — they're no longer
+    // derived from its control points (see project spec: that auto-sync was removed since forcing
+    // Head to double as "the curve's start point" caused the whole path to visibly jump whenever
+    // Edit mode was exited, since Head also doubles as the render pivot).
+    if (mode === 'pivot' && selectedObj) {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
       const { center } = getGizmoGeom(selectedObj)
 
