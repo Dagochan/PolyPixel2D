@@ -48,6 +48,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const removeShapeKeyKeyframe = useSceneStore((s) => s.removeShapeKeyKeyframe)
   const setShapeKeyKeyframeTime = useSceneStore((s) => s.setShapeKeyKeyframeTime)
   const setShapeKeyKeyframeEasing = useSceneStore((s) => s.setShapeKeyKeyframeEasing)
+  const removePathOffsetKeyframe = useSceneStore((s) => s.removePathOffsetKeyframe)
+  const setPathOffsetKeyframeTime = useSceneStore((s) => s.setPathOffsetKeyframeTime)
+  const setPathOffsetKeyframeEasing = useSceneStore((s) => s.setPathOffsetKeyframeEasing)
   const setPlayhead = useSceneStore((s) => s.setPlayhead)
   const bakeAllFakePhysics = useSceneStore((s) => s.bakeAllFakePhysics)
 
@@ -63,6 +66,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   // which shape key `selectedKeyId` belongs to, if any — `null` means the selected key is on the
   // object's Transform track, not a shape-key weight track
   const [selectedKeyShapeKeyId, setSelectedKeyShapeKeyId] = useState<string | null>(null)
+  // whether `selectedKeyId` is on a `pathOffset` track rather than Transform/shape-key — kept as
+  // its own flag rather than overloading `selectedKeyShapeKeyId` (a pathOffset key has no
+  // shape-key id of its own, but also isn't a Transform key) since a track is keyed by `objectId`
+  // alone (see `PathOffsetTrack`'s doc).
+  const [selectedKeyIsPathOffset, setSelectedKeyIsPathOffset] = useState(false)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -202,6 +210,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     | { kind: 'fakePhysicsBaked'; objectId: string }
     // Same idea as `fakePhysicsBaked`, for the mesh (vertex-section) variant's `fakePhysicsMeshTracks`.
     | { kind: 'fakePhysicsMeshBaked'; objectId: string }
+    // Path Deform (Rail)'s `pathOffset` — hand-authored keyframes like a shape key's weight, but
+    // keyed by `objectId` alone (see `PathOffsetTrack`'s doc), so there's only ever one per object.
+    | { kind: 'pathOffset'; objectId: string; keyframes: NonNullable<typeof activeClip.pathOffsetTracks>[number]['keyframes'] }
   const rowObjectIds: string[] = []
   for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
   for (const t of activeClip.shapeKeyTracks ?? []) {
@@ -214,6 +225,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   for (const t of activeClip.fakePhysicsMeshTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
+  for (const t of activeClip.pathOffsetTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   const rows: Row[] = []
@@ -232,6 +246,8 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if ((activeClip.fakePhysicsMeshTracks ?? []).some((ft) => ft.objectId === objectId)) {
       rows.push({ kind: 'fakePhysicsMeshBaked', objectId })
     }
+    const pot = (activeClip.pathOffsetTracks ?? []).find((pt) => pt.objectId === objectId)
+    if (pot) rows.push({ kind: 'pathOffset', objectId, keyframes: pot.keyframes })
   }
 
   return (
@@ -400,6 +416,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
+            if (row.kind === 'pathOffset') {
+              return (
+                <div
+                  key={`po-${row.objectId}`}
+                  className={'timeline-channel-name timeline-channel-subrow' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title="Path Deform — Path Offset"
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  ↳ Path Offset
+                </div>
+              )
+            }
             return (
               <div
                 key={`fpmb-${row.objectId}`}
@@ -495,7 +523,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                         ? `ff-${row.objectId}`
                         : row.kind === 'fakePhysicsBaked'
                           ? `fpb-${row.objectId}`
-                          : `fpmb-${row.objectId}`
+                          : row.kind === 'pathOffset'
+                            ? `po-${row.objectId}`
+                            : `fpmb-${row.objectId}`
                 }
                 className={
                   'timeline-track-row' +
@@ -525,13 +555,16 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       title={
                         row.kind === 'transform'
                           ? `${objects.find((o) => o.id === row.objectId)?.name ?? row.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`
-                          : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                          : row.kind === 'pathOffset'
+                            ? `Path Offset: t=${k.time.toFixed(2)}s, ${k.easing}`
+                            : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
                       }
                       onPointerDown={(e) => {
                         e.stopPropagation()
                         selectObject(row.objectId)
                         setSelectedKeyObjectId(row.objectId)
                         setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
+                        setSelectedKeyIsPathOffset(row.kind === 'pathOffset')
                         setSelectedKeyId(k.id)
                         draggingKeyRef.current = k.id
                         e.currentTarget.setPointerCapture(e.pointerId)
@@ -542,6 +575,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                         if (!rect) return
                         const time = snapToFrame(xToTime(e.clientX - rect.left))
                         if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
+                        else if (row.kind === 'pathOffset') setPathOffsetKeyframeTime(row.objectId, k.id, time)
                         else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
                       }}
                       onPointerUp={() => {
@@ -561,11 +595,16 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         <div className="timeline-keyframe-inspector">
           {(() => {
             const shapeKeyId = selectedKeyShapeKeyId
+            const isPathOffset = selectedKeyIsPathOffset
             const key = shapeKeyId
               ? (activeClip.shapeKeyTracks ?? [])
                   .find((t) => t.objectId === selectedKeyObjectId && t.shapeKeyId === shapeKeyId)
                   ?.keyframes.find((k) => k.id === selectedKeyId)
-              : activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)?.keyframes.find((k) => k.id === selectedKeyId)
+              : isPathOffset
+                ? (activeClip.pathOffsetTracks ?? [])
+                    .find((t) => t.objectId === selectedKeyObjectId)
+                    ?.keyframes.find((k) => k.id === selectedKeyId)
+                : activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)?.keyframes.find((k) => k.id === selectedKeyId)
             if (!key) return null
             return (
               <>
@@ -577,6 +616,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     onChange={(e) => {
                       const easing = e.target.value as EasingType
                       if (shapeKeyId) setShapeKeyKeyframeEasing(selectedKeyObjectId, shapeKeyId, key.id, easing)
+                      else if (isPathOffset) setPathOffsetKeyframeEasing(selectedKeyObjectId, key.id, easing)
                       else setKeyframeEasing(selectedKeyObjectId, key.id, easing)
                     }}
                   >
@@ -591,10 +631,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   title="Delete this keyframe"
                   onClick={() => {
                     if (shapeKeyId) removeShapeKeyKeyframe(selectedKeyObjectId, shapeKeyId, key.id)
+                    else if (isPathOffset) removePathOffsetKeyframe(selectedKeyObjectId, key.id)
                     else removeKeyframe(selectedKeyObjectId, key.id)
                     setSelectedKeyId(null)
                     setSelectedKeyObjectId(null)
                     setSelectedKeyShapeKeyId(null)
+                    setSelectedKeyIsPathOffset(false)
                   }}
                 >
                   <TrashIcon size={14} /> Delete keyframe

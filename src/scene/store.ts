@@ -16,6 +16,7 @@ import type {
   Modifier,
   ObjectAnimationTrack,
   PathDeformRailSettings,
+  PathOffsetTrack,
   PixelFrame,
   ReferenceImage,
   SceneObject,
@@ -28,7 +29,7 @@ import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } 
 import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
 import { boundsVertices } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
-import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS } from './pathDeformRail'
+import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS, getPathDeformRail } from './pathDeformRail'
 import { DEFAULT_FFD_SETTINGS } from './ffd'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -389,6 +390,14 @@ interface SceneState {
   removeShapeKeyKeyframe: (objectId: string, shapeKeyId: string, keyframeId: string) => void
   setShapeKeyKeyframeTime: (objectId: string, shapeKeyId: string, keyframeId: string, time: number) => void
   setShapeKeyKeyframeEasing: (objectId: string, shapeKeyId: string, keyframeId: string, easing: EasingType) => void
+  /** Keys the given object's current live `pathDeformRail.pathOffset` at `time` — same idea as
+   *  `insertShapeKeyKeyframe`, but for `PathOffsetTrack` (keyed by `objectId` alone — see its
+   *  doc). Creates the track if absent, no-op if the object has no `pathDeformRail` modifier or
+   *  there's no active clip. */
+  insertPathOffsetKeyframe: (objectId: string, time: number, easing?: EasingType) => void
+  removePathOffsetKeyframe: (objectId: string, keyframeId: string) => void
+  setPathOffsetKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
+  setPathOffsetKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
   /** Add a modifier of `type` to this object's stack (see `Modifier`) — a no-op if it already has
    *  one of that type, since the stack holds at most one per type. */
   addModifier: (id: string, type: Modifier['type']) => void
@@ -2038,6 +2047,81 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  insertPathOffsetKeyframe: (objectId, time, easing = 'linear') => {
+    const s = get()
+    const clipId = s.activeClipId
+    if (!clipId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    const settings = obj ? getPathDeformRail(obj) : undefined
+    if (!settings) return
+    const value = settings.pathOffset
+    get().beginChange()
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== clipId) return c
+        const tracks: PathOffsetTrack[] = c.pathOffsetTracks ?? []
+        const existingTrack = tracks.find((t) => t.objectId === objectId)
+        const newKey = { id: genId('key'), time, value, easing }
+        if (!existingTrack) {
+          return { ...c, pathOffsetTracks: [...tracks, { objectId, keyframes: [newKey] }] }
+        }
+        const withoutSameTime = existingTrack.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return {
+          ...c,
+          pathOffsetTracks: tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)),
+        }
+      }),
+    }))
+  },
+
+  removePathOffsetKeyframe: (objectId, keyframeId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          pathOffsetTracks: (c.pathOffsetTracks ?? [])
+            .map((t) => (t.objectId === objectId ? { ...t, keyframes: t.keyframes.filter((k) => k.id !== keyframeId) } : t))
+            .filter((t) => t.objectId !== objectId || t.keyframes.length > 0),
+        }
+      }),
+    }))
+  },
+
+  setPathOffsetKeyframeTime: (objectId, keyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          pathOffsetTracks: (c.pathOffsetTracks ?? []).map((t) => {
+            if (t.objectId !== objectId) return t
+            const keyframes = t.keyframes.map((k) => (k.id === keyframeId ? { ...k, time } : k)).sort((a, b) => a.time - b.time)
+            return { ...t, keyframes }
+          }),
+        }
+      }),
+    }))
+  },
+
+  setPathOffsetKeyframeEasing: (objectId, keyframeId, easing) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          pathOffsetTracks: (c.pathOffsetTracks ?? []).map((t) =>
+            t.objectId !== objectId ? t : { ...t, keyframes: t.keyframes.map((k) => (k.id === keyframeId ? { ...k, easing } : k)) },
+          ),
+        }
+      }),
+    }))
+  },
+
   addModifier: (id, type) => {
     get().beginChange()
     set((s) => ({
@@ -2434,18 +2518,28 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       playheadTime: resolved,
       objects: st.objects.map((o) => {
         const t = sampled.transforms.get(o.id)
-        const next = t ? { ...o, transform: t } : o
+        let next = t ? { ...o, transform: t } : o
         // apply any sampled shape-key weights for this object, one lookup per shape key it has —
         // a key with no track at this time is left at whatever weight it already had
-        if (!next.shapeKeys?.length) return next
-        let shapeKeyValues: Record<string, number> | null = null
-        for (const key of next.shapeKeys) {
-          const v = sampled.shapeKeyValues.get(shapeKeyTrackKey(o.id, key.id))
-          if (v === undefined) continue
-          if (!shapeKeyValues) shapeKeyValues = { ...next.shapeKeyValues }
-          shapeKeyValues[key.id] = v
+        if (next.shapeKeys?.length) {
+          let shapeKeyValues: Record<string, number> | null = null
+          for (const key of next.shapeKeys) {
+            const v = sampled.shapeKeyValues.get(shapeKeyTrackKey(o.id, key.id))
+            if (v === undefined) continue
+            if (!shapeKeyValues) shapeKeyValues = { ...next.shapeKeyValues }
+            shapeKeyValues[key.id] = v
+          }
+          if (shapeKeyValues) next = { ...next, shapeKeyValues }
         }
-        return shapeKeyValues ? { ...next, shapeKeyValues } : next
+        // same idea, one level down: a keyframed `pathOffset` overwrites this object's live
+        // `pathDeformRail` settings, which `pathDeformRailVertexDeltas` then just reads normally —
+        // no separate "sampled overlay" needed anywhere else (Viewport.tsx/ffd.ts read
+        // `obj.modifiers` directly).
+        const pathOffset = sampled.pathOffsetValues.get(o.id)
+        if (pathOffset !== undefined && getPathDeformRail(next)) {
+          next = withPathDeformRailSettings(next, (ps) => ({ ...ps, pathOffset }))
+        }
+        return next
       }),
     }))
   },

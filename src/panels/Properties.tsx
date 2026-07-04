@@ -904,7 +904,7 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakePhysics: 'Fake Physics',
   fakePhysicsMesh: 'Fake Physics',
   fakeBehind: 'Fake Behind',
-  pathDeformRail: 'Path Deform (Rail)',
+  pathDeformRail: 'Path Deform',
   ffd: 'FFD (Cage)',
 }
 
@@ -918,12 +918,18 @@ function PathDeformRailModifierBox({
   settings,
   removeModifier,
   updatePathDeformRail,
+  insertPathOffsetKeyframe,
+  hasActiveClip,
+  playheadTime,
 }: {
   obj: SceneObject
   objects: SceneObject[]
   settings: PathDeformRailSettings
   removeModifier: (id: string, type: Modifier['type']) => void
   updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
+  insertPathOffsetKeyframe: (objectId: string, time: number) => void
+  hasActiveClip: boolean
+  playheadTime: number
 }) {
   const pathObjects = objects.filter((o) => o.kind === 'path')
 
@@ -937,7 +943,7 @@ function PathDeformRailModifierBox({
         >
           {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
         </button>
-        <span className="modifier-box-title">Path Deform (Rail)</span>
+        <span className="modifier-box-title">Path Deform</span>
         <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'pathDeformRail')}>
           <TrashIcon size={14} />
         </button>
@@ -1010,6 +1016,14 @@ function PathDeformRailModifierBox({
                 value={settings.pathOffset}
                 onChange={(v) => updatePathDeformRail(obj.id, { pathOffset: v })}
               />
+              <button
+                className="icon-btn"
+                disabled={!hasActiveClip}
+                title={hasActiveClip ? 'Insert a keyframe for Path Offset at the playhead' : 'Create/select an animation clip first'}
+                onClick={() => insertPathOffsetKeyframe(obj.id, playheadTime)}
+              >
+                <AddKeyframeIcon size={14} />
+              </button>
             </div>
           )}
         </>
@@ -1239,6 +1253,8 @@ function ModifiersSection(props: {
   addFakeBehindMaskRef: (id: string, maskId: string) => void
   removeFakeBehindMaskRef: (id: string, maskId: string) => void
   updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
+  insertPathOffsetKeyframe: (objectId: string, time: number) => void
+  playheadTime: number
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
 }) {
@@ -1374,6 +1390,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const addFakeBehindMaskRef = useSceneStore((s) => s.addFakeBehindMaskRef)
   const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
   const updatePathDeformRail = useSceneStore((s) => s.updatePathDeformRail)
+  const insertPathOffsetKeyframe = useSceneStore((s) => s.insertPathOffsetKeyframe)
   const updateFfd = useSceneStore((s) => s.updateFfd)
   const resizeLattice = useSceneStore((s) => s.resizeLattice)
   const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
@@ -1582,6 +1599,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             addFakeBehindMaskRef={addFakeBehindMaskRef}
             removeFakeBehindMaskRef={removeFakeBehindMaskRef}
             updatePathDeformRail={updatePathDeformRail}
+            insertPathOffsetKeyframe={insertPathOffsetKeyframe}
+            playheadTime={playheadTime}
             updateFfd={updateFfd}
             resetFfdCageRest={resetFfdCageRest}
           />

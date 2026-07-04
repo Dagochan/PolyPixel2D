@@ -1,4 +1,4 @@
-import type { AnimationClip, EasingType, LoopMode, ObjectAnimationTrack, ShapeKeyTrack, Transform } from './types'
+import type { AnimationClip, EasingType, LoopMode, ObjectAnimationTrack, PathOffsetTrack, ShapeKeyTrack, Transform } from './types'
 
 function easeFn(easing: EasingType, t: number): number {
   switch (easing) {
@@ -123,13 +123,44 @@ export function sampleShapeKeyTrack(
   return lastKey.value
 }
 
+/** Evaluates one Path Deform (Rail) `pathOffset` track at `time` — identical hold/lerp/cycle rules
+ *  to `sampleShapeKeyTrack`, just for `PathOffsetTrack`'s keyframes instead of `ShapeKeyTrack`'s. */
+export function samplePathOffsetTrack(
+  track: PathOffsetTrack,
+  time: number,
+  cycle?: { duration: number },
+): number | null {
+  const keys = track.keyframes
+  if (keys.length === 0) return null
+  if (time <= keys[0].time) return keys[0].value
+  const lastKey = keys[keys.length - 1]
+  if (time >= lastKey.time) {
+    if (cycle && lastKey.time < cycle.duration) {
+      const span = cycle.duration - lastKey.time
+      const rawT = span <= 0 ? 1 : (time - lastKey.time) / span
+      return lerp(lastKey.value, keys[0].value, easeFn(keys[0].easing, Math.min(1, rawT)))
+    }
+    return lastKey.value
+  }
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i]
+    const b = keys[i + 1]
+    if (time >= a.time && time <= b.time) {
+      const span = b.time - a.time
+      const rawT = span <= 0 ? 1 : (time - a.time) / span
+      return lerp(a.value, b.value, easeFn(b.easing, rawT))
+    }
+  }
+  return lastKey.value
+}
+
 /** Evaluates every animated object (and shape key) in a clip at `time` (raw — resolved into the
  *  clip's playback range internally per its loop mode). Objects/shape keys with no track in this
  *  clip are absent from the result (callers should leave their current value untouched). */
 export function sampleClipAtTime(
   clip: AnimationClip,
   time: number,
-): { transforms: Map<string, Transform>; shapeKeyValues: Map<string, number> } {
+): { transforms: Map<string, Transform>; shapeKeyValues: Map<string, number>; pathOffsetValues: Map<string, number> } {
   const resolved = resolvePlaybackTime(time, clip.duration, clip.loopMode)
   // only a plain 'loop' wraps back to its own start — 'pingpong' already reverses smoothly on its
   // own, and 'none' has nothing past the end to blend toward
@@ -150,5 +181,10 @@ export function sampleClipAtTime(
     const sampled = sampleShapeKeyTrack(track, resolved, cycle)
     if (sampled !== null) shapeKeyValues.set(shapeKeyTrackKey(track.objectId, track.shapeKeyId), sampled)
   }
-  return { transforms, shapeKeyValues }
+  const pathOffsetValues = new Map<string, number>()
+  for (const track of clip.pathOffsetTracks ?? []) {
+    const sampled = samplePathOffsetTrack(track, resolved, cycle)
+    if (sampled !== null) pathOffsetValues.set(track.objectId, sampled)
+  }
+  return { transforms, shapeKeyValues, pathOffsetValues }
 }

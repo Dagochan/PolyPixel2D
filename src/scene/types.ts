@@ -433,6 +433,26 @@ export interface ShapeKeyTrack {
   keyframes: ShapeKeyKeyframe[]
 }
 
+/** A single keyed value on a `PathOffsetTrack` — same shape as `ShapeKeyKeyframe` but for
+ *  `PathDeformRailSettings.pathOffset` instead of a shape key's blend weight. */
+export interface PathOffsetKeyframe {
+  id: string
+  time: number
+  value: number
+  easing: EasingType
+}
+
+/** One object's animated `pathDeformRail` `pathOffset` track within a clip — parallel to
+ *  `ShapeKeyTrack`, but keyed by `objectId` alone (unlike shape keys, an object can have at most
+ *  one `pathDeformRail` modifier — see `Modifier`'s "at most one per type" rule — so there's no
+ *  need for a second identifying id). Lets `pathOffset` be keyframed the same "crawl along the
+ *  path over time" way a shape key's weight is, e.g. animating a rope feeding along a Lattice cage
+ *  (see `PathDeformRailSettings.pathOffset`'s doc). */
+export interface PathOffsetTrack {
+  objectId: string
+  keyframes: PathOffsetKeyframe[]
+}
+
 /** Out-of-range playback behavior once the playhead passes `duration` (or goes below 0 while
  *  scrubbing). 'none' clamps and holds the boundary pose. */
 export type LoopMode = 'none' | 'loop' | 'pingpong'
@@ -467,6 +487,9 @@ export interface AnimationClip {
    *  doesn't drive the object's own transform: it deforms the mesh directly at render time (see the
    *  viewport's per-vertex delta pipeline, alongside shape keys and Fake Flag's vertex mode). */
   fakePhysicsMeshTracks?: FakePhysicsMeshTrack[]
+  /** Path Deform (Rail) `pathOffset` tracks — absent/undefined on older saved projects, treated as
+   *  empty. Same "hand-authored, sparse keyframes" nature as `shapeKeyTracks`, not baked. */
+  pathOffsetTracks?: PathOffsetTrack[]
 }
 
 /** One lagging section's baked offset track for one object, within `AnimationClip.fakePhysicsMeshTracks`. */
