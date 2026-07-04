@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
@@ -1276,6 +1276,18 @@ function ModifiersSection(props: {
     return true
   })
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!addMenuOpen) return
+    const handleOutside = (e: MouseEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => document.removeEventListener('mousedown', handleOutside)
+  }, [addMenuOpen])
 
   return (
     <Section title="Modifiers">
@@ -1310,7 +1322,7 @@ function ModifiersSection(props: {
         )
       })}
       {availableTypes.length > 0 && (
-        <div className="prop-row" style={{ position: 'relative' }}>
+        <div className="prop-row" style={{ position: 'relative' }} ref={addMenuRef}>
           <button onClick={() => setAddMenuOpen((o) => !o)}>+ Add Modifier ▾</button>
           {addMenuOpen && (
             <div className="dropdown-menu">
