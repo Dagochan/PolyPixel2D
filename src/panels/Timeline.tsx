@@ -51,6 +51,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const removePathOffsetKeyframe = useSceneStore((s) => s.removePathOffsetKeyframe)
   const setPathOffsetKeyframeTime = useSceneStore((s) => s.setPathOffsetKeyframeTime)
   const setPathOffsetKeyframeEasing = useSceneStore((s) => s.setPathOffsetKeyframeEasing)
+  const removeFollowPathProgressKeyframe = useSceneStore((s) => s.removeFollowPathProgressKeyframe)
+  const setFollowPathProgressKeyframeTime = useSceneStore((s) => s.setFollowPathProgressKeyframeTime)
+  const setFollowPathProgressKeyframeEasing = useSceneStore((s) => s.setFollowPathProgressKeyframeEasing)
   const setPlayhead = useSceneStore((s) => s.setPlayhead)
   const bakeAllFakePhysics = useSceneStore((s) => s.bakeAllFakePhysics)
 
@@ -71,6 +74,8 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   // shape-key id of its own, but also isn't a Transform key) since a track is keyed by `objectId`
   // alone (see `PathOffsetTrack`'s doc).
   const [selectedKeyIsPathOffset, setSelectedKeyIsPathOffset] = useState(false)
+  // same idea as `selectedKeyIsPathOffset`, for a `followPathProgress` track.
+  const [selectedKeyIsFollowPathProgress, setSelectedKeyIsFollowPathProgress] = useState(false)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -213,6 +218,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     // Path Deform (Rail)'s `pathOffset` — hand-authored keyframes like a shape key's weight, but
     // keyed by `objectId` alone (see `PathOffsetTrack`'s doc), so there's only ever one per object.
     | { kind: 'pathOffset'; objectId: string; keyframes: NonNullable<typeof activeClip.pathOffsetTracks>[number]['keyframes'] }
+    // Same idea as `pathOffset`, for Follow Path's `progress` (see `FollowPathProgressTrack`'s doc).
+    | {
+        kind: 'followPathProgress'
+        objectId: string
+        keyframes: NonNullable<typeof activeClip.followPathProgressTracks>[number]['keyframes']
+      }
   const rowObjectIds: string[] = []
   for (const t of activeClip.tracks) rowObjectIds.push(t.objectId)
   for (const t of activeClip.shapeKeyTracks ?? []) {
@@ -228,6 +239,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   for (const t of activeClip.pathOffsetTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
+  for (const t of activeClip.followPathProgressTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
   const rows: Row[] = []
@@ -248,6 +262,8 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     }
     const pot = (activeClip.pathOffsetTracks ?? []).find((pt) => pt.objectId === objectId)
     if (pot) rows.push({ kind: 'pathOffset', objectId, keyframes: pot.keyframes })
+    const fppt = (activeClip.followPathProgressTracks ?? []).find((pt) => pt.objectId === objectId)
+    if (fppt) rows.push({ kind: 'followPathProgress', objectId, keyframes: fppt.keyframes })
   }
 
   return (
@@ -428,6 +444,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
+            if (row.kind === 'followPathProgress') {
+              return (
+                <div
+                  key={`fpp-${row.objectId}`}
+                  className={'timeline-channel-name timeline-channel-subrow' + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title="Follow Path — Progress"
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  ↳ Progress
+                </div>
+              )
+            }
             return (
               <div
                 key={`fpmb-${row.objectId}`}
@@ -525,7 +553,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                           ? `fpb-${row.objectId}`
                           : row.kind === 'pathOffset'
                             ? `po-${row.objectId}`
-                            : `fpmb-${row.objectId}`
+                            : row.kind === 'followPathProgress'
+                              ? `fpp-${row.objectId}`
+                              : `fpmb-${row.objectId}`
                 }
                 className={
                   'timeline-track-row' +
@@ -557,7 +587,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                           ? `${objects.find((o) => o.id === row.objectId)?.name ?? row.objectId}: t=${k.time.toFixed(2)}s, ${k.easing}`
                           : row.kind === 'pathOffset'
                             ? `Path Offset: t=${k.time.toFixed(2)}s, ${k.easing}`
-                            : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
+                            : row.kind === 'followPathProgress'
+                              ? `Progress: t=${k.time.toFixed(2)}s, ${k.easing}`
+                              : `${row.keyName}: t=${k.time.toFixed(2)}s, ${k.easing}`
                       }
                       onPointerDown={(e) => {
                         e.stopPropagation()
@@ -565,6 +597,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                         setSelectedKeyObjectId(row.objectId)
                         setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
                         setSelectedKeyIsPathOffset(row.kind === 'pathOffset')
+                        setSelectedKeyIsFollowPathProgress(row.kind === 'followPathProgress')
                         setSelectedKeyId(k.id)
                         draggingKeyRef.current = k.id
                         e.currentTarget.setPointerCapture(e.pointerId)
@@ -576,6 +609,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                         const time = snapToFrame(xToTime(e.clientX - rect.left))
                         if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
                         else if (row.kind === 'pathOffset') setPathOffsetKeyframeTime(row.objectId, k.id, time)
+                        else if (row.kind === 'followPathProgress') setFollowPathProgressKeyframeTime(row.objectId, k.id, time)
                         else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
                       }}
                       onPointerUp={() => {
@@ -596,6 +630,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           {(() => {
             const shapeKeyId = selectedKeyShapeKeyId
             const isPathOffset = selectedKeyIsPathOffset
+            const isFollowPathProgress = selectedKeyIsFollowPathProgress
             const key = shapeKeyId
               ? (activeClip.shapeKeyTracks ?? [])
                   .find((t) => t.objectId === selectedKeyObjectId && t.shapeKeyId === shapeKeyId)
@@ -604,7 +639,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 ? (activeClip.pathOffsetTracks ?? [])
                     .find((t) => t.objectId === selectedKeyObjectId)
                     ?.keyframes.find((k) => k.id === selectedKeyId)
-                : activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)?.keyframes.find((k) => k.id === selectedKeyId)
+                : isFollowPathProgress
+                  ? (activeClip.followPathProgressTracks ?? [])
+                      .find((t) => t.objectId === selectedKeyObjectId)
+                      ?.keyframes.find((k) => k.id === selectedKeyId)
+                  : activeClip.tracks.find((t) => t.objectId === selectedKeyObjectId)?.keyframes.find((k) => k.id === selectedKeyId)
             if (!key) return null
             return (
               <>
@@ -617,6 +656,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       const easing = e.target.value as EasingType
                       if (shapeKeyId) setShapeKeyKeyframeEasing(selectedKeyObjectId, shapeKeyId, key.id, easing)
                       else if (isPathOffset) setPathOffsetKeyframeEasing(selectedKeyObjectId, key.id, easing)
+                      else if (isFollowPathProgress) setFollowPathProgressKeyframeEasing(selectedKeyObjectId, key.id, easing)
                       else setKeyframeEasing(selectedKeyObjectId, key.id, easing)
                     }}
                   >
@@ -632,11 +672,13 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   onClick={() => {
                     if (shapeKeyId) removeShapeKeyKeyframe(selectedKeyObjectId, shapeKeyId, key.id)
                     else if (isPathOffset) removePathOffsetKeyframe(selectedKeyObjectId, key.id)
+                    else if (isFollowPathProgress) removeFollowPathProgressKeyframe(selectedKeyObjectId, key.id)
                     else removeKeyframe(selectedKeyObjectId, key.id)
                     setSelectedKeyId(null)
                     setSelectedKeyObjectId(null)
                     setSelectedKeyShapeKeyId(null)
                     setSelectedKeyIsPathOffset(false)
+                    setSelectedKeyIsFollowPathProgress(false)
                   }}
                 >
                   <TrashIcon size={14} /> Delete keyframe

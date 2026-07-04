@@ -21,6 +21,7 @@ import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
 import { pathDeformRailVertexDeltas } from '../scene/pathDeformRail'
+import { applyFollowPath } from '../scene/followPath'
 import { ffdVertexDeltas } from '../scene/ffd'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
@@ -1147,8 +1148,10 @@ export default function Viewport() {
     // Bake rotation-mode sway into a shadow `objects` array so every world-transform composition
     // below (including parent/child chains) automatically carries it, exactly like
     // `displayVertices` does for shape keys. `objects` still means "editing/gizmo code below should
-    // use the raw pose"; only this drawing pass swaps in the swayed version.
-    const objects = applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration)
+    // use the raw pose"; only this drawing pass swaps in the swayed version. Follow Path's current
+    // `progress` gets the same treatment, applied after Fake Flag so a swaying parent's motion is
+    // already folded in before any Follow Path child's world-to-local conversion reads it.
+    const objects = applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration))
 
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)

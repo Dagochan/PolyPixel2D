@@ -10,6 +10,7 @@ import type {
   FakePhysicsMeshSettings,
   FakePhysicsSettings,
   FfdSettings,
+  FollowPathSettings,
   InsertSlot,
   Modifier,
   PathDeformRailSettings,
@@ -904,8 +905,93 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakePhysics: 'Fake Physics',
   fakePhysicsMesh: 'Fake Physics',
   fakeBehind: 'Fake Behind',
+  followPath: 'Follow Path',
   pathDeformRail: 'Path Deform',
   ffd: 'FFD (Cage)',
+}
+
+/** One modifier's settings UI for Follow Path — see `FollowPathSettings`'s doc. Offered on any
+ *  object (no Edit Mode / mesh requirement at all), unlike Path Deform's cage-only restriction. */
+function FollowPathModifierBox({
+  obj,
+  objects,
+  settings,
+  removeModifier,
+  updateFollowPath,
+  insertFollowPathProgressKeyframe,
+  hasActiveClip,
+  playheadTime,
+}: {
+  obj: SceneObject
+  objects: SceneObject[]
+  settings: FollowPathSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  updateFollowPath: (id: string, patch: Partial<FollowPathSettings>) => void
+  insertFollowPathProgressKeyframe: (objectId: string, time: number) => void
+  hasActiveClip: boolean
+  playheadTime: number
+}) {
+  const pathObjects = objects.filter((o) => o.kind === 'path')
+
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => updateFollowPath(obj.id, { enabled: !settings.enabled })}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Follow Path</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'followPath')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row">
+            <select
+              value={settings.pathObjectId ?? ''}
+              onChange={(e) => updateFollowPath(obj.id, { pathObjectId: e.target.value || null })}
+            >
+              <option value="">(no path assigned)</option>
+              {pathObjects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Progress"
+              value={settings.progress}
+              step={0.01}
+              onChange={(v) => updateFollowPath(obj.id, { progress: v })}
+            />
+            <button
+              className="icon-btn"
+              disabled={!hasActiveClip}
+              title={hasActiveClip ? 'Insert a keyframe for Progress at the playhead' : 'Create/select an animation clip first'}
+              onClick={() => insertFollowPathProgressKeyframe(obj.id, playheadTime)}
+            >
+              <AddKeyframeIcon size={14} />
+            </button>
+          </div>
+          <div className="prop-row">
+            <button
+              className={'icon-btn' + (settings.alignRotation ? ' active' : '')}
+              title="Follow Curve — rotate to face the path's direction of travel as Progress moves (Blender's Follow Path 'Follow Curve' option). Off: keeps its own rotation, sliding like a bead on a wire."
+              onClick={() => updateFollowPath(obj.id, { alignRotation: !settings.alignRotation })}
+            >
+              Follow Curve
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 /** One modifier's settings UI for Path Deform (Rail) — see `PathDeformRailSettings`'s doc. Only
@@ -1255,6 +1341,8 @@ function ModifiersSection(props: {
   updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
   insertPathOffsetKeyframe: (objectId: string, time: number) => void
   playheadTime: number
+  updateFollowPath: (id: string, patch: Partial<FollowPathSettings>) => void
+  insertFollowPathProgressKeyframe: (objectId: string, time: number) => void
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
 }) {
@@ -1305,6 +1393,9 @@ function ModifiersSection(props: {
         }
         if (m.type === 'fakeBehind') {
           return <FakeBehindModifierBox key={m.type} {...props} settings={m.settings} />
+        }
+        if (m.type === 'followPath') {
+          return <FollowPathModifierBox key={m.type} {...props} settings={m.settings} />
         }
         if (m.type === 'pathDeformRail') {
           return <PathDeformRailModifierBox key={m.type} {...props} settings={m.settings} />
@@ -1403,6 +1494,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
   const updatePathDeformRail = useSceneStore((s) => s.updatePathDeformRail)
   const insertPathOffsetKeyframe = useSceneStore((s) => s.insertPathOffsetKeyframe)
+  const updateFollowPath = useSceneStore((s) => s.updateFollowPath)
+  const insertFollowPathProgressKeyframe = useSceneStore((s) => s.insertFollowPathProgressKeyframe)
   const updateFfd = useSceneStore((s) => s.updateFfd)
   const resizeLattice = useSceneStore((s) => s.resizeLattice)
   const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
@@ -1613,6 +1706,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             updatePathDeformRail={updatePathDeformRail}
             insertPathOffsetKeyframe={insertPathOffsetKeyframe}
             playheadTime={playheadTime}
+            updateFollowPath={updateFollowPath}
+            insertFollowPathProgressKeyframe={insertFollowPathProgressKeyframe}
             updateFfd={updateFfd}
             resetFfdCageRest={resetFfdCageRest}
           />

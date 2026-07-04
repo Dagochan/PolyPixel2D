@@ -10,6 +10,8 @@ import type {
   FakePhysicsMeshSettings,
   FakePhysicsMeshTrack,
   FakePhysicsSettings,
+  FollowPathProgressTrack,
+  FollowPathSettings,
   InsertSlot,
   LoopMode,
   Mesh,
@@ -30,6 +32,7 @@ import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
 import { boundsVertices } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS, getPathDeformRail } from './pathDeformRail'
+import { DEFAULT_FOLLOW_PATH_SETTINGS, getFollowPath } from './followPath'
 import { DEFAULT_FFD_SETTINGS } from './ffd'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -423,6 +426,16 @@ interface SceneState {
   /** Merge a partial patch into this object's Path Deform (Rail) settings — adds the modifier
    *  (with defaults merged with `patch`) if it isn't already in the stack. */
   updatePathDeformRail: (id: string, patch: Partial<PathDeformRailSettings>) => void
+  /** Merge a partial patch into this object's Follow Path settings — adds the modifier (with
+   *  defaults merged with `patch`) if it isn't already in the stack. */
+  updateFollowPath: (id: string, patch: Partial<FollowPathSettings>) => void
+  /** Keys the given object's current live `followPath.progress` at `time` — same idea as
+   *  `insertPathOffsetKeyframe`, but for `FollowPathProgressTrack`. Creates the track if absent,
+   *  no-op if the object has no `followPath` modifier or there's no active clip. */
+  insertFollowPathProgressKeyframe: (objectId: string, time: number, easing?: EasingType) => void
+  removeFollowPathProgressKeyframe: (objectId: string, keyframeId: string) => void
+  setFollowPathProgressKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
+  setFollowPathProgressKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
   /** Merge a partial patch into this object's FFD settings — adds the modifier (with defaults
    *  merged with `patch`) if it isn't already in the stack. Setting `cageObjectId` to a cage
    *  that doesn't yet have a `cageRestVertices` snapshot seeds one from its current
@@ -608,6 +621,16 @@ function withPathDeformRailSettings(
   const modifiers = existing
     ? o.modifiers!.map((m) => (m.type === 'pathDeformRail' ? { ...m, settings } : m))
     : [...(o.modifiers ?? []), { type: 'pathDeformRail' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Same idea as `withFakeFlagSettings`, for the `followPath` modifier. */
+function withFollowPathSettings(o: SceneObject, updater: (settings: FollowPathSettings) => FollowPathSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'followPath')
+  const settings = updater(existing?.settings ?? DEFAULT_FOLLOW_PATH_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'followPath' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'followPath' as const, settings }]
   return { ...o, modifiers }
 }
 
@@ -2122,6 +2145,81 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
+  insertFollowPathProgressKeyframe: (objectId, time, easing = 'linear') => {
+    const s = get()
+    const clipId = s.activeClipId
+    if (!clipId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    const settings = obj ? getFollowPath(obj) : undefined
+    if (!settings) return
+    const value = settings.progress
+    get().beginChange()
+    set((st) => ({
+      clips: st.clips.map((c) => {
+        if (c.id !== clipId) return c
+        const tracks: FollowPathProgressTrack[] = c.followPathProgressTracks ?? []
+        const existingTrack = tracks.find((t) => t.objectId === objectId)
+        const newKey = { id: genId('key'), time, value, easing }
+        if (!existingTrack) {
+          return { ...c, followPathProgressTracks: [...tracks, { objectId, keyframes: [newKey] }] }
+        }
+        const withoutSameTime = existingTrack.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return {
+          ...c,
+          followPathProgressTracks: tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)),
+        }
+      }),
+    }))
+  },
+
+  removeFollowPathProgressKeyframe: (objectId, keyframeId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          followPathProgressTracks: (c.followPathProgressTracks ?? [])
+            .map((t) => (t.objectId === objectId ? { ...t, keyframes: t.keyframes.filter((k) => k.id !== keyframeId) } : t))
+            .filter((t) => t.objectId !== objectId || t.keyframes.length > 0),
+        }
+      }),
+    }))
+  },
+
+  setFollowPathProgressKeyframeTime: (objectId, keyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          followPathProgressTracks: (c.followPathProgressTracks ?? []).map((t) => {
+            if (t.objectId !== objectId) return t
+            const keyframes = t.keyframes.map((k) => (k.id === keyframeId ? { ...k, time } : k)).sort((a, b) => a.time - b.time)
+            return { ...t, keyframes }
+          }),
+        }
+      }),
+    }))
+  },
+
+  setFollowPathProgressKeyframeEasing: (objectId, keyframeId, easing) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        return {
+          ...c,
+          followPathProgressTracks: (c.followPathProgressTracks ?? []).map((t) =>
+            t.objectId !== objectId ? t : { ...t, keyframes: t.keyframes.map((k) => (k.id === keyframeId ? { ...k, easing } : k)) },
+          ),
+        }
+      }),
+    }))
+  },
+
   addModifier: (id, type) => {
     get().beginChange()
     set((s) => ({
@@ -2139,9 +2237,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                   }
                 : type === 'fakeBehind'
                   ? { type: 'fakeBehind', settings: { ...DEFAULT_FAKE_BEHIND_SETTINGS, maskObjectIds: [] } }
-                  : type === 'pathDeformRail'
-                    ? { type: 'pathDeformRail', settings: { ...DEFAULT_PATH_DEFORM_RAIL_SETTINGS } }
-                    : { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
+                  : type === 'followPath'
+                    ? { type: 'followPath', settings: { ...DEFAULT_FOLLOW_PATH_SETTINGS } }
+                    : type === 'pathDeformRail'
+                      ? { type: 'pathDeformRail', settings: { ...DEFAULT_PATH_DEFORM_RAIL_SETTINGS } }
+                      : { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -2227,6 +2327,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     get().beginChange()
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? withPathDeformRailSettings(o, (ps) => ({ ...ps, ...patch })) : o)),
+    }))
+  },
+
+  updateFollowPath: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withFollowPathSettings(o, (fs) => ({ ...fs, ...patch })) : o)),
     }))
   },
 
@@ -2538,6 +2645,14 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         const pathOffset = sampled.pathOffsetValues.get(o.id)
         if (pathOffset !== undefined && getPathDeformRail(next)) {
           next = withPathDeformRailSettings(next, (ps) => ({ ...ps, pathOffset }))
+        }
+        // same idea again, for Follow Path's `progress` — the actual position/rotation-along-the-
+        // path effect itself is applied at render time (`applyFollowPath`, mirroring Fake Flag's
+        // sway), not baked into `transform` here; this only keeps the *dial* (`progress`) current
+        // so `applyFollowPath` and the Properties panel both read the right live value.
+        const followProgress = sampled.followPathProgressValues.get(o.id)
+        if (followProgress !== undefined && getFollowPath(next)) {
+          next = withFollowPathSettings(next, (fs) => ({ ...fs, progress: followProgress }))
         }
         return next
       }),

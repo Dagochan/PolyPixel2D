@@ -1,60 +1,6 @@
-import { evaluatePathCurve } from './pathCurve'
+import { evaluatePathCurve, polylineLength, samplePolyline } from './pathCurve'
 import { applyTransform, getWorldTransform, inverseTransform } from './transformUtils'
 import type { PathDeformRailSettings, SceneObject, Vec2 } from './types'
-
-function polylineLength(polyline: Vec2[]): number {
-  let total = 0
-  for (let i = 0; i < polyline.length - 1; i++) {
-    total += Math.hypot(polyline[i + 1].x - polyline[i].x, polyline[i + 1].y - polyline[i].y)
-  }
-  return total
-}
-
-/** Point at arc length `s` along `polyline` — extrapolated past either end along that end's own
- *  tangent when `s` falls outside `[0, polylineLength(polyline)]` (matches how Blender's Curve
- *  Modifier treats mesh extending past a curve's ends: it keeps going straight rather than
- *  clamping flat onto the endpoint). */
-function positionAt(polyline: Vec2[], s: number): Vec2 {
-  if (polyline.length < 2) return polyline[0] ?? { x: 0, y: 0 }
-
-  const pointOn = (a: Vec2, b: Vec2, t: number): Vec2 => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
-
-  if (s <= 0) return pointOn(polyline[0], polyline[1], s / (Math.hypot(polyline[1].x - polyline[0].x, polyline[1].y - polyline[0].y) || 1))
-
-  let acc = 0
-  for (let i = 0; i < polyline.length - 1; i++) {
-    const a = polyline[i]
-    const b = polyline[i + 1]
-    const segLen = Math.hypot(b.x - a.x, b.y - a.y)
-    const isLastSeg = i === polyline.length - 2
-    if (s <= acc + segLen || isLastSeg) {
-      const t = segLen > 0 ? (s - acc) / segLen : 0
-      return pointOn(a, b, isLastSeg ? t : Math.min(1, t))
-    }
-    acc += segLen
-  }
-  return polyline[polyline.length - 1]
-}
-
-/** Point + left-normal unit vector at arc length `s` along `polyline`. The normal is a central
- *  difference over a window several dense segments wide (`pathLength`-scaled `eps`), not the raw
- *  direction of whichever single segment `s` happens to land in — `evaluatePathCurve`'s output is
- *  only piecewise-linear, so a single segment's direction has small discontinuities at every
- *  sample boundary. Those are invisible for a vertex near the path itself, but a vertex far along
- *  the lateral offset amplifies them into a visible flicker as `pathOffset` sweeps the sampled
- *  position across segment joints during animation. Central-differencing over a wider window
- *  smooths the normal continuously past those joints instead. */
-function samplePolyline(polyline: Vec2[], s: number, pathLength: number): { point: Vec2; normal: Vec2 } {
-  if (polyline.length < 2) return { point: polyline[0] ?? { x: 0, y: 0 }, normal: { x: 0, y: 1 } }
-  const point = positionAt(polyline, s)
-  const eps = Math.max(1, pathLength / 100)
-  const before = positionAt(polyline, s - eps)
-  const after = positionAt(polyline, s + eps)
-  const dx = after.x - before.x
-  const dy = after.y - before.y
-  const len = Math.hypot(dx, dy) || 1
-  return { point, normal: { x: -dy / len, y: dx / len } }
-}
 
 /** This object's Path Deform (Rail) settings, if it has that modifier in its stack (see
  *  `Modifier`) — `undefined` otherwise. */

@@ -201,6 +201,31 @@ export interface FakeBehindSettings {
   maskObjectIds: string[]
 }
 
+/** Slides an object's own Transform (position, and optionally rotation) along a `kind: 'path'`
+ *  object's curve — the Blender "Follow Path" constraint analogue (see project spec). Unlike
+ *  `PathDeformRailSettings`, this never touches the mesh at all — the object rides the path as a
+ *  rigid body, like a bead on a wire, rather than bending. Not baked/simulated — a pure function of
+ *  `progress` and the path's current shape, evaluated at render time (see `followPathTransform`),
+ *  so it stays correct as either animates. Offered on any object (no Edit Mode requirement, same
+ *  as Fake Flag/FakeBehind — there's no mesh-specific step here at all). */
+export interface FollowPathSettings {
+  enabled: boolean
+  /** Id of the `kind: 'path'` object this object rides along. `null` = not yet assigned. Tolerant
+   *  reference — a deleted path just makes this a no-op, same convention as
+   *  `parentId`/`FakeBehindSettings.maskObjectIds`. */
+  pathObjectId: string | null
+  /** 0..1 fraction of the path's current total length — 0 is the path's start, 1 its end. The
+   *  "for free" keyframeable dial this whole modifier exists for (see project spec) — animating
+   *  this over time is what makes the object travel, without keying a `Transform` snapshot at
+   *  every point along a potentially winding curve. */
+  progress: number
+  /** false (default) — this object's own rotation is left alone; it translates along the path but
+   *  keeps facing whichever way it already faced (a bead sliding on a wire). true — rotation is
+   *  continuously set to match the path's local tangent direction there (a car turning to follow
+   *  the road), Blender's Follow Path "Follow Curve" option. */
+  alignRotation: boolean
+}
+
 /** Bends a `kind: 'lattice'` cage's Basis vertices along a `kind: 'path'` object's curve (see
  *  project spec). Not baked/simulated — a pure function of the current path shape, so it stays
  *  correct as it animates (e.g. via the path's own control points being keyframed). Only ever
@@ -274,6 +299,7 @@ export type Modifier =
   | { type: 'fakePhysics'; settings: FakePhysicsSettings }
   | { type: 'fakePhysicsMesh'; settings: FakePhysicsMeshSettings }
   | { type: 'fakeBehind'; settings: FakeBehindSettings }
+  | { type: 'followPath'; settings: FollowPathSettings }
   | { type: 'pathDeformRail'; settings: PathDeformRailSettings }
   | { type: 'ffd'; settings: FfdSettings }
 
@@ -453,6 +479,26 @@ export interface PathOffsetTrack {
   keyframes: PathOffsetKeyframe[]
 }
 
+/** A single keyed value on a `FollowPathProgressTrack` — same shape as `PathOffsetKeyframe` but
+ *  for `FollowPathSettings.progress` instead. */
+export interface FollowPathProgressKeyframe {
+  id: string
+  time: number
+  value: number
+  easing: EasingType
+}
+
+/** One object's animated `followPath` `progress` track within a clip — parallel to
+ *  `PathOffsetTrack` (keyed by `objectId` alone, for the same "at most one per type" reason). This
+ *  is the whole point of `FollowPathSettings.progress` existing as its own dial rather than
+ *  keyframing the object's Transform directly — animating this one scalar drives potentially
+ *  complex position (and rotation, if `alignRotation`) changes along a winding path, without
+ *  needing a `Transform` key at every point along it. */
+export interface FollowPathProgressTrack {
+  objectId: string
+  keyframes: FollowPathProgressKeyframe[]
+}
+
 /** Out-of-range playback behavior once the playhead passes `duration` (or goes below 0 while
  *  scrubbing). 'none' clamps and holds the boundary pose. */
 export type LoopMode = 'none' | 'loop' | 'pingpong'
@@ -490,6 +536,9 @@ export interface AnimationClip {
   /** Path Deform (Rail) `pathOffset` tracks — absent/undefined on older saved projects, treated as
    *  empty. Same "hand-authored, sparse keyframes" nature as `shapeKeyTracks`, not baked. */
   pathOffsetTracks?: PathOffsetTrack[]
+  /** Follow Path `progress` tracks — absent/undefined on older saved projects, treated as empty.
+   *  Same "hand-authored, sparse keyframes" nature as `pathOffsetTracks`, not baked. */
+  followPathProgressTracks?: FollowPathProgressTrack[]
 }
 
 /** One lagging section's baked offset track for one object, within `AnimationClip.fakePhysicsMeshTracks`. */
