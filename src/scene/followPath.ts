@@ -38,7 +38,18 @@ export function followPathWorldTransform(obj: SceneObject, allObjects: SceneObje
   if (!settings.alignRotation) return { x: point.x, y: point.y, rotation: objWorld.rotation }
   // `normal` is the left-normal of the path's tangent there (see `samplePolyline`'s doc) — rotate
   // it -90° to recover the tangent (direction of travel) itself, then face that direction.
-  return { x: point.x, y: point.y, rotation: Math.atan2(-normal.x, normal.y) }
+  const travelAngle = Math.atan2(-normal.x, normal.y)
+  // Which way is "forward" is read from this object's own Tail→Head vector (in local space, i.e.
+  // before this object's own rotation is applied) rather than assuming local +X — anatomical
+  // head/tail (front/back), not Blender bone head/tail (base/tip): Head is the "face" that should
+  // point where the object is going, Tail the back end trailing behind it — so an object modeled
+  // facing any direction just needs its Head dragged (Pivot mode) to point that way once, no
+  // separate axis-picker setting needed. A zero-length Tail→Head (Tail left at its default,
+  // coincident with Head) falls back to local +X, matching the pre-Head/Tail-aware behavior. */
+  const fx = obj.transform.head.x - obj.tail.x
+  const fy = obj.transform.head.y - obj.tail.y
+  const forwardAngle = fx === 0 && fy === 0 ? 0 : Math.atan2(fy, fx)
+  return { x: point.x, y: point.y, rotation: travelAngle - forwardAngle }
 }
 
 /** Every Follow-Path object in `objects`, with its current `progress` along its path baked into
