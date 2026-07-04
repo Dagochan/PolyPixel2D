@@ -9,8 +9,10 @@ import type {
   FakeFlagSettings,
   FakePhysicsMeshSettings,
   FakePhysicsSettings,
+  FfdSettings,
   InsertSlot,
   Modifier,
+  PathDeformSettings,
   SceneObject,
 } from '../scene/types'
 import UvEditor from './UvEditor'
@@ -902,6 +904,196 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   fakePhysics: 'Fake Physics',
   fakePhysicsMesh: 'Fake Physics',
   fakeBehind: 'Fake Behind',
+  pathDeform: 'Path Deform',
+  ffd: 'FFD (Cage)',
+}
+
+/** One modifier's settings UI for Path Deform — see `PathDeformSettings`'s doc for the underlying
+ *  math. Unlike the modifier's first version, there's no vertex selection/Edit Mode step: `axis`
+ *  reads each vertex's own local coordinates directly and continuously. The target path is picked
+ *  from a dropdown of every `kind: 'path'` object in the scene (there's no drag-and-drop precedent
+ *  to reuse here since a path is a single reference, not a growable list like FakeBehind's masks). */
+function PathDeformModifierBox({
+  obj,
+  objects,
+  settings,
+  removeModifier,
+  updatePathDeform,
+}: {
+  obj: SceneObject
+  objects: SceneObject[]
+  settings: PathDeformSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+}) {
+  const pathObjects = objects.filter((o) => o.kind === 'path')
+
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => updatePathDeform(obj.id, { enabled: !settings.enabled })}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Path Deform</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'pathDeform')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row">
+            <select
+              value={settings.pathObjectId ?? ''}
+              onChange={(e) => updatePathDeform(obj.id, { pathObjectId: e.target.value || null })}
+            >
+              <option value="">(no path assigned)</option>
+              {pathObjects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="prop-row">
+            <button
+              className={'icon-btn' + (settings.axis === 'x' ? ' active' : '')}
+              title="Local X runs along the path (Blender's Curve Modifier default)"
+              onClick={() => updatePathDeform(obj.id, { axis: 'x' })}
+            >
+              Axis: X
+            </button>
+            <button
+              className={'icon-btn' + (settings.axis === 'y' ? ' active' : '')}
+              title="Local Y runs along the path"
+              onClick={() => updatePathDeform(obj.id, { axis: 'y' })}
+            >
+              Axis: Y
+            </button>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Center"
+              value={settings.center}
+              onChange={(v) => updatePathDeform(obj.id, { center: v })}
+            />
+          </div>
+          <div className="prop-row">
+            <button
+              className={'icon-btn' + (settings.stretch ? ' active' : '')}
+              title="Stretch — the spine's whole length rescales to span the entire path"
+              onClick={() => updatePathDeform(obj.id, { stretch: true })}
+            >
+              Stretch
+            </button>
+            <button
+              className={'icon-btn' + (!settings.stretch ? ' active' : '')}
+              title="Fixed length — the spine keeps its own length and slides along the path from Path Offset, e.g. to crawl/feed a mesh from the path's start toward its end over time"
+              onClick={() => updatePathDeform(obj.id, { stretch: false })}
+            >
+              Fixed length
+            </button>
+          </div>
+          {!settings.stretch && (
+            <div className="prop-row">
+              <NumberField
+                label="Path Offset"
+                value={settings.pathOffset}
+                onChange={(v) => updatePathDeform(obj.id, { pathOffset: v })}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** One modifier's settings UI for FFD — see `FfdSettings`'s doc. The cage is a `kind: 'lattice'`
+ *  object (its grid dimensions are its own authoritative property, not entered here), edited
+ *  entirely through the *existing* Edit Mode vertex UI — no new viewport interaction needed here,
+ *  since dragging the cage's own vertices is what deforms whatever references it. */
+function FfdModifierBox({
+  obj,
+  objects,
+  settings,
+  removeModifier,
+  updateFfd,
+  resetFfdCageRest,
+}: {
+  obj: SceneObject
+  objects: SceneObject[]
+  settings: FfdSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  updateFfd: (id: string, patch: Partial<FfdSettings>) => void
+  resetFfdCageRest: (cageObjectId: string) => void
+}) {
+  const cageObjects = objects.filter((o) => o.kind === 'lattice')
+  const cage = objects.find((o) => o.id === settings.cageObjectId)
+  const expectedCount = (cage ? Math.max(2, Math.floor(cage.latticeCols ?? 0)) * Math.max(2, Math.floor(cage.latticeRows ?? 0)) : 0)
+  const vertexCountMismatch = !!cage && cage.mesh.vertices.length !== expectedCount
+
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => updateFfd(obj.id, { enabled: !settings.enabled })}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">FFD (Cage)</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'ffd')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row">
+            <select
+              value={settings.cageObjectId ?? ''}
+              onChange={(e) => updateFfd(obj.id, { cageObjectId: e.target.value || null })}
+            >
+              <option value="">(no cage assigned)</option>
+              {cageObjects.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} ({o.latticeCols}×{o.latticeRows})
+                </option>
+              ))}
+            </select>
+          </div>
+          {cageObjects.length === 0 && (
+            <div className="prop-row prop-static">
+              <span>No Lattice objects in the scene yet — add one from "+ Add ▾"</span>
+            </div>
+          )}
+          {vertexCountMismatch && (
+            <div className="prop-row prop-static">
+              <span>
+                Cage has {cage!.mesh.vertices.length} vertices, expected {expectedCount} (its topology was edited
+                away from a clean grid) — no-op until it's a clean {cage!.latticeCols}×{cage!.latticeRows} grid
+                again
+              </span>
+            </div>
+          )}
+          {cage && (
+            <div className="prop-row">
+              <button
+                title="Re-freeze this cage's undeformed shape from its current vertex positions"
+                onClick={() => resetFfdCageRest(cage.id)}
+              >
+                Reset cage rest shape
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 /** One modifier's settings UI for FakeBehind. Rather than checkbox-listing every object in the
@@ -1040,6 +1232,9 @@ function ModifiersSection(props: {
   toggleFakeBehindEnabled: (id: string) => void
   addFakeBehindMaskRef: (id: string, maskId: string) => void
   removeFakeBehindMaskRef: (id: string, maskId: string) => void
+  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+  updateFfd: (id: string, patch: Partial<FfdSettings>) => void
+  resetFfdCageRest: (cageObjectId: string) => void
 }) {
   const { obj, objects, mode, addModifier } = props
   const modifiers = obj.modifiers ?? []
@@ -1054,6 +1249,7 @@ function ModifiersSection(props: {
     if (addedTypes.has(t)) return false
     if (t === 'fakePhysicsMesh') return mode === 'edit' && obj.kind !== 'empty'
     if (t === 'fakePhysics') return mode !== 'edit'
+    if (t === 'pathDeform') return obj.kind !== 'empty' && obj.kind !== 'path'
     return true
   })
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -1074,6 +1270,12 @@ function ModifiersSection(props: {
         }
         if (m.type === 'fakeBehind') {
           return <FakeBehindModifierBox key={m.type} {...props} settings={m.settings} />
+        }
+        if (m.type === 'pathDeform') {
+          return <PathDeformModifierBox key={m.type} {...props} settings={m.settings} />
+        }
+        if (m.type === 'ffd') {
+          return <FfdModifierBox key={m.type} {...props} settings={m.settings} />
         }
         return (
           <FakePhysicsModifierBox
@@ -1164,6 +1366,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const toggleFakeBehindEnabled = useSceneStore((s) => s.toggleFakeBehindEnabled)
   const addFakeBehindMaskRef = useSceneStore((s) => s.addFakeBehindMaskRef)
   const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
+  const updatePathDeform = useSceneStore((s) => s.updatePathDeform)
+  const updateFfd = useSceneStore((s) => s.updateFfd)
+  const resizeLattice = useSceneStore((s) => s.resizeLattice)
+  const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
   const beginChange = useSceneStore((s) => s.beginChange)
   const hasVertexSelection = useSceneStore(
     (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
@@ -1377,6 +1583,9 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             toggleFakeBehindEnabled={toggleFakeBehindEnabled}
             addFakeBehindMaskRef={addFakeBehindMaskRef}
             removeFakeBehindMaskRef={removeFakeBehindMaskRef}
+            updatePathDeform={updatePathDeform}
+            updateFfd={updateFfd}
+            resetFfdCageRest={resetFfdCageRest}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (
@@ -1428,6 +1637,29 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             <div className="prop-row prop-static">
               <span>Path ({obj.mesh.vertices.length} control points) — no mesh, meant to be referenced by other objects' Path Follow/Path Deform modifiers</span>
             </div>
+          ) : obj.kind === 'lattice' ? (
+            <Section title="Lattice">
+              <div className="prop-row prop-static">
+                <span>FFD cage — an object's FFD modifier references this, then dragging these vertices in Edit Mode deforms it</span>
+              </div>
+              <div className="prop-row">
+                <NumberField
+                  label="Columns"
+                  value={obj.latticeCols ?? 2}
+                  step={1}
+                  onChange={(v) => resizeLattice(obj.id, Math.max(2, Math.round(v)), obj.latticeRows ?? 2)}
+                />
+                <NumberField
+                  label="Rows"
+                  value={obj.latticeRows ?? 2}
+                  step={1}
+                  onChange={(v) => resizeLattice(obj.id, obj.latticeCols ?? 2, Math.max(2, Math.round(v)))}
+                />
+              </div>
+              <div className="prop-row prop-static">
+                <span>Changing columns/rows resets this lattice to a fresh, undeformed grid at the new resolution</span>
+              </div>
+            </Section>
           ) : (
             <>
               <Section title="Material">

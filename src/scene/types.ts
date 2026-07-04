@@ -201,6 +201,79 @@ export interface FakeBehindSettings {
   maskObjectIds: string[]
 }
 
+/** Bends a mesh's Basis vertices along a `kind: 'path'` object's curve (see project spec — the
+ *  "Blender Curve Modifier" analogue). Not baked/simulated — a pure function of the current
+ *  path shape, so it stays correct as it animates (e.g. via Path Follow on the path object once
+ *  that exists, or the path's own control points being keyframed).
+ *
+ *  Reads each vertex's position along the deform directly and continuously from its own local
+ *  `mesh.vertices` coordinates (`axis` picks which local axis runs "along" the path) — the same
+ *  convention Blender's Curve Modifier uses. An earlier version instead required picking an
+ *  ordered "spine" vertex chain and projected each vertex onto it; that discrete polyline faceted
+ *  visibly at every hand-picked spine point (and pinched/stretched further on tight bends no
+ *  matter how the polyline was smoothed), so it was dropped in favor of this continuous,
+ *  selection-free mapping — closer to how a lattice/cage deformer (e.g. Cinema 4D's Spline Wrap,
+ *  per the user's recollection) reads a cage's local coordinates. */
+export interface PathDeformSettings {
+  enabled: boolean
+  /** Id of the `kind: 'path'` object this mesh bends along. `null` = not yet assigned (modifier
+   *  is a no-op until one is picked). Tolerant reference — a deleted path just makes this a no-op,
+   *  same convention as `parentId`/`FakeBehindSettings.maskObjectIds`. */
+  pathObjectId: string | null
+  /** Which of this mesh's own local axes runs "along" the path — the other becomes the lateral
+   *  distance from it (fed into `center`/the fold-prevention clamp). 'x' (default) matches
+   *  Blender's Curve Modifier default. */
+  axis: 'x' | 'y'
+  /** Extra signed distance added to every vertex's own lateral offset (`axis`'s other coordinate),
+   *  along the path's local normal — the "for free" whole-mesh offset from the project spec (e.g.
+   *  nudging a guardrail to one side of the road it follows). 0 = vertices sit exactly as far
+   *  from the path as their own local coordinate placed them. Named "Center" in the UI (not
+   *  "Offset") specifically to avoid colliding with `pathOffset`'s naming — other DCCs commonly
+   *  call *that* concept "Offset" (progress along a curve), which this app calls `pathOffset`
+   *  instead; see that field's doc. */
+  center: number
+  /** true (default) — this mesh's own local-axis extent is rescaled to span the *entire* path
+   *  (start to end), i.e. the mesh stretches/shrinks to fit whatever length the path currently
+   *  has. false — the mesh keeps its own real local-axis distances as physical path arc length;
+   *  it's placed as a fixed-length window starting `pathOffset` world units along the path
+   *  instead, sliding independently of the path's total length. This is the "crawl/feed along the
+   *  path" mode: keyframing `pathOffset` over time advances the mesh from the path's start toward
+   *  its end while only the currently-overlapping section is bent, rather than the whole mesh
+   *  stretching across the whole path every frame. */
+  stretch: boolean
+  /** Arc-length distance (world units, along the target path) this mesh's own local-axis 0 is
+   *  placed at. Only meaningful when `stretch` is false — ignored otherwise. Named to match the
+   *  "Offset" terminology other DCCs use for progress-along-a-curve (Blender's Curve modifier
+   *  included) — not to be confused with this modifier's own `center`, which is a different,
+   *  perpendicular concept. Vertices whose own local-axis coordinate + this falls outside the
+   *  path's own length extrapolate past its ends (see `pathDeform.ts`'s `samplePolyline`), so a
+   *  partially-fed mesh's leading/trailing ends still resolve to *something* rather than clamping
+   *  flat. */
+  pathOffset: number
+}
+
+/** Free-Form Deformation (FFD) — bends/squashes a mesh via a `kind: 'lattice'` object used as a
+ *  "cage": every vertex is looked up by its normalized position within the cage's *rest* grid
+ *  (`SceneObject.cageRestVertices`, frozen at creation), then bilinearly re-interpolated using the
+ *  cage's *current* grid — so dragging the cage's own vertices around in Edit Mode
+ *  (already-existing UI, no new viewport interaction needed) smoothly deforms every object that
+ *  references it. The general-purpose building block a `kind: 'path'`-following deform could
+ *  later bend the cage itself along (rather than each target mesh directly), matching how the
+ *  user recalled Cinema 4D's Spline Wrap working.
+ *
+ *  Originally this let *any* mesh object act as a cage, with `cols`/`rows` entered by hand in the
+ *  modifier to match — that hand-entry was error-prone (a mismatch silently no-ops the whole
+ *  modifier) and duplicated information the cage object already implicitly had. `kind: 'lattice'`
+ *  makes the grid dimensions an authoritative property of the cage object itself
+ *  (`SceneObject.latticeCols`/`latticeRows`), removing that failure mode entirely. */
+export interface FfdSettings {
+  enabled: boolean
+  /** Id of the `kind: 'lattice'` object used as the deformation cage. `null` = not yet assigned
+   *  (modifier is a no-op until one is picked). Tolerant reference — same convention as
+   *  `parentId`/`FakeBehindSettings.maskObjectIds`. */
+  cageObjectId: string | null
+}
+
 /** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
  *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
  *  app ever grows (Fake Flag/Fake Physics today, FakeBehind later). At most one modifier per
@@ -211,6 +284,8 @@ export type Modifier =
   | { type: 'fakePhysics'; settings: FakePhysicsSettings }
   | { type: 'fakePhysicsMesh'; settings: FakePhysicsMeshSettings }
   | { type: 'fakeBehind'; settings: FakeBehindSettings }
+  | { type: 'pathDeform'; settings: PathDeformSettings }
+  | { type: 'ffd'; settings: FfdSettings }
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
@@ -238,8 +313,18 @@ export interface SceneObject {
    *  its ordered control points (local space) rather than leaving it empty, since a path's whole
    *  purpose is holding that point list — see `scene/pathCurve.ts` for how they're evaluated into
    *  a smooth curve (Centripetal Catmull-Rom — see project spec). Meant to be referenced by other
-   *  objects' Path Follow/Path Deform modifiers (not yet implemented). */
-  kind?: 'mesh' | 'empty' | 'path'
+   *  objects' Path Follow/Path Deform modifiers (not yet implemented). 'lattice' is an FFD cage
+   *  (see `FfdSettings`) — a plain row-major grid mesh (same shape as "Add Rectangle" produces,
+   *  `latticeCols`/`latticeRows` giving its authoritative dimensions), edited via the ordinary
+   *  Edit Mode vertex tools like any mesh, and rendered/filled normally (unlike 'empty'/'path' it
+   *  keeps regular quad `mesh.faces`) so it's easy to see and grab in the viewport. */
+  kind?: 'mesh' | 'empty' | 'path' | 'lattice'
+  /** Grid dimensions (vertex counts, row-major `idx = j*cols+i`) for a `kind: 'lattice'` object —
+   *  meaningless otherwise. Authoritative: `mesh.vertices.length` must equal `cols * rows`, and
+   *  ordinary mesh edits that would break that (loop cuts, dissolves) aren't expected to be used
+   *  on a lattice, same as a Path's control points aren't expected to gain faces. */
+  latticeCols?: number
+  latticeRows?: number
   mesh: Mesh
   transform: Transform
   zOrder: number
@@ -252,6 +337,12 @@ export interface SceneObject {
    *  what keeps texturing sane once bones start deforming the mesh). A vertex missing here (e.g.
    *  one a future mesh op forgot to seed) just falls back to its live position. */
   uvBaseVertices?: Record<number, Vec2>
+  /** A `kind: 'lattice'` object's "undeformed" grid snapshot, for FFD (see `FfdSettings`) —
+   *  frozen at creation, or re-baked via an explicit "Reset cage rest shape" action; never touched
+   *  by ordinary vertex edits. Same frozen-snapshot convention as `uvBaseVertices`, parallel to
+   *  `mesh.vertices` by index rather than keyed by it since every cage vertex needs one (no sparse
+   *  fallback makes sense here — a missing entry would silently break the grid math). */
+  cageRestVertices?: Vec2[]
   /** Local mesh-space point a child object attaches to (its `transform.head`'s world position,
    *  when `connected`). Independent of `transform.head`. */
   tail: Vec2

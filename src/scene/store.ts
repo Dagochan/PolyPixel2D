@@ -6,6 +6,7 @@ import type {
   EditElementType,
   FakeBehindSettings,
   FakeFlagSettings,
+  FfdSettings,
   FakePhysicsMeshSettings,
   FakePhysicsMeshTrack,
   FakePhysicsSettings,
@@ -14,6 +15,7 @@ import type {
   Mesh,
   Modifier,
   ObjectAnimationTrack,
+  PathDeformSettings,
   PixelFrame,
   ReferenceImage,
   SceneObject,
@@ -26,6 +28,8 @@ import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } 
 import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
 import { boundsVertices, pathTail } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
+import { DEFAULT_PATH_DEFORM_SETTINGS } from './pathDeform'
+import { DEFAULT_FFD_SETTINGS } from './ffd'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
   DEFAULT_FAKE_PHYSICS_MESH_SETTINGS,
@@ -183,6 +187,15 @@ interface SceneState {
   cancelChange: () => void
 
   addRect: (width: number, height: number, segX: number, segY: number) => void
+  /** Adds a new `kind: 'lattice'` object — an FFD cage, a plain row-major grid mesh (`cols`/`rows`
+   *  vertex counts, same shape "Add Rectangle" produces) with `cageRestVertices` frozen
+   *  immediately from its own starting shape (see `SceneObject.kind`/`FfdSettings`'s docs). */
+  addLattice: (width: number, height: number, cols: number, rows: number) => void
+  /** Regenerates a `kind: 'lattice'` object's grid at a new `cols`×`rows` resolution, sized to its
+   *  current bounding box — necessarily resets to a fresh, undeformed grid (and re-freezes
+   *  `cageRestVertices` to match), since the old and new topologies don't correspond
+   *  vertex-for-vertex. No-op on a non-lattice object. */
+  resizeLattice: (id: string, cols: number, rows: number) => void
   addCircle: (radius: number, segments: number) => void
   /** Standalone new object from a hand-drawn path (`points` already in world/local space, since
    *  the new object's transform is identity) — see `createHairPathMesh`. */
@@ -398,6 +411,19 @@ interface SceneState {
   assignFakeFlagAnchor: (id: string) => void
   /** Clear the anchor list, switching back to object-rotation mode. */
   clearFakeFlagAnchor: (id: string) => void
+  /** Merge a partial patch into this object's Path Deform settings — adds the modifier (with
+   *  defaults merged with `patch`) if it isn't already in the stack. */
+  updatePathDeform: (id: string, patch: Partial<PathDeformSettings>) => void
+  /** Merge a partial patch into this object's FFD settings — adds the modifier (with defaults
+   *  merged with `patch`) if it isn't already in the stack. Setting `cageObjectId` to a cage
+   *  that doesn't yet have a `cageRestVertices` snapshot seeds one from its current
+   *  `mesh.vertices` (see `FfdSettings`'s doc) — same "freeze on first use" convention as
+   *  `uvBaseVertices`. */
+  updateFfd: (id: string, patch: Partial<FfdSettings>) => void
+  /** Re-freeze the cage object's `cageRestVertices` from its current `mesh.vertices` — for
+   *  redefining what "undeformed" means after intentionally reshaping the cage itself (as
+   *  opposed to posing it for others to follow). */
+  resetFfdCageRest: (cageObjectId: string) => void
   /** Live, wall-clock-driven Fake Flag preview, independent of the playhead/active clip — lets a
    *  user see the sway/flutter without laying down any keyframes first. Toggling this never
    *  touches undo history (it's a view setting, not a scene edit). */
@@ -560,6 +586,26 @@ function withFakePhysicsMeshSettings(
   const modifiers = existing
     ? o.modifiers!.map((m) => (m.type === 'fakePhysicsMesh' ? { ...m, settings } : m))
     : [...(o.modifiers ?? []), { type: 'fakePhysicsMesh' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Same idea as `withFakeFlagSettings`, for the `pathDeform` modifier. */
+function withPathDeformSettings(o: SceneObject, updater: (settings: PathDeformSettings) => PathDeformSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'pathDeform')
+  const settings = updater(existing?.settings ?? DEFAULT_PATH_DEFORM_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'pathDeform' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'pathDeform' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Same idea as `withFakeFlagSettings`, for the `ffd` modifier. */
+function withFfdSettings(o: SceneObject, updater: (settings: FfdSettings) => FfdSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'ffd')
+  const settings = updater(existing?.settings ?? DEFAULT_FFD_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'ffd' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'ffd' as const, settings }]
   return { ...o, modifiers }
 }
 
@@ -743,6 +789,60 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       connected: true,
     }
     set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addLattice: (width, height, cols, rows) => {
+    get().beginChange()
+    const objects = get().objects
+    cols = Math.max(2, Math.floor(cols))
+    rows = Math.max(2, Math.floor(rows))
+    const mesh = createRectMesh(width, height, cols - 1, rows - 1)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Lattice_${objects.length + 1}`,
+      kind: 'lattice',
+      latticeCols: cols,
+      latticeRows: rows,
+      mesh,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      // Frozen at creation, not on first FFD assignment — a lattice's whole purpose is being a
+      // cage, so there's no reason to wait (see `SceneObject.cageRestVertices`'s doc).
+      cageRestVertices: mesh.vertices.map((v) => ({ ...v })),
+      tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  resizeLattice: (id, cols, rows) => {
+    get().beginChange()
+    cols = Math.max(2, Math.floor(cols))
+    rows = Math.max(2, Math.floor(rows))
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id || o.kind !== 'lattice') return o
+        // Regenerates a fresh, undeformed grid at the new resolution, sized to the lattice's
+        // current bounding box — any existing deformation is necessarily discarded, since the old
+        // and new topologies don't correspond vertex-for-vertex.
+        const bounds = worldBounds(o.mesh.vertices, {
+          x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: 0 },
+        })
+        const width = Math.max(1, bounds.maxX - bounds.minX)
+        const height = Math.max(1, bounds.maxY - bounds.minY)
+        const mesh = createRectMesh(width, height, cols - 1, rows - 1)
+        return {
+          ...o,
+          latticeCols: cols,
+          latticeRows: rows,
+          mesh,
+          cageRestVertices: mesh.vertices.map((v) => ({ ...v })),
+        }
+      }),
+    }))
   },
 
   addCircle: (radius, segments) => {
@@ -1963,7 +2063,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                     type: 'fakePhysicsMesh',
                     settings: { ...DEFAULT_FAKE_PHYSICS_MESH_SETTINGS, sectionVertices: [[], [], [], [], []] },
                   }
-                : { type: 'fakeBehind', settings: { ...DEFAULT_FAKE_BEHIND_SETTINGS, maskObjectIds: [] } }
+                : type === 'fakeBehind'
+                  ? { type: 'fakeBehind', settings: { ...DEFAULT_FAKE_BEHIND_SETTINGS, maskObjectIds: [] } }
+                  : type === 'pathDeform'
+                    ? { type: 'pathDeform', settings: { ...DEFAULT_PATH_DEFORM_SETTINGS } }
+                    : { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -2044,6 +2148,39 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   togglePreviewFakeFlag: () => set((s) => ({ previewFakeFlag: !s.previewFakeFlag })),
+
+  updatePathDeform: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withPathDeformSettings(o, (ps) => ({ ...ps, ...patch })) : o)),
+    }))
+  },
+
+  updateFfd: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) {
+          // Seed the newly-referenced cage's rest snapshot in this same update, if it doesn't
+          // have one yet — so assigning a cage "just works" without a separate manual step.
+          if (patch.cageObjectId && o.id === patch.cageObjectId && !o.cageRestVertices) {
+            return { ...o, cageRestVertices: o.mesh.vertices.map((v) => ({ ...v })) }
+          }
+          return o
+        }
+        return withFfdSettings(o, (fs) => ({ ...fs, ...patch }))
+      }),
+    }))
+  },
+
+  resetFfdCageRest: (cageObjectId) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) =>
+        o.id === cageObjectId ? { ...o, cageRestVertices: o.mesh.vertices.map((v) => ({ ...v })) } : o,
+      ),
+    }))
+  },
 
   toggleFakePhysicsEnabled: (id) => {
     get().beginChange()

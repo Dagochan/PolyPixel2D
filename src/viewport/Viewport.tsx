@@ -20,6 +20,8 @@ import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
+import { pathDeformVertexDeltas } from '../scene/pathDeform'
+import { ffdVertexDeltas } from '../scene/ffd'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
   createFakePhysicsMeshLiveState,
@@ -1206,9 +1208,17 @@ export default function Viewport() {
               return fakePhysicsMeshVertexDeltasLive(rawObj, physicsMeshSettings, state, rawObj.transform)
             })()
           : fakePhysicsMeshVertexDeltas(rawObj, activeClip, playheadTime)
-      const displayVerts = physicsMeshDeltas
+      const physicsDeformedVerts = physicsMeshDeltas
         ? swayedVerts.map((v, i) => ({ x: v.x + physicsMeshDeltas[i].x, y: v.y + physicsMeshDeltas[i].y }))
         : swayedVerts
+      const pathDeformDeltas = pathDeformVertexDeltas(rawObj, objects)
+      const pathDeformedVerts = pathDeformDeltas
+        ? physicsDeformedVerts.map((v, i) => ({ x: v.x + pathDeformDeltas[i].x, y: v.y + pathDeformDeltas[i].y }))
+        : physicsDeformedVerts
+      const ffdDeltas = ffdVertexDeltas(rawObj, objects)
+      const displayVerts = ffdDeltas
+        ? pathDeformedVerts.map((v, i) => ({ x: v.x + ffdDeltas[i].x, y: v.y + ffdDeltas[i].y }))
+        : pathDeformedVerts
       const obj: SceneObject =
         displayVerts === rawObj.mesh.vertices ? rawObj : { ...rawObj, mesh: { ...rawObj.mesh, vertices: displayVerts } }
 
@@ -1276,7 +1286,11 @@ export default function Viewport() {
       // another's insert slot draws its fill nested over there instead (see below) — everything
       // else here (wireframe, edit overlays, labels) still runs normally so it stays editable.
       const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
-      if (!consumedIds.has(obj.id)) {
+      // A lattice is a cage, not a renderable shape — skip its filled/textured quads entirely so
+      // it never visually obstructs whatever it's deforming (only the wireframe below, forced on
+      // regardless of the global "Show wireframe" toggle, plus the ordinary vertex/edge Edit Mode
+      // overlays further down still apply, so it's fully editable exactly like any mesh).
+      if (!consumedIds.has(obj.id) && obj.kind !== 'lattice') {
         const inserts = insertsByHost.get(obj.id) ?? []
         if (inserts.length === 0) {
           const islandOrder = perIsland
@@ -1323,7 +1337,9 @@ export default function Viewport() {
         })
       }
 
-      if (wireframeVisible) {
+      // A lattice's wireframe is forced on regardless of the global toggle — it's a cage, not an
+      // ordinary mesh, so its edges *are* its visible representation (see the fill-skip above).
+      if (wireframeVisible || obj.kind === 'lattice') {
         const wireMesh = obj.mesh
         const edgePositions: number[] = []
         for (const [a, b] of getEdges(wireMesh)) {
@@ -1334,7 +1350,11 @@ export default function Viewport() {
         }
         const edgeGeom = new THREE.BufferGeometry()
         edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
-        const edgeMat = new THREE.LineBasicMaterial({ color: isSelected ? 0xffffff : 0x000000, opacity: 0.6, transparent: true })
+        const edgeMat = new THREE.LineBasicMaterial({
+          color: obj.kind === 'lattice' ? 0xffaa33 : isSelected ? 0xffffff : 0x000000,
+          opacity: 0.6,
+          transparent: true,
+        })
         const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
         edgeLines.position.set(worldTransform.x, worldTransform.y, 0.01 + (perIsland.length - 1) * 0.001)
         edgeLines.rotation.z = worldTransform.rotation

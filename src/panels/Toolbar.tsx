@@ -21,6 +21,7 @@ export default function Toolbar() {
   const addCircle = useSceneStore((s) => s.addCircle)
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
   const addEmpty = useSceneStore((s) => s.addEmpty)
+  const addLattice = useSceneStore((s) => s.addLattice)
   const setPendingPrimitive = useSceneStore((s) => s.setPendingPrimitive)
   const hairPathConstantWidth = useSceneStore((s) => s.hairPathConstantWidth)
   const setHairPathConstantWidth = useSceneStore((s) => s.setHairPathConstantWidth)
@@ -373,6 +374,16 @@ export default function Toolbar() {
               }}
             >
               ✛ Empty
+            </div>
+            <div
+              className="dropdown-item"
+              title="Add a Lattice: an FFD cage — drag its own vertices in Edit Mode to deform whatever objects reference it via an FFD modifier. Columns/rows can be changed afterward in the Properties panel"
+              onClick={() => {
+                addLattice(100, 100, 2, 2)
+                closeAddMenu()
+              }}
+            >
+              # Lattice
             </div>
             <div
               className="dropdown-item"
