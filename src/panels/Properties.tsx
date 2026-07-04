@@ -987,6 +987,15 @@ function FollowPathModifierBox({
             >
               Follow Curve
             </button>
+            {settings.alignRotation && (
+              <button
+                className={'icon-btn' + (settings.flip ? ' active' : '')}
+                title="Flip — mirror across the Head→Tail axis (the one thing that axis alone can't pin down, e.g. a fish's dorsal/ventral side)"
+                onClick={() => updateFollowPath(obj.id, { flip: !settings.flip })}
+              >
+                Flip
+              </button>
+            )}
           </div>
         </>
       )}

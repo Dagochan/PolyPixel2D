@@ -13,15 +13,19 @@ export const DEFAULT_FOLLOW_PATH_SETTINGS: FollowPathSettings = {
   pathObjectId: null,
   progress: 0,
   alignRotation: false,
+  flip: false,
 }
 
-/** This object's world position (and, if `alignRotation`, world rotation) at its current
- *  `progress` along its assigned path — the Blender "Follow Path" constraint analogue (see
- *  `FollowPathSettings`'s doc). Evaluated entirely in world space so the riding object's transform
- *  and the path's don't need to coincide (same convention as FakeBehind/Fake Physics/Path Deform).
- *  `null` when inactive (disabled or no path assigned) — the caller should leave the object's own
- *  transform untouched in that case, same convention as every other modifier here. */
-export function followPathWorldTransform(obj: SceneObject, allObjects: SceneObject[]): { x: number; y: number; rotation: number } | null {
+/** This object's world position (and, if `alignRotation`, world rotation and mirrored `scaleY`) at
+ *  its current `progress` along its assigned path — the Blender "Follow Path" constraint analogue
+ *  (see `FollowPathSettings`'s doc). Evaluated entirely in world space so the riding object's
+ *  transform and the path's don't need to coincide (same convention as FakeBehind/Fake Physics/
+ *  Path Deform). `null` when inactive (disabled or no path assigned) — the caller should leave the
+ *  object's own transform untouched in that case, same convention as every other modifier here. */
+export function followPathWorldTransform(
+  obj: SceneObject,
+  allObjects: SceneObject[],
+): { x: number; y: number; rotation: number; scaleY: number } | null {
   const settings = getFollowPath(obj)
   if (!settings?.enabled || !settings.pathObjectId) return null
   const pathObj = allObjects.find((o) => o.id === settings.pathObjectId && o.kind === 'path')
@@ -35,7 +39,7 @@ export function followPathWorldTransform(obj: SceneObject, allObjects: SceneObje
   const { point, normal } = samplePolyline(worldPath, s, pathLength)
 
   const objWorld = getWorldTransform(obj, allObjects)
-  if (!settings.alignRotation) return { x: point.x, y: point.y, rotation: objWorld.rotation }
+  if (!settings.alignRotation) return { x: point.x, y: point.y, rotation: objWorld.rotation, scaleY: obj.transform.scaleY }
   // `normal` is the left-normal of the path's tangent there (see `samplePolyline`'s doc) — rotate
   // it -90° to recover the tangent (direction of travel) itself, then face that direction.
   const travelAngle = Math.atan2(-normal.x, normal.y)
@@ -45,11 +49,24 @@ export function followPathWorldTransform(obj: SceneObject, allObjects: SceneObje
   // point where the object is going, Tail the back end trailing behind it — so an object modeled
   // facing any direction just needs its Head dragged (Pivot mode) to point that way once, no
   // separate axis-picker setting needed. A zero-length Tail→Head (Tail left at its default,
-  // coincident with Head) falls back to local +X, matching the pre-Head/Tail-aware behavior. */
+  // coincident with Head) falls back to local +X, matching the pre-Head/Tail-aware behavior.
+  //
+  // `flip` mirrors the object across that same Head→Tail axis (the one remaining degree of
+  // freedom it can't pin down — e.g. a fish's dorsal/ventral side) — negating `fy` here before
+  // taking the angle is what makes that an exact mirror *across the Head→Tail line itself* rather
+  // than across local Y: negating `scaleY` alone would still render Tail's mirrored position at
+  // `travelAngle - 2*forwardAngle` instead of `travelAngle` for any non-axis-aligned Head→Tail
+  // line, visibly rotating Head off the path — folding the same negation into the angle computed
+  // here keeps Head pointing exactly down the path regardless of `forwardAngle`. */
   const fx = obj.transform.head.x - obj.tail.x
-  const fy = obj.transform.head.y - obj.tail.y
+  const fy = (obj.transform.head.y - obj.tail.y) * (settings.flip ? -1 : 1)
   const forwardAngle = fx === 0 && fy === 0 ? 0 : Math.atan2(fy, fx)
-  return { x: point.x, y: point.y, rotation: travelAngle - forwardAngle }
+  return {
+    x: point.x,
+    y: point.y,
+    rotation: travelAngle - forwardAngle,
+    scaleY: settings.flip ? -obj.transform.scaleY : obj.transform.scaleY,
+  }
 }
 
 /** Every Follow-Path object in `objects`, with its current `progress` along its path baked into
@@ -68,13 +85,22 @@ export function applyFollowPath(objects: SceneObject[]): SceneObject[] {
     const target = followPathWorldTransform(o, objects)
     if (!target) return o
     if (o.parentId === null) {
-      return { ...o, transform: { ...o.transform, x: target.x, y: target.y, rotation: target.rotation } }
+      return {
+        ...o,
+        transform: { ...o.transform, x: target.x, y: target.y, rotation: target.rotation, scaleY: target.scaleY },
+      }
     }
     const { transform: parentWorld, tail: parentTail } = getParentWorldTransform(o, objects)
     const localXY = worldPositionToLocalOffset({ x: target.x, y: target.y }, parentWorld, parentTail)
     return {
       ...o,
-      transform: { ...o.transform, x: localXY.x, y: localXY.y, rotation: target.rotation - parentWorld.rotation },
+      transform: {
+        ...o.transform,
+        x: localXY.x,
+        y: localXY.y,
+        rotation: target.rotation - parentWorld.rotation,
+        scaleY: target.scaleY,
+      },
     }
   })
 }

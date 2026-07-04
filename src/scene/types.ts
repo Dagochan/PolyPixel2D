@@ -224,6 +224,15 @@ export interface FollowPathSettings {
    *  continuously set to match the path's local tangent direction there (a car turning to follow
    *  the road), Blender's Follow Path "Follow Curve" option. */
   alignRotation: boolean
+  /** Only meaningful when `alignRotation` is true. The Head→Tail axis alone pins down which way
+   *  is "forward" but not which side is "up" — two mirror-image objects (e.g. a fish modeled with
+   *  its dorsal fin on either side of the same nose-tail line) both have their Head pointing the
+   *  same way down the path, yet look mirrored. false (default) — the object's own authored
+   *  `scaleY` is used as-is. true — `scaleY` is negated (mirrored across the Head→Tail axis, not
+   *  across local Y — see `followPathWorldTransform`'s doc for how the rotation math compensates
+   *  so Head still points down the path either way), the one remaining degree of freedom Head/Tail
+   *  alone can't resolve. */
+  flip: boolean
 }
 
 /** Bends a `kind: 'lattice'` cage's Basis vertices along a `kind: 'path'` object's curve (see
