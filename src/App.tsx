@@ -68,9 +68,18 @@ export default function App() {
       }
 
       if (meta && e.key.toLowerCase() === 'r') {
+        // Ctrl/Cmd+R is the browser's own reload shortcut — preventDefault alone doesn't reliably
+        // stop it in every browser once it reaches here, but NOT calling it at all (the previous
+        // behavior, only reached once past the mode/selection checks below) meant reaching for
+        // this shortcut in Object mode — or with nothing selected — reloaded the page outright
+        // and threw away the whole unsaved scene. Block it unconditionally the instant this key
+        // combo is seen, before any of those checks, and only *act* on it (Loop/Ring Cut) when
+        // Edit mode with a selected non-Lattice object actually applies.
+        e.preventDefault()
         const store = useSceneStore.getState()
         if (store.mode !== 'edit' || !store.selectedObjectId) return
-        e.preventDefault()
+        // A Lattice's vertex count/order is load-bearing for FFD — see ToolPane's `isLattice` doc
+        if (store.objects.find((o) => o.id === store.selectedObjectId)?.kind === 'lattice') return
         if (e.shiftKey) {
           store.setActiveTool(store.activeTool === 'ringcut' ? 'select' : 'ringcut')
         } else {
@@ -90,6 +99,8 @@ export default function App() {
       if (!meta && e.key.toLowerCase() === 'k') {
         const store = useSceneStore.getState()
         if (store.mode !== 'edit' || !store.selectedObjectId) return
+        // A Lattice's vertex count/order is load-bearing for FFD — see ToolPane's `isLattice` doc
+        if (store.objects.find((o) => o.id === store.selectedObjectId)?.kind === 'lattice') return
         e.preventDefault()
         store.setActiveTool(store.activeTool === 'knife' ? 'select' : 'knife')
         return

@@ -1644,16 +1644,16 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               </div>
               <div className="prop-row">
                 <NumberField
-                  label="Columns"
-                  value={obj.latticeCols ?? 2}
+                  label="Segments X"
+                  value={(obj.latticeCols ?? 2) - 1}
                   step={1}
-                  onChange={(v) => resizeLattice(obj.id, Math.max(2, Math.round(v)), obj.latticeRows ?? 2)}
+                  onChange={(v) => resizeLattice(obj.id, Math.max(1, Math.round(v)) + 1, obj.latticeRows ?? 2)}
                 />
                 <NumberField
-                  label="Rows"
-                  value={obj.latticeRows ?? 2}
+                  label="Segments Y"
+                  value={(obj.latticeRows ?? 2) - 1}
                   step={1}
-                  onChange={(v) => resizeLattice(obj.id, obj.latticeCols ?? 2, Math.max(2, Math.round(v)))}
+                  onChange={(v) => resizeLattice(obj.id, obj.latticeCols ?? 2, Math.max(1, Math.round(v)) + 1)}
                 />
               </div>
               <div className="prop-row prop-static">

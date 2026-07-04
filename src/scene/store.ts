@@ -1598,7 +1598,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const objectId = s.selectedObjectId
     if (!objectId) return false
     const obj = s.objects.find((o) => o.id === objectId)
-    if (!obj) return false
+    if (!obj || obj.kind === 'lattice') return false
 
     let edgeKeys: string[]
     if (s.editElementType === 'edge' && s.selectedEdges.size > 0) {
@@ -1636,7 +1636,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
-    if (!obj) return
+    if (!obj || obj.kind === 'lattice') return
 
     let mesh: Mesh
     let oldToNew: Map<number, number>
@@ -1682,7 +1682,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const objectId = s.selectedObjectId
     if (!objectId) return
     const obj = s.objects.find((o) => o.id === objectId)
-    if (!obj) return
+    if (!obj || obj.kind === 'lattice') return
 
     let mesh: Mesh
     let oldToNew: Map<number, number>

@@ -30,6 +30,11 @@ export default function ToolPane() {
   const selectedVerticesCount = selectedVertices.size
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
   const dissolveSelection = useSceneStore((s) => s.dissolveSelection)
+  // A Lattice's vertex count/order is load-bearing for FFD (row-major idx = j*cols+i, see
+  // `FfdSettings`'s doc) — any topology-changing tool (loop/ring cut, knife, extrude, dissolve)
+  // would desync it from `latticeCols`/`latticeRows`/`cageRestVertices`, silently no-opping the
+  // modifier at best. Only plain vertex-drag (which doesn't change count/order) stays available.
+  const isLattice = selectedObj?.kind === 'lattice'
 
   return (
     <div className="tool-pane">
@@ -91,46 +96,68 @@ export default function ToolPane() {
           <div className="tool-pane-group tool-group">
             <button
               className={activeTool === 'loopcut' ? 'active' : ''}
-              disabled={!selectedObj}
-              title="Loop cut (hover over a run of connected quad faces)"
+              disabled={!selectedObj || isLattice}
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Loop cut (hover over a run of connected quad faces)'
+              }
               onClick={() => setActiveTool(activeTool === 'loopcut' ? 'select' : 'loopcut')}
             >
               <LoopCutIcon />
             </button>
             <button
               className={activeTool === 'ringcut' ? 'active' : ''}
-              disabled={!selectedObj}
-              title="Ring cut (Cmd/Ctrl+Shift+R. Hover over a radial edge of a triangle fan, e.g. a circle primitive)"
+              disabled={!selectedObj || isLattice}
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Ring cut (Cmd/Ctrl+Shift+R. Hover over a radial edge of a triangle fan, e.g. a circle primitive)'
+              }
               onClick={() => setActiveTool(activeTool === 'ringcut' ? 'select' : 'ringcut')}
             >
               <RingCutIcon />
             </button>
             <button
               className={activeTool === 'knife' ? 'active' : ''}
-              disabled={!selectedObj}
-              title="Knife (click edges/vertices to connect them. Enter/double-click to confirm, Esc/right-click to cancel the path)"
+              disabled={!selectedObj || isLattice}
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Knife (click edges/vertices to connect them. Enter/double-click to confirm, Esc/right-click to cancel the path)'
+              }
               onClick={() => setActiveTool(activeTool === 'knife' ? 'select' : 'knife')}
             >
               <KnifeIcon />
             </button>
             <button
               disabled={
+                isLattice ||
                 (editElementType === 'edge' && selectedEdgesCount === 0) ||
                 (editElementType === 'vertex' && selectedVerticesCount < 2) ||
                 editElementType === 'face'
               }
-              title="Extrude the selected edges (or the existing edge between selected vertices)"
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Extrude the selected edges (or the existing edge between selected vertices)'
+              }
               onClick={() => extrudeSelection()}
             >
               <ExtrudeIcon />
             </button>
             <button
               disabled={
+                isLattice ||
                 (editElementType === 'edge' && selectedEdgesCount === 0) ||
                 (editElementType === 'vertex' && selectedVerticesCount === 0) ||
                 editElementType === 'face'
               }
-              title="Dissolve the selected vertices/edges (merges the surrounding faces into one, then removes it. Ctrl+X)"
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Dissolve the selected vertices/edges (merges the surrounding faces into one, then removes it. Ctrl+X)'
+              }
               onClick={() => dissolveSelection()}
             >
               <DissolveIcon />

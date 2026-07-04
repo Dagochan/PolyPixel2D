@@ -154,6 +154,7 @@ type ElementModal =
       startPositions: Vec2[]
       pivot: Vec2 // local mesh space
       startDist: number
+      axisLock: 'x' | 'y' | null // local-space axis lock (the other axis stays at 1x), toggled by pressing X/Y again — same convention as 'move'
     }
   | {
       kind: 'move'
@@ -352,6 +353,7 @@ export default function Viewport() {
         startPositions,
         pivot,
         startDist: Math.max(1e-6, Math.hypot(local.x - pivot.x, local.y - pivot.y)),
+        axisLock: null,
       }
     } else {
       elementModalRef.current = {
@@ -651,9 +653,11 @@ export default function Viewport() {
       const dist = Math.hypot(local.x - modal.pivot.x, local.y - modal.pivot.y)
       let scale = dist / modal.startDist
       if (ctrlKey) scale = Math.round(scale * 20) / 20 // 5% snap
+      const scaleX = modal.axisLock === 'y' ? 1 : scale
+      const scaleY = modal.axisLock === 'x' ? 1 : scale
       const positions = modal.startPositions.map((p) => ({
-        x: modal.pivot.x + (p.x - modal.pivot.x) * scale,
-        y: modal.pivot.y + (p.y - modal.pivot.y) * scale,
+        x: modal.pivot.x + (p.x - modal.pivot.x) * scaleX,
+        y: modal.pivot.y + (p.y - modal.pivot.y) * scaleY,
       }))
       store.setVertexPositions(modal.objectId, modal.indices, positions)
     }
@@ -869,6 +873,16 @@ export default function Viewport() {
         if (k === 'x') moveModal.axisLock = moveModal.axisLock === 'x' ? null : 'x'
         if (k === 'y') moveModal.axisLock = moveModal.axisLock === 'y' ? null : 'y'
         if (k === 'g') startVertexSlide()
+      }
+      // same X/Y axis-lock convention while scaling (S) — e.g. resizing a Lattice's grid along
+      // just one axis without touching the other, so a follow-up rotation isn't skewed by
+      // uneven per-axis scale (see FfdSettings-adjacent discussion: rotating under non-uniform
+      // *object* scale skews; this locks the *vertex* scale itself instead, which doesn't).
+      const scaleModal = elementModalRef.current
+      if (scaleModal && scaleModal.kind === 'scale' && !e.ctrlKey && !e.metaKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'x') scaleModal.axisLock = scaleModal.axisLock === 'x' ? null : 'x'
+        if (k === 'y') scaleModal.axisLock = scaleModal.axisLock === 'y' ? null : 'y'
       }
       if (!elementModalRef.current && !e.ctrlKey && !e.metaKey) {
         if (e.key.toLowerCase() === 'g') startElementModal('move')
@@ -1504,6 +1518,7 @@ export default function Viewport() {
           } else if (modal.kind === 'vertex-slide') {
             addVertexSlideGuides(scene, modal)
           } else {
+            if (modal.kind === 'scale' && modal.axisLock) addMoveAxisLine(scene, obj, modal)
             addElementModalPreview(scene, obj, modal)
           }
         }
@@ -2244,7 +2259,7 @@ export default function Viewport() {
   /** Live feedback while a G move is axis-locked (X/Y): a dashed world-space line through the
    *  moving selection's centroid, spanning the visible viewport, colored like Blender's axis
    *  colors (X=red, Y=green). */
-  function addMoveAxisLine(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'move' }>) {
+  function addMoveAxisLine(scene: THREE.Scene, obj: SceneObject, modal: Extract<ElementModal, { kind: 'move' | 'scale' }>) {
     if (!modal.axisLock) return
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const pts = modal.indices.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))

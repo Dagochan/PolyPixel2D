@@ -283,6 +283,7 @@ export default function Toolbar() {
             <div
               className="dropdown-item has-submenu"
               onMouseEnter={() => setAddSubmenu('primitives')}
+              onMouseLeave={() => setAddSubmenu(null)}
               onClick={() => setAddSubmenu('primitives')}
             >
               Primitives ▸
