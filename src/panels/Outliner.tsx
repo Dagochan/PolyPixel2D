@@ -108,6 +108,7 @@ export default function Outliner() {
         )}
         {obj.kind === 'empty' && <span title="Empty (no mesh)">✛</span>}
         {obj.kind === 'path' && <span title="Path (curve, no mesh)">〜</span>}
+        {obj.kind === 'lattice' && <span title="Lattice (FFD cage)">#</span>}
         {fakeBehindMaskIds.has(obj.id) && (
           <span className="fake-behind-mask-badge" title="Referenced as a Fake Behind mask by another object">
             M
