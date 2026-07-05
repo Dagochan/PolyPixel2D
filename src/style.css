@@ -520,6 +520,13 @@ input[type='range']:disabled {
   color: #c792ea;
 }
 
+/* Empty/Path/Lattice — non-mesh "special" object kinds (see `SceneObject.kind`'s doc) — get the
+   app's standard accent blue so they read as a different category from ordinary primitives at a
+   glance, matching the '✛'/'〜'/'#' symbol already shown next to their name. */
+.layer-name.special-kind {
+  color: #4ea1ff;
+}
+
 /* this object has an enabled Fake Physics modifier — same "color cue" idea as .animated, but in
    the Outliner: lets you scan a parent/child chain and see which links are physics-driven without
    clicking into each one's Properties panel */

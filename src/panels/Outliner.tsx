@@ -117,6 +117,7 @@ export default function Outliner() {
         <input
           className={
             'layer-name' +
+            (obj.kind === 'empty' || obj.kind === 'path' || obj.kind === 'lattice' ? ' special-kind' : '') +
             (getFakePhysics(obj)?.enabled ? ' fake-physics' : '') +
             (fakeBehindMaskIds.has(obj.id) ? ' fake-behind-mask' : '')
           }
