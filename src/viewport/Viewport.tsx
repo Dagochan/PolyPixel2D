@@ -210,6 +210,39 @@ type ElementModal =
       liveRails: Array<{ origWorld: Vec2; targetWorld: Vec2 } | null>
     }
 
+/** Object-mode's G/R/S keyboard modal — same Blender convention as `ElementModal`, but acting on
+ *  the selected object's own Transform (position/rotation/scale) rather than a vertex selection.
+ *  Kept as its own type/ref rather than folded into `ElementModal` since the two operate on
+ *  completely different data (a mesh-vertex array vs. a single Transform) and only share the
+ *  modal *interaction* (start on keypress, live-update on pointermove, confirm on click/Enter,
+ *  cancel on Escape/right-click — see the `mode === 'object'` branches alongside every
+ *  `elementModalRef` check). */
+type ObjectModal =
+  | {
+      kind: 'move'
+      objectId: string
+      startWorld: Vec2 // pointer world position when G was pressed
+      startWorldPos: Vec2 // object's world (head) position at modal start
+      parentWorld: Transform
+      parentTail: Vec2
+      axisLock: 'x' | 'y' | null // world-space axis lock, toggled by pressing X/Y again
+    }
+  | {
+      kind: 'rotate'
+      objectId: string
+      startRotation: number // world rotation at modal start
+      center: Vec2 // world-space pivot (the object's world head position)
+      startAngle: number
+      parentWorldRotation: number
+    }
+  | {
+      kind: 'scale'
+      objectId: string
+      startTransform: SceneObject['transform']
+      startDist: number
+      axisLock: 'x' | 'y' | null // local-space axis lock, toggled by pressing X/Y again
+    }
+
 export default function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
@@ -240,6 +273,7 @@ export default function Viewport() {
   // drag-to-reposition flow as Hair Path, but no width (a Path is a bare curve, no ribbon)
   const pathDrawRef = useRef<Vec2[]>([])
   const elementModalRef = useRef<ElementModal | null>(null)
+  const objectModalRef = useRef<ObjectModal | null>(null)
   const lastPointerRef = useRef<{ clientX: number; clientY: number }>({ clientX: 0, clientY: 0 })
   const placePreviewRef = useRef<Vec2 | null>(null)
   const textureCacheRef = useRef(new Map<string, THREE.Texture>())
@@ -681,6 +715,115 @@ export default function Viewport() {
     }
   }
 
+  /** G/R/S: Object mode's counterpart to `startElementModal` — same modal interaction, but moves/
+   *  rotates/scales the selected object's own Transform. A connected child's position is driven
+   *  entirely by its parent's tail (see the axis-arrows' own `isConnectedChild` check), so 'move'
+   *  is a no-op for one — there's nothing free to grab. */
+  function startObjectModal(kind: 'move' | 'rotate' | 'scale') {
+    const store = useSceneStore.getState()
+    if (store.mode !== 'object' || !store.selectedObjectId) return
+    const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+    if (!obj) return
+    const worldTransform = getWorldTransform(obj, store.objects)
+
+    if (kind === 'move') {
+      if (obj.connected && obj.parentId !== null) return
+      const { transform: parentWorld, tail: parentTail } = getParentWorldTransform(obj, store.objects)
+      store.beginChange()
+      objectModalRef.current = {
+        kind: 'move',
+        objectId: obj.id,
+        startWorld: currentPointerWorld(),
+        startWorldPos: { x: worldTransform.x, y: worldTransform.y },
+        parentWorld,
+        parentTail,
+        axisLock: null,
+      }
+    } else if (kind === 'rotate') {
+      const center = { x: worldTransform.x, y: worldTransform.y }
+      const world = currentPointerWorld()
+      store.beginChange()
+      objectModalRef.current = {
+        kind: 'rotate',
+        objectId: obj.id,
+        startRotation: worldTransform.rotation,
+        center,
+        startAngle: Math.atan2(world.y - center.y, world.x - center.x),
+        parentWorldRotation: getParentWorldTransform(obj, store.objects).transform.rotation,
+      }
+    } else {
+      const pivot = obj.transform.head
+      const local = inverseTransform(currentPointerWorld(), { ...obj.transform, scaleX: 1, scaleY: 1 })
+      store.beginChange()
+      objectModalRef.current = {
+        kind: 'scale',
+        objectId: obj.id,
+        startTransform: { ...obj.transform, head: { ...pivot } },
+        startDist: Math.max(1e-6, Math.hypot(local.x - pivot.x, local.y - pivot.y)),
+        axisLock: null,
+      }
+    }
+  }
+
+  function confirmObjectModal() {
+    objectModalRef.current = null
+  }
+
+  /** Recompute and write the selected object's live Transform for the active object-mode G/R/S
+   *  modal, given the cursor — mirrors `updateElementModal`'s math (move: grid-snapped world
+   *  delta; rotate: angle delta from the pivot, Ctrl = 5° steps; scale: distance-ratio from the
+   *  pivot, Ctrl = 5% steps), just applied to a whole Transform instead of a vertex array. */
+  function updateObjectModal(ctrlKey: boolean) {
+    const modal = objectModalRef.current
+    if (!modal) return
+    const store = useSceneStore.getState()
+    const obj = store.objects.find((o) => o.id === modal.objectId)
+    if (!obj) return
+
+    if (modal.kind === 'move') {
+      const world = currentPointerWorld()
+      let dx = world.x - modal.startWorld.x
+      let dy = world.y - modal.startWorld.y
+      if (modal.axisLock === 'x') dy = 0
+      if (modal.axisLock === 'y') dx = 0
+      if (shouldGridSnap(ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        if (modal.axisLock !== 'y') dx = snapToIncrement(modal.startWorldPos.x + dx, inc) - modal.startWorldPos.x
+        if (modal.axisLock !== 'x') dy = snapToIncrement(modal.startWorldPos.y + dy, inc) - modal.startWorldPos.y
+      }
+      const newWorldPos = { x: modal.startWorldPos.x + dx, y: modal.startWorldPos.y + dy }
+      const local = worldPositionToLocalOffset(newWorldPos, modal.parentWorld, modal.parentTail)
+      store.setTransform(modal.objectId, { x: local.x, y: local.y })
+      return
+    }
+
+    if (modal.kind === 'rotate') {
+      const world = currentPointerWorld()
+      const currentAngle = Math.atan2(world.y - modal.center.y, world.x - modal.center.x)
+      const delta = currentAngle - modal.startAngle
+      let rotation = modal.startRotation + delta - modal.parentWorldRotation
+      if (ctrlKey) {
+        const step = (5 * Math.PI) / 180
+        rotation = Math.round(rotation / step) * step
+      }
+      store.setTransform(modal.objectId, { rotation })
+      return
+    }
+
+    // scale
+    const local = inverseTransform(currentPointerWorld(), { ...modal.startTransform, scaleX: 1, scaleY: 1 })
+    const pivot = modal.startTransform.head
+    const dist = Math.hypot(local.x - pivot.x, local.y - pivot.y)
+    let scale = dist / modal.startDist
+    if (ctrlKey) scale = Math.round(scale * 20) / 20 // 5% snap
+    const newScaleX = modal.axisLock === 'y' ? modal.startTransform.scaleX : modal.startTransform.scaleX * scale
+    const newScaleY = modal.axisLock === 'x' ? modal.startTransform.scaleY : modal.startTransform.scaleY * scale
+    store.setTransform(modal.objectId, {
+      scaleX: Math.abs(newScaleX) < 0.01 ? 0.01 * Math.sign(newScaleX || 1) : newScaleX,
+      scaleY: Math.abs(newScaleY) < 0.01 ? 0.01 * Math.sign(newScaleY || 1) : newScaleY,
+    })
+  }
+
   function loopCutTs(): number[] {
     const count = loopCutCountRef.current
     const hover = loopCutHoverRef.current
@@ -785,6 +928,10 @@ export default function Viewport() {
         useSceneStore.getState().cancelChange()
         elementModalRef.current = null
       }
+      if (objectModalRef.current) {
+        useSceneStore.getState().cancelChange()
+        objectModalRef.current = null
+      }
       const activeTool = useSceneStore.getState().activeTool
       if (activeTool === 'place-rect' || activeTool === 'place-circle') {
         useSceneStore.getState().setActiveTool('select')
@@ -858,6 +1005,10 @@ export default function Viewport() {
         updateElementModal(e.ctrlKey, e.altKey)
         return
       }
+      if (objectModalRef.current) {
+        updateObjectModal(e.ctrlKey)
+        return
+      }
       updateLoopCutHover(e)
       updateRingCutHover(e)
       updateKnifeHover(e)
@@ -881,6 +1032,7 @@ export default function Viewport() {
         if (useSceneStore.getState().activeTool === 'place-hairpath') finalizeHairPath()
         if (useSceneStore.getState().activeTool === 'place-path') finalizePath()
         if (elementModalRef.current) confirmElementModal()
+        if (objectModalRef.current) confirmObjectModal()
       }
       // while grabbing (G), X/Y constrains the move to that world axis; pressing the same
       // key again releases the constraint (Blender-style). Pressing G again (GG) switches
@@ -902,10 +1054,33 @@ export default function Viewport() {
         if (k === 'x') scaleModal.axisLock = scaleModal.axisLock === 'x' ? null : 'x'
         if (k === 'y') scaleModal.axisLock = scaleModal.axisLock === 'y' ? null : 'y'
       }
-      if (!elementModalRef.current && !e.ctrlKey && !e.metaKey) {
-        if (e.key.toLowerCase() === 'g') startElementModal('move')
-        if (e.key.toLowerCase() === 'r') startElementModal('rotate')
-        if (e.key.toLowerCase() === 's') startElementModal('scale')
+      // same G/S axis-lock toggle, for the object-mode modal (see `startObjectModal`'s doc) —
+      // no GG vertex-slide equivalent here, there's no vertex/edge topology to ride
+      const objMoveModal = objectModalRef.current
+      if (objMoveModal && objMoveModal.kind === 'move' && !e.ctrlKey && !e.metaKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'x') objMoveModal.axisLock = objMoveModal.axisLock === 'x' ? null : 'x'
+        if (k === 'y') objMoveModal.axisLock = objMoveModal.axisLock === 'y' ? null : 'y'
+      }
+      const objScaleModal = objectModalRef.current
+      if (objScaleModal && objScaleModal.kind === 'scale' && !e.ctrlKey && !e.metaKey) {
+        const k = e.key.toLowerCase()
+        if (k === 'x') objScaleModal.axisLock = objScaleModal.axisLock === 'x' ? null : 'x'
+        if (k === 'y') objScaleModal.axisLock = objScaleModal.axisLock === 'y' ? null : 'y'
+      }
+      if (!elementModalRef.current && !objectModalRef.current && !e.ctrlKey && !e.metaKey) {
+        if (e.key.toLowerCase() === 'g') {
+          startElementModal('move')
+          startObjectModal('move')
+        }
+        if (e.key.toLowerCase() === 'r') {
+          startElementModal('rotate')
+          startObjectModal('rotate')
+        }
+        if (e.key.toLowerCase() === 's') {
+          startElementModal('scale')
+          startObjectModal('scale')
+        }
         if (e.key.toLowerCase() === 'e') {
           const store = useSceneStore.getState()
           if (store.mode === 'edit' && store.extrudeSelection()) {
@@ -1494,10 +1669,27 @@ export default function Viewport() {
       addDisconnectedLink(scene, parentTailWorld, { x: childWorldTransform.x, y: childWorldTransform.y })
     }
 
-    // BBox gizmo in object mode
+    // BBox gizmo in object mode, plus live G/R/S modal feedback (see `objectModalRef`'s doc)
     if (mode === 'object' && selectedObjectId) {
       const obj = objects.find((o) => o.id === selectedObjectId)
-      if (obj) addGizmo(scene, obj)
+      if (obj) {
+        addGizmo(scene, obj)
+        const modal = objectModalRef.current
+        if (modal && modal.objectId === obj.id) {
+          if (modal.kind === 'move') {
+            if (modal.axisLock) {
+              const worldTransform = getWorldTransform(obj, objects)
+              addObjectMoveAxisLine(scene, { x: worldTransform.x, y: worldTransform.y }, modal.axisLock)
+            }
+          } else if (modal.kind === 'rotate') {
+            addObjectModalPreview(scene, modal.center, 'rotate')
+          } else {
+            const pivotWorld = { x: modal.startTransform.x, y: modal.startTransform.y }
+            if (modal.axisLock) addObjectMoveAxisLine(scene, pivotWorld, modal.axisLock)
+            addObjectModalPreview(scene, pivotWorld, 'scale')
+          }
+        }
+      }
     }
 
     // Fake Flag vertex-mode anchor/direction indicator — shown whenever the selected object has
@@ -2375,6 +2567,53 @@ export default function Viewport() {
     scene.add(dot)
   }
 
+  /** Same idea as `addMoveAxisLine`, for the object-mode G modal (`objectModalRef`) — centered on
+   *  the object's own world position rather than a vertex-selection centroid. */
+  function addObjectMoveAxisLine(scene: THREE.Scene, center: Vec2, axisLock: 'x' | 'y') {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const rect = containerRef.current!.getBoundingClientRect()
+    const margin = 50 * pxToWorld
+    const color = axisLock === 'x' ? 0xe5484d : 0x4dca5a
+    if (axisLock === 'x') {
+      const halfW = rect.width / 2 / viewRef.current.zoom + margin
+      addDashedThickLine(scene, viewRef.current.panX - halfW, center.y, viewRef.current.panX + halfW, center.y, color, pxToWorld)
+    } else {
+      const halfH = rect.height / 2 / viewRef.current.zoom + margin
+      addDashedThickLine(scene, center.x, viewRef.current.panY - halfH, center.x, viewRef.current.panY + halfH, color, pxToWorld)
+    }
+  }
+
+  /** Same idea as `addElementModalPreview`, for the object-mode R/S modal (`objectModalRef`). */
+  function addObjectModalPreview(scene: THREE.Scene, center: Vec2, kind: 'rotate' | 'scale') {
+    const pxToWorld = 1 / viewRef.current.zoom
+    const world = screenToWorld(
+      lastPointerRef.current.clientX,
+      lastPointerRef.current.clientY,
+      containerRef.current!.getBoundingClientRect(),
+      viewRef.current,
+    )
+
+    if (kind === 'rotate') {
+      const ringRadius = RING_RADIUS_PX * pxToWorld
+      const ringGeom = new THREE.RingGeometry(ringRadius - 1 * pxToWorld, ringRadius + 1 * pxToWorld, 48)
+      const ring = new THREE.Mesh(ringGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, opacity: 0.5, transparent: true }))
+      ring.position.set(center.x, center.y, 0.55)
+      scene.add(ring)
+    }
+
+    const lineGeom = new THREE.BufferGeometry()
+    lineGeom.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([center.x, center.y, 0.7, world.x, world.y, 0.7], 3),
+    )
+    scene.add(new THREE.LineSegments(lineGeom, new THREE.LineBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true })))
+
+    const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 16)
+    const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xe5484d, depthTest: false, transparent: true }))
+    dot.position.set(center.x, center.y, 0.71)
+    scene.add(dot)
+  }
+
   const PIXEL_FRAME_COLOR = 0xffa033
   const PIXEL_FRAME_COLOR_CSS = '#ffa033'
 
@@ -2929,6 +3168,10 @@ export default function Viewport() {
     // a left-click while a G/R/S modal transform is running confirms it (Blender-style)
     if (elementModalRef.current) {
       confirmElementModal()
+      return
+    }
+    if (objectModalRef.current) {
+      confirmObjectModal()
       return
     }
 
