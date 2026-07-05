@@ -389,12 +389,18 @@ interface SceneState {
   removeKeyframe: (objectId: string, keyframeId: string) => void
   setKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Copies `sourceKeyframeId`'s transform/easing into a new keyframe at `time` — unlike
+   *  `insertKeyframe`, this doesn't touch the object's *current* live transform at all, it clones
+   *  whatever was keyed at the source. Replaces any existing key already at `time`. */
+  duplicateKeyframe: (objectId: string, sourceKeyframeId: string, time: number) => void
   /** Keys the given shape key's current live weight (`obj.shapeKeyValues[shapeKeyId] ?? 0`) at
    *  `time` — mirrors `insertKeyframe` capturing the live transform. Creates the track if absent. */
   insertShapeKeyKeyframe: (objectId: string, shapeKeyId: string, time: number, easing?: EasingType) => void
   removeShapeKeyKeyframe: (objectId: string, shapeKeyId: string, keyframeId: string) => void
   setShapeKeyKeyframeTime: (objectId: string, shapeKeyId: string, keyframeId: string, time: number) => void
   setShapeKeyKeyframeEasing: (objectId: string, shapeKeyId: string, keyframeId: string, easing: EasingType) => void
+  /** Same idea as `duplicateKeyframe`, for a `ShapeKeyTrack`'s weight keyframes. */
+  duplicateShapeKeyKeyframe: (objectId: string, shapeKeyId: string, sourceKeyframeId: string, time: number) => void
   /** Keys the given object's current live `pathDeformRail.pathOffset` at `time` — same idea as
    *  `insertShapeKeyKeyframe`, but for `PathOffsetTrack` (keyed by `objectId` alone — see its
    *  doc). Creates the track if absent, no-op if the object has no `pathDeformRail` modifier or
@@ -403,6 +409,8 @@ interface SceneState {
   removePathOffsetKeyframe: (objectId: string, keyframeId: string) => void
   setPathOffsetKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setPathOffsetKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Same idea as `duplicateKeyframe`, for a `PathOffsetTrack`. */
+  duplicatePathOffsetKeyframe: (objectId: string, sourceKeyframeId: string, time: number) => void
   /** Add a modifier of `type` to this object's stack (see `Modifier`) — a no-op if it already has
    *  one of that type, since the stack holds at most one per type. */
   addModifier: (id: string, type: Modifier['type']) => void
@@ -438,6 +446,8 @@ interface SceneState {
   removeFollowPathProgressKeyframe: (objectId: string, keyframeId: string) => void
   setFollowPathProgressKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setFollowPathProgressKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Same idea as `duplicateKeyframe`, for a `FollowPathProgressTrack`. */
+  duplicateFollowPathProgressKeyframe: (objectId: string, sourceKeyframeId: string, time: number) => void
   /** Merge a partial patch into this object's FFD settings — adds the modifier (with defaults
    *  merged with `patch`) if it isn't already in the stack. Setting `cageObjectId` to a cage
    *  that doesn't yet have a `cageRestVertices` snapshot seeds one from its current
@@ -2014,6 +2024,22 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  duplicateKeyframe: (objectId, sourceKeyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        const track = c.tracks.find((t) => t.objectId === objectId)
+        const source = track?.keyframes.find((k) => k.id === sourceKeyframeId)
+        if (!source) return c
+        const newKey = { ...source, id: genId('key'), time }
+        const withoutSameTime = track!.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return { ...c, tracks: c.tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)) }
+      }),
+    }))
+  },
+
   insertShapeKeyKeyframe: (objectId, shapeKeyId, time, easing = 'linear') => {
     const s = get()
     const clipId = s.activeClipId
@@ -2091,6 +2117,28 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  duplicateShapeKeyKeyframe: (objectId, shapeKeyId, sourceKeyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        const tracks = c.shapeKeyTracks ?? []
+        const track = tracks.find((t) => t.objectId === objectId && t.shapeKeyId === shapeKeyId)
+        const source = track?.keyframes.find((k) => k.id === sourceKeyframeId)
+        if (!source) return c
+        const newKey = { ...source, id: genId('key'), time }
+        const withoutSameTime = track!.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return {
+          ...c,
+          shapeKeyTracks: tracks.map((t) =>
+            t.objectId === objectId && t.shapeKeyId === shapeKeyId ? { ...t, keyframes } : t,
+          ),
+        }
+      }),
+    }))
+  },
+
   insertPathOffsetKeyframe: (objectId, time, easing = 'linear') => {
     const s = get()
     const clipId = s.activeClipId
@@ -2166,6 +2214,23 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
+  duplicatePathOffsetKeyframe: (objectId, sourceKeyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        const tracks = c.pathOffsetTracks ?? []
+        const track = tracks.find((t) => t.objectId === objectId)
+        const source = track?.keyframes.find((k) => k.id === sourceKeyframeId)
+        if (!source) return c
+        const newKey = { ...source, id: genId('key'), time }
+        const withoutSameTime = track!.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return { ...c, pathOffsetTracks: tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)) }
+      }),
+    }))
+  },
+
   insertFollowPathProgressKeyframe: (objectId, time, easing = 'linear') => {
     const s = get()
     const clipId = s.activeClipId
@@ -2237,6 +2302,23 @@ export const useSceneStore = create<SceneState>((set, get) => ({
             t.objectId !== objectId ? t : { ...t, keyframes: t.keyframes.map((k) => (k.id === keyframeId ? { ...k, easing } : k)) },
           ),
         }
+      }),
+    }))
+  },
+
+  duplicateFollowPathProgressKeyframe: (objectId, sourceKeyframeId, time) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => {
+        if (c.id !== s.activeClipId) return c
+        const tracks = c.followPathProgressTracks ?? []
+        const track = tracks.find((t) => t.objectId === objectId)
+        const source = track?.keyframes.find((k) => k.id === sourceKeyframeId)
+        if (!source) return c
+        const newKey = { ...source, id: genId('key'), time }
+        const withoutSameTime = track!.keyframes.filter((k) => k.time !== time)
+        const keyframes = [...withoutSameTime, newKey].sort((a, b) => a.time - b.time)
+        return { ...c, followPathProgressTracks: tracks.map((t) => (t.objectId === objectId ? { ...t, keyframes } : t)) }
       }),
     }))
   },

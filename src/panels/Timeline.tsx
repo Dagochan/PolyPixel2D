@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useSceneStore } from '../scene/store'
 import { getFakeFlag } from '../scene/fakeFlag'
 import type { EasingType, LoopMode } from '../scene/types'
-import { AddKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon, TrashIcon } from './icons'
+import { AddKeyframeIcon, DuplicateKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon, TrashIcon } from './icons'
 
 const EASING_OPTIONS: EasingType[] = ['linear', 'easeIn', 'easeOut', 'easeInOut']
 
@@ -45,15 +45,19 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const removeKeyframe = useSceneStore((s) => s.removeKeyframe)
   const setKeyframeTime = useSceneStore((s) => s.setKeyframeTime)
   const setKeyframeEasing = useSceneStore((s) => s.setKeyframeEasing)
+  const duplicateKeyframe = useSceneStore((s) => s.duplicateKeyframe)
   const removeShapeKeyKeyframe = useSceneStore((s) => s.removeShapeKeyKeyframe)
   const setShapeKeyKeyframeTime = useSceneStore((s) => s.setShapeKeyKeyframeTime)
   const setShapeKeyKeyframeEasing = useSceneStore((s) => s.setShapeKeyKeyframeEasing)
+  const duplicateShapeKeyKeyframe = useSceneStore((s) => s.duplicateShapeKeyKeyframe)
   const removePathOffsetKeyframe = useSceneStore((s) => s.removePathOffsetKeyframe)
   const setPathOffsetKeyframeTime = useSceneStore((s) => s.setPathOffsetKeyframeTime)
   const setPathOffsetKeyframeEasing = useSceneStore((s) => s.setPathOffsetKeyframeEasing)
+  const duplicatePathOffsetKeyframe = useSceneStore((s) => s.duplicatePathOffsetKeyframe)
   const removeFollowPathProgressKeyframe = useSceneStore((s) => s.removeFollowPathProgressKeyframe)
   const setFollowPathProgressKeyframeTime = useSceneStore((s) => s.setFollowPathProgressKeyframeTime)
   const setFollowPathProgressKeyframeEasing = useSceneStore((s) => s.setFollowPathProgressKeyframeEasing)
+  const duplicateFollowPathProgressKeyframe = useSceneStore((s) => s.duplicateFollowPathProgressKeyframe)
   const setPlayhead = useSceneStore((s) => s.setPlayhead)
   const bakeAllFakePhysics = useSceneStore((s) => s.bakeAllFakePhysics)
 
@@ -76,6 +80,20 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const [selectedKeyIsPathOffset, setSelectedKeyIsPathOffset] = useState(false)
   // same idea as `selectedKeyIsPathOffset`, for a `followPathProgress` track.
   const [selectedKeyIsFollowPathProgress, setSelectedKeyIsFollowPathProgress] = useState(false)
+  // set by the keyframe inspector's Duplicate button — identifies the source keyframe to clone
+  // and which track it lives on (same discriminated shape as the `selectedKey*` state above).
+  // While non-null, the timeline is in a modal "place the duplicate" mode: a ghost keyframe
+  // (`duplicateHoverTime`) tracks the pointer instead of the playhead, and the next click on the
+  // track commits it there — Blender-style "duplicate, then click to drop" rather than an
+  // immediate in-place copy, since there's no meaningful default time for the copy to land on.
+  const [pendingDuplicate, setPendingDuplicate] = useState<{
+    sourceKeyframeId: string
+    objectId: string
+    shapeKeyId: string | null
+    isPathOffset: boolean
+    isFollowPathProgress: boolean
+  } | null>(null)
+  const [duplicateHoverTime, setDuplicateHoverTime] = useState<number | null>(null)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -130,6 +148,20 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, activeClipId])
 
+  // Escape cancels an in-progress duplicate placement — same modal-drag-cancel convention as the
+  // viewport's grab/move tools.
+  useEffect(() => {
+    if (!pendingDuplicate) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPendingDuplicate(null)
+        setDuplicateHoverTime(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pendingDuplicate])
+
   if (clips.length === 0 || !activeClip) {
     return (
       <div className="panel timeline" style={style}>
@@ -158,6 +190,19 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     const rect = trackRef.current?.getBoundingClientRect()
     if (!rect) return
     setPlayhead(snapToFrame(xToTime(clientX - rect.left)))
+  }
+
+  // commits `pendingDuplicate` as a real keyframe at `time`, cloning the source's value/easing —
+  // the tail end of the Duplicate button's "click to drop" flow.
+  const commitDuplicate = (time: number) => {
+    if (!pendingDuplicate) return
+    const { sourceKeyframeId, objectId, shapeKeyId, isPathOffset, isFollowPathProgress } = pendingDuplicate
+    if (shapeKeyId) duplicateShapeKeyKeyframe(objectId, shapeKeyId, sourceKeyframeId, time)
+    else if (isPathOffset) duplicatePathOffsetKeyframe(objectId, sourceKeyframeId, time)
+    else if (isFollowPathProgress) duplicateFollowPathProgressKeyframe(objectId, sourceKeyframeId, time)
+    else duplicateKeyframe(objectId, sourceKeyframeId, time)
+    setPendingDuplicate(null)
+    setDuplicateHoverTime(null)
   }
 
   // all keyframe times on the selected object's tracks (Transform, shape keys, Path Offset,
@@ -291,8 +336,30 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     if (fppt) rows.push({ kind: 'followPathProgress', objectId, keyframes: fppt.keyframes })
   }
 
+  // true for the one row `pendingDuplicate` targets — that row draws the "click to drop" ghost
+  // keyframe at `duplicateHoverTime` instead of the placement affecting every row on the object.
+  const isPendingDuplicateRow = (row: Row): boolean => {
+    if (!pendingDuplicate || row.objectId !== pendingDuplicate.objectId) return false
+    if (row.kind === 'shapeKey') return row.shapeKeyId === pendingDuplicate.shapeKeyId
+    if (row.kind === 'pathOffset') return pendingDuplicate.isPathOffset
+    if (row.kind === 'followPathProgress') return pendingDuplicate.isFollowPathProgress
+    if (row.kind === 'transform') return !pendingDuplicate.shapeKeyId && !pendingDuplicate.isPathOffset && !pendingDuplicate.isFollowPathProgress
+    return false
+  }
+
   return (
-    <div className="panel timeline" style={style}>
+    <div
+      className="panel timeline"
+      style={style}
+      onContextMenu={(e) => {
+        // Blender-style: right-click cancels the in-progress operation, same convention as the
+        // viewport's drag-cancel — here that's an in-progress duplicate placement.
+        if (!pendingDuplicate) return
+        e.preventDefault()
+        setPendingDuplicate(null)
+        setDuplicateHoverTime(null)
+      }}
+    >
       <div className="timeline-header">
         <select value={activeClipId ?? ''} onChange={(e) => setActiveClipId(e.target.value)}>
           {clips.map((c) => (
@@ -519,6 +586,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             style={{ left: RULER_OFFSET_PX + playheadTime * pxPerSecond }}
             onPointerDown={(e) => {
               e.stopPropagation()
+              if (e.button === 2) return
               draggingPlayheadRef.current = true
               seekFromClientX(e.clientX)
               try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
@@ -549,10 +617,19 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             ))}
           </div>
           <div
-            className="timeline-rows"
+            className={'timeline-rows' + (pendingDuplicate ? ' placing-duplicate' : '')}
             ref={trackRef}
             style={{ width: contentWidth }}
             onPointerDown={(e) => {
+              // right-click is this app's cancel gesture (see the panel's `onContextMenu`) — a
+              // placement click must be button 0, otherwise the duplicate would get committed
+              // here before the `contextmenu` event even has a chance to cancel it.
+              if (e.button === 2) return
+              if (pendingDuplicate) {
+                const rect = trackRef.current?.getBoundingClientRect()
+                if (rect) commitDuplicate(snapToFrame(xToTime(e.clientX - rect.left)))
+                return
+              }
               if ((e.target as HTMLElement).closest('.timeline-keyframe')) return
               draggingPlayheadRef.current = true
               seekFromClientX(e.clientX)
@@ -566,6 +643,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
               }
             }}
             onPointerMove={(e) => {
+              if (pendingDuplicate) {
+                const rect = trackRef.current?.getBoundingClientRect()
+                if (rect) setDuplicateHoverTime(snapToFrame(xToTime(e.clientX - rect.left)))
+                return
+              }
               if (!draggingPlayheadRef.current) return
               seekFromClientX(e.clientX)
             }}
@@ -634,6 +716,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       }
                       onPointerDown={(e) => {
                         e.stopPropagation()
+                        if (e.button === 2) return
+                        if (pendingDuplicate) {
+                          const rect = trackRef.current?.getBoundingClientRect()
+                          if (rect) commitDuplicate(snapToFrame(xToTime(e.clientX - rect.left)))
+                          return
+                        }
                         selectObject(row.objectId)
                         setSelectedKeyObjectId(row.objectId)
                         setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
@@ -658,6 +746,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                       }}
                     />
                   ))
+                )}
+                {isPendingDuplicateRow(row) && duplicateHoverTime !== null && (
+                  <div
+                    className="timeline-keyframe ghost"
+                    style={{ left: RULER_OFFSET_PX + duplicateHoverTime * pxPerSecond }}
+                  />
                 )}
               </div>
             ))}
@@ -708,6 +802,21 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     ))}
                   </select>
                 </label>
+                <button
+                  title="Duplicate this keyframe — click a frame on the timeline to place the copy"
+                  onClick={() => {
+                    setPendingDuplicate({
+                      sourceKeyframeId: key.id,
+                      objectId: selectedKeyObjectId,
+                      shapeKeyId,
+                      isPathOffset,
+                      isFollowPathProgress,
+                    })
+                    setDuplicateHoverTime(key.time)
+                  }}
+                >
+                  <DuplicateKeyframeIcon size={14} /> Duplicate keyframe
+                </button>
                 <button
                   title="Delete this keyframe"
                   onClick={() => {

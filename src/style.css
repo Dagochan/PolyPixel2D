@@ -1032,6 +1032,12 @@ input[type='range']:disabled {
   cursor: pointer;
 }
 
+/* modal "place the duplicate" mode, entered via the keyframe inspector's Duplicate button — the
+   next click on the track drops the copy there instead of seeking the playhead */
+.timeline-rows.placing-duplicate {
+  cursor: crosshair;
+}
+
 .timeline-track-row {
   position: relative;
   height: 28px;
@@ -1136,6 +1142,15 @@ input[type='range']:disabled {
 
 .timeline-keyframe.selected {
   background: #ffd24e;
+}
+
+/* pending duplicate, following the pointer until the placing click confirms it */
+.timeline-keyframe.ghost {
+  background: transparent;
+  border: 1px dashed #ffd24e;
+  opacity: 0.8;
+  cursor: crosshair;
+  pointer-events: none;
 }
 
 .timeline-keyframe-inspector {

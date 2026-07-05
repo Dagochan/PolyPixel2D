@@ -375,3 +375,13 @@ export function AddKeyframeIcon({ size = 16 }: IconProps) {
     </svg>
   )
 }
+
+export function DuplicateKeyframeIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      {/* two overlapping keyframe diamonds, offset toward the direction a placed copy would go */}
+      <path d="M9,3 L14,8 L9,13 L4,8 Z" opacity="0.45" />
+      <path d="M15,11 L20,16 L15,21 L10,16 Z" />
+    </svg>
+  )
+}
