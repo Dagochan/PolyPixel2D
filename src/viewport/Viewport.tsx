@@ -2344,6 +2344,58 @@ export default function Viewport() {
   }
 
   const PIXEL_FRAME_COLOR = 0xffa033
+  const PIXEL_FRAME_COLOR_CSS = '#ffa033'
+
+  function gcd(a: number, b: number): number {
+    a = Math.abs(a)
+    b = Math.abs(b)
+    while (b) {
+      ;[a, b] = [b, a % b]
+    }
+    return a || 1
+  }
+
+  /** "PIXEL FRAME" + the frame's aspect ratio, drawn just above its top-left corner. The ratio is
+   *  Pixel Preview's actual output pixel dimensions (see `PixelPreview.tsx`'s `canvasW`/`canvasH`
+   *  derivation, mirrored here) reduced by their GCD — e.g. a wide frame at the default 128
+   *  resolution reads "16:9" rather than the raw (and generally non-integer) world-space
+   *  `width`/`height` ratio, since that's the ratio that actually matters for the exported art. */
+  function addPixelFrameLabel(scene: THREE.Scene, frame: PixelFrame) {
+    const res = useSceneStore.getState().pixelPreviewResolution
+    const canvasW = frame.width >= frame.height ? res : Math.max(1, Math.round((res * frame.width) / frame.height))
+    const canvasH = frame.height > frame.width ? res : Math.max(1, Math.round((res * frame.height) / frame.width))
+    const divisor = gcd(canvasW, canvasH)
+    const text = `PIXEL FRAME   ${canvasW / divisor}:${canvasH / divisor}`
+
+    const RESOLUTION_SCALE = 3
+    const fontSizeOnScreen = 13
+    const fontSize = fontSizeOnScreen * RESOLUTION_SCALE
+    const fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" // matches body { font-family } in style.css
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+    ctx.font = `600 ${fontSize}px ${fontFamily}`
+    const textWidth = ctx.measureText(text).width
+    canvas.width = Math.ceil(textWidth)
+    canvas.height = Math.ceil(fontSize * 1.4)
+    ctx.font = `600 ${fontSize}px ${fontFamily}`
+    ctx.fillStyle = PIXEL_FRAME_COLOR_CSS
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'left'
+    ctx.fillText(text, 0, canvas.height / 2)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true })
+    const sprite = new THREE.Sprite(material)
+    // anchor at the sprite's bottom-left (rather than the default center) so it's easy to place
+    // just above-left of the frame's top-left corner, growing right/up from that point
+    sprite.center.set(0, 0)
+    const pxToWorld = 1 / viewRef.current.zoom / RESOLUTION_SCALE
+    sprite.scale.set(canvas.width * pxToWorld, canvas.height * pxToWorld, 1)
+    const gapPx = 4
+    sprite.position.set(frame.x - frame.width / 2, frame.y + frame.height / 2 + gapPx / viewRef.current.zoom, 0.9)
+    scene.add(sprite)
+  }
 
   /** Pixel Preview's fixed "main render camera" overlay: a dashed rectangle (same style as the
    *  scale-gizmo's bbox outline, just orange instead of blue so it doesn't get confused with the
@@ -2377,6 +2429,8 @@ export default function Viewport() {
       m.position.set(x, y, 0.6)
       scene.add(m)
     }
+
+    addPixelFrameLabel(scene, frame)
   }
 
   /** The Pixel Frame's 4 corners in world space, keyed the same way the scale-gizmo's are. */
