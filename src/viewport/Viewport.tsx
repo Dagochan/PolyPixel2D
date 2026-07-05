@@ -106,9 +106,12 @@ type DragMode =
   | {
       kind: 'scale-object'
       objectId: string
-      corner: 'tl' | 'tr' | 'bl' | 'br'
       startTransform: SceneObject['transform']
       meshCornerRel: { x: number; y: number } // relative to pivot
+      // null (corner handles): free, non-axis-locked scale — both axes follow the cursor
+      // independently. 'x'/'y' (edge-midpoint handles): only that axis's scale changes, the
+      // other stays exactly as it was at drag start.
+      axisLock: 'x' | 'y' | null
     }
   | {
       kind: 'rotate-object'
@@ -2049,7 +2052,22 @@ export default function Viewport() {
             { key: 'tr' as const, x: maxX, y: maxY },
           ]
         })()
-    return { localBounds: lb, center, ringRadius, arrowLength, axisX, axisY, corners }
+    // one handle per edge midpoint, for single-axis (non-corner) scaling — left/right mid
+    // handles scale local X only, top/bottom mid handles scale local Y only (see the
+    // `scale-object` drag's `axisLock`). Derived from the same `corners` used above so they
+    // follow the exact same local-vs-world orientation toggle with no separate logic.
+    const cornerByKey = Object.fromEntries(corners.map((c) => [c.key, c])) as unknown as Record<
+      'tl' | 'tr' | 'bl' | 'br',
+      { x: number; y: number }
+    >
+    const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
+    const edgeHandles: Array<{ axisLock: 'x' | 'y'; x: number; y: number }> = [
+      { axisLock: 'x', ...mid(cornerByKey.tr, cornerByKey.br) }, // right
+      { axisLock: 'x', ...mid(cornerByKey.tl, cornerByKey.bl) }, // left
+      { axisLock: 'y', ...mid(cornerByKey.tl, cornerByKey.tr) }, // top
+      { axisLock: 'y', ...mid(cornerByKey.bl, cornerByKey.br) }, // bottom
+    ]
+    return { localBounds: lb, center, ringRadius, arrowLength, axisX, axisY, corners, edgeHandles }
   }
 
   /** Small always-on marker at the edit-mode pivot (set via P) — deliberately not a full
@@ -2461,8 +2479,44 @@ export default function Viewport() {
     }
   }
 
+  /** One edge-midpoint single-axis scale handle: a thin quad centered at `p`, thin along
+   *  whichever of `axisX`/`axisY` corresponds to `axisLock` (the axis it scales) and elongated
+   *  along the other (the edge direction) — a "bar", not a square, so it reads as 1D. `axisX`/
+   *  `axisY` already carry the local-vs-world orientation toggle (see `getGizmoGeom`), so this
+   *  handle rotates along with the bbox outline/corner handles with no separate logic. */
+  function addEdgeScaleHandle(
+    scene: THREE.Scene,
+    p: { x: number; y: number },
+    axisLock: 'x' | 'y',
+    axisX: { x: number; y: number },
+    axisY: { x: number; y: number },
+    pxToWorld: number,
+    mat: THREE.Material,
+  ) {
+    const thin = 2 * pxToWorld
+    const long = 5 * pxToWorld
+    const scaleAxis = axisLock === 'x' ? axisX : axisY
+    const edgeAxis = axisLock === 'x' ? axisY : axisX
+    const corners = [
+      { x: p.x + scaleAxis.x * thin + edgeAxis.x * long, y: p.y + scaleAxis.y * thin + edgeAxis.y * long },
+      { x: p.x - scaleAxis.x * thin + edgeAxis.x * long, y: p.y - scaleAxis.y * thin + edgeAxis.y * long },
+      { x: p.x - scaleAxis.x * thin - edgeAxis.x * long, y: p.y - scaleAxis.y * thin - edgeAxis.y * long },
+      { x: p.x + scaleAxis.x * thin - edgeAxis.x * long, y: p.y + scaleAxis.y * thin - edgeAxis.y * long },
+    ]
+    const positions: number[] = []
+    for (const c of corners) positions.push(c.x, c.y, 0.6)
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    // swapping which of axisX/axisY is `scaleAxis` vs `edgeAxis` between the 'x'/'y' cases mirrors
+    // the basis, which flips this quad's winding — without correcting for it, MeshBasicMaterial's
+    // default backface culling makes the 'y'-locked (top/bottom) handles invisible while the
+    // 'x'-locked (left/right) ones render fine.
+    geom.setIndex(axisLock === 'x' ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2])
+    scene.add(new THREE.Mesh(geom, mat))
+  }
+
   function addGizmo(scene: THREE.Scene, obj: SceneObject) {
-    const { center, ringRadius, arrowLength, axisX, axisY, corners } = getGizmoGeom(obj)
+    const { center, ringRadius, arrowLength, axisX, axisY, corners, edgeHandles } = getGizmoGeom(obj)
     const pxToWorld = 1 / viewRef.current.zoom
 
     // dashed bbox outline connecting the corners in winding order (bl -> br -> tr -> tl -> bl)
@@ -2495,6 +2549,13 @@ export default function Viewport() {
       const m = new THREE.Mesh(geom, handleMat)
       m.position.set(x, y, 0.6)
       scene.add(m)
+    }
+
+    // edge-midpoint handles for single-axis scale — a thin bar straddling the edge (elongated
+    // along the edge, thin along the axis it scales) rather than a square, so their shape alone
+    // hints "this one moves along a line" vs. the corners' "this one moves freely"
+    for (const eh of edgeHandles) {
+      addEdgeScaleHandle(scene, eh, eh.axisLock, axisX, axisY, pxToWorld, handleMat)
     }
 
     // rotate ring
@@ -3076,7 +3137,7 @@ export default function Viewport() {
 
     if (mode === 'object' && selectedObj) {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
-      const { center, ringRadius, arrowLength, axisX, axisY, corners } = getGizmoGeom(selectedObj)
+      const { center, ringRadius, arrowLength, axisX, axisY, corners, edgeHandles } = getGizmoGeom(selectedObj)
 
       // rotate ring: distance from center close to ringRadius
       const distFromCenter = Math.hypot(world.x - center.x, world.y - center.y) * viewRef.current.zoom
@@ -3134,9 +3195,27 @@ export default function Viewport() {
           dragRef.current = {
             kind: 'scale-object',
             objectId: selectedObj.id,
-            corner: c.key,
             startTransform: { ...selectedObj.transform, head: { ...pivot } },
             meshCornerRel: { x: meshCorner.x - pivot.x, y: meshCorner.y - pivot.y },
+            axisLock: null,
+          }
+          return
+        }
+      }
+
+      // edge-midpoint handles for single-axis scale, same pivot-anchored math as the corner
+      // handles above, just constrained to one axis via `axisLock`
+      for (const eh of edgeHandles) {
+        if (pxDistSq(world.x, world.y, eh.x, eh.y) < HANDLE_SIZE ** 2) {
+          const meshPoint = inverseTransform({ x: eh.x, y: eh.y }, selectedWorldTransform)
+          const pivot = selectedObj.transform.head
+          useSceneStore.getState().beginChange()
+          dragRef.current = {
+            kind: 'scale-object',
+            objectId: selectedObj.id,
+            startTransform: { ...selectedObj.transform, head: { ...pivot } },
+            meshCornerRel: { x: meshPoint.x - pivot.x, y: meshPoint.y - pivot.y },
+            axisLock: eh.axisLock,
           }
           return
         }
@@ -3435,13 +3514,25 @@ export default function Viewport() {
     if (drag.kind === 'scale-object') {
       const obj = store.objects.find((o) => o.id === drag.objectId)
       if (!obj) return
-      const local = inverseTransform(world, { ...drag.startTransform, scaleX: 1, scaleY: 1 })
+      // snap the dragged corner/edge's *world* position to the grid — same convention as every
+      // other grid-snapped drag (move-head/move-tail, move-object-axis, ...) — rather than
+      // snapping the resulting scale ratio itself, so the handle visibly lands on a grid point.
+      let snappedWorld = world
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        snappedWorld = { x: snapToIncrement(world.x, inc), y: snapToIncrement(world.y, inc) }
+      }
+      const local = inverseTransform(snappedWorld, { ...drag.startTransform, scaleX: 1, scaleY: 1 })
       const pivot = drag.startTransform.head
       const relX = local.x - pivot.x
       const relY = local.y - pivot.y
       const mc = drag.meshCornerRel
-      const newScaleX = mc.x !== 0 ? relX / mc.x : drag.startTransform.scaleX
-      const newScaleY = mc.y !== 0 ? relY / mc.y : drag.startTransform.scaleY
+      const rawScaleX = mc.x !== 0 ? relX / mc.x : drag.startTransform.scaleX
+      const rawScaleY = mc.y !== 0 ? relY / mc.y : drag.startTransform.scaleY
+      // an edge-midpoint handle (axisLock set) only ever touches its own axis — the other axis's
+      // scale is left exactly as it was at drag start, regardless of where the cursor wanders
+      const newScaleX = drag.axisLock === 'y' ? drag.startTransform.scaleX : rawScaleX
+      const newScaleY = drag.axisLock === 'x' ? drag.startTransform.scaleY : rawScaleY
       store.setTransform(drag.objectId, {
         scaleX: Math.abs(newScaleX) < 0.01 ? 0.01 * Math.sign(newScaleX || 1) : newScaleX,
         scaleY: Math.abs(newScaleY) < 0.01 ? 0.01 * Math.sign(newScaleY || 1) : newScaleY,
