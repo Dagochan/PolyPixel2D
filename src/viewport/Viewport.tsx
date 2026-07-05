@@ -42,6 +42,20 @@ const RING_RADIUS_PX = 56 // fixed screen size, like Blender's gizmo (doesn't sc
 const ARROW_LENGTH_PX = 42
 const EMPTY_GIZMO_SIZE = 12 // world units; stand-in "bounds" half-size for a mesh-less Empty
 const EMPTY_HIT_RADIUS_PX = 10 // click hit-test radius for picking an Empty in the viewport
+const HEAD_DOT_RADIUS_PX = 4 // pivot-mode Head handle: a small filled dot
+const HEAD_HIT_RADIUS_PX = GIZMO_HIT_TOLERANCE * 1.5
+// pivot-mode Tail handle: a larger hollow ring + crosshair (not just a different color from
+// Head) so the two stay distinguishable — both as a click target and visually — even though
+// Head and Tail default to the exact same position. `TAIL_HIT_RADIUS_PX` is deliberately bigger
+// than `HEAD_HIT_RADIUS_PX`: since Head's (smaller) hit-test runs first, a click dead-center
+// still resolves to Head, while the surrounding ring band only Tail's bigger radius reaches
+// becomes real, clickable space for Tail — see the `mode === 'pivot'` hit-test.
+const TAIL_RING_OUTER_RADIUS_PX = 11
+const TAIL_CROSSHAIR_HALF_LENGTH_PX = 7
+// kept proportional to the ring's own radius (same ~2.6x padding-over-visible-size ratio as
+// Head's dot/hit-radius pair) rather than a fixed number, so bumping the ring size up doesn't
+// also require remembering to separately rebalance the hit radius.
+const TAIL_HIT_RADIUS_PX = TAIL_RING_OUTER_RADIUS_PX * 2.6
 const HAIR_PATH_DEFAULT_WIDTH = 10 // world units — starting root width of a Hair Path, before any Shift+wheel adjustment
 const HAIR_PATH_CP_HIT_RADIUS_PX = 10 // click hit-test radius for grabbing an already-placed control point
 const FAKE_FLAG_RING_RADIUS_PX = 22 // fixed screen size rotate-ring for the direction handle, at the anchor root
@@ -2539,17 +2553,40 @@ export default function Viewport() {
     const { center } = getGizmoGeom(obj)
     const pxToWorld = 1 / viewRef.current.zoom
 
-    const headDotGeom = new THREE.CircleGeometry(4 * pxToWorld, 16)
+    const headDotGeom = new THREE.CircleGeometry(HEAD_DOT_RADIUS_PX * pxToWorld, 16)
     const headDot = new THREE.Mesh(headDotGeom, new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
-    headDot.position.set(center.x, center.y, 0.65)
+    headDot.position.set(center.x, center.y, 0.66)
     scene.add(headDot)
 
     const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
     const tailWorld = getWorldTail(obj, worldTransform)
-    const tailDotGeom = new THREE.CircleGeometry(4 * pxToWorld, 16)
-    const tailDot = new THREE.Mesh(tailDotGeom, new THREE.MeshBasicMaterial({ color: 0xff3fb4, depthTest: false, transparent: true }))
-    tailDot.position.set(tailWorld.x, tailWorld.y, 0.65)
-    scene.add(tailDot)
+    addTailReticle(scene, tailWorld, pxToWorld)
+  }
+
+  /** Tail's pivot-mode handle: a hollow ring + crosshair, visibly bigger than Head's small filled
+   *  dot — see `TAIL_RING_OUTER_RADIUS_PX`'s doc for why the shape (not just the color) needs to
+   *  differ. */
+  function addTailReticle(scene: THREE.Scene, worldPos: Vec2, pxToWorld: number) {
+    const color = 0xff3fb4
+    const mat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })
+    const ringGeom = new THREE.RingGeometry(
+      (TAIL_RING_OUTER_RADIUS_PX - 1) * pxToWorld,
+      TAIL_RING_OUTER_RADIUS_PX * pxToWorld,
+      24,
+    )
+    const ring = new THREE.Mesh(ringGeom, mat)
+    ring.position.set(worldPos.x, worldPos.y, 0.66)
+    scene.add(ring)
+
+    const armLen = TAIL_CROSSHAIR_HALF_LENGTH_PX * pxToWorld
+    const crossGeom = new THREE.BufferGeometry()
+    crossGeom.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([-armLen, 0, 0, armLen, 0, 0, 0, -armLen, 0, 0, armLen, 0], 3),
+    )
+    const cross = new THREE.LineSegments(crossGeom, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true }))
+    cross.position.set(worldPos.x, worldPos.y, 0.66)
+    scene.add(cross)
   }
 
   function addAxisArrow(
@@ -3020,14 +3057,17 @@ export default function Viewport() {
       const selectedWorldTransform = getWorldTransform(selectedObj, objects)
       const { center } = getGizmoGeom(selectedObj)
 
-      if (pxDistSq(world.x, world.y, center.x, center.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
+      // Head is checked first with the smaller radius — see `TAIL_HIT_RADIUS_PX`'s doc: this is
+      // what makes a dead-center click resolve to Head even though both default to the same spot,
+      // while Tail's larger radius still gets its own clickable ring around that shared center.
+      if (pxDistSq(world.x, world.y, center.x, center.y) < HEAD_HIT_RADIUS_PX ** 2) {
         useSceneStore.getState().beginChange()
         dragRef.current = { kind: 'move-head', objectId: selectedObj.id }
         return
       }
 
       const tailWorld = getWorldTail(selectedObj, selectedWorldTransform)
-      if (pxDistSq(world.x, world.y, tailWorld.x, tailWorld.y) < (GIZMO_HIT_TOLERANCE * 1.5) ** 2) {
+      if (pxDistSq(world.x, world.y, tailWorld.x, tailWorld.y) < TAIL_HIT_RADIUS_PX ** 2) {
         useSceneStore.getState().beginChange()
         dragRef.current = { kind: 'move-tail', objectId: selectedObj.id }
         return
@@ -3428,7 +3468,12 @@ export default function Viewport() {
     if (drag.kind === 'move-head') {
       const obj = store.objects.find((o) => o.id === drag.objectId)
       if (!obj) return
-      const localUnderMouse = inverseTransform(world, getWorldTransform(obj, store.objects))
+      let snappedWorld = world
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        snappedWorld = { x: snapToIncrement(world.x, inc), y: snapToIncrement(world.y, inc) }
+      }
+      const localUnderMouse = inverseTransform(snappedWorld, getWorldTransform(obj, store.objects))
       store.setHead(drag.objectId, localUnderMouse)
       return
     }
@@ -3436,7 +3481,12 @@ export default function Viewport() {
     if (drag.kind === 'move-tail') {
       const obj = store.objects.find((o) => o.id === drag.objectId)
       if (!obj) return
-      const localUnderMouse = inverseTransform(world, getWorldTransform(obj, store.objects))
+      let snappedWorld = world
+      if (shouldGridSnap(e.ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        snappedWorld = { x: snapToIncrement(world.x, inc), y: snapToIncrement(world.y, inc) }
+      }
+      const localUnderMouse = inverseTransform(snappedWorld, getWorldTransform(obj, store.objects))
       store.setTail(drag.objectId, localUnderMouse)
       return
     }
