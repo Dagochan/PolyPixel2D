@@ -222,6 +222,8 @@ interface SceneState {
   /** Remove control point `index` from a `kind: 'path'` object — no-op if that would leave fewer
    *  than 2 points (a path needs at least 2 to mean anything). */
   removePathPoint: (id: string, index: number) => void
+  /** Toggle a `kind: 'path'` object's `closed` flag (Blender's "Cyclic U") — see its doc. */
+  togglePathClosed: (id: string) => void
   /** Merge a rect/circle into the given object's mesh as a new disconnected island, instead of
    *  creating a separate object — used when adding a primitive while already in edit mode. */
   addRectIsland: (objectId: string, at: Vec2, width: number, height: number, segX: number, segY: number) => void
@@ -1010,6 +1012,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         const vertices = o.mesh.vertices.filter((_, i) => i !== index)
         return { ...o, mesh: { ...o.mesh, vertices } }
       }),
+    }))
+  },
+
+  togglePathClosed: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? { ...o, closed: !o.closed } : o)),
     }))
   },
 

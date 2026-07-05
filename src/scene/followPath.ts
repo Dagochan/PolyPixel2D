@@ -32,11 +32,11 @@ export function followPathWorldTransform(
   if (!pathObj) return null
 
   const pathWorld = getWorldTransform(pathObj, allObjects)
-  const worldPath = evaluatePathCurve(pathObj.mesh.vertices.map((v) => applyTransform(v, pathWorld)))
+  const worldPath = evaluatePathCurve(pathObj.mesh.vertices.map((v) => applyTransform(v, pathWorld)), 12, pathObj.closed)
   if (worldPath.length < 2) return null
   const pathLength = polylineLength(worldPath)
   const s = Math.max(0, Math.min(1, settings.progress)) * pathLength
-  const { point, normal } = samplePolyline(worldPath, s, pathLength)
+  const { point, normal } = samplePolyline(worldPath, s, pathLength, pathObj.closed)
 
   const objWorld = getWorldTransform(obj, allObjects)
   if (!settings.alignRotation) return { x: point.x, y: point.y, rotation: objWorld.rotation, scaleY: obj.transform.scaleY }

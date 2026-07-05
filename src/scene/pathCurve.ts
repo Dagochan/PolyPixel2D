@@ -44,13 +44,20 @@ function positionAt(polyline: Vec2[], s: number): Vec2 {
  *  sample boundary. Those are invisible for a point near the path itself, but a point far along a
  *  lateral offset amplifies them into a visible flicker as that offset sweeps the sampled position
  *  across segment joints during animation. Central-differencing over a wider window smooths the
- *  normal continuously past those joints instead. */
-export function samplePolyline(polyline: Vec2[], s: number, pathLength: number): { point: Vec2; normal: Vec2 } {
+ *  normal continuously past those joints instead.
+ *
+ *  `closed` (matching `SceneObject.closed`) wraps `s` (and the `±eps` window used for the normal)
+ *  modulo `pathLength` instead of letting `positionAt` extrapolate straight past either end — for
+ *  a properly closed `polyline` (see `evaluatePathCurve`'s `closed` param — its last point already
+ *  coincides with its first), this is what makes a `pathOffset`/`progress` sweep continue
+ *  seamlessly through the seam rather than shooting off along the tangent there. */
+export function samplePolyline(polyline: Vec2[], s: number, pathLength: number, closed = false): { point: Vec2; normal: Vec2 } {
   if (polyline.length < 2) return { point: polyline[0] ?? { x: 0, y: 0 }, normal: { x: 0, y: 1 } }
-  const point = positionAt(polyline, s)
+  const wrap = (v: number) => (closed && pathLength > 0 ? ((v % pathLength) + pathLength) % pathLength : v)
+  const point = positionAt(polyline, wrap(s))
   const eps = Math.max(1, pathLength / 100)
-  const before = positionAt(polyline, s - eps)
-  const after = positionAt(polyline, s + eps)
+  const before = positionAt(polyline, wrap(s - eps))
+  const after = positionAt(polyline, wrap(s + eps))
   const dx = after.x - before.x
   const dy = after.y - before.y
   const len = Math.hypot(dx, dy) || 1
@@ -68,15 +75,34 @@ export function samplePolyline(polyline: Vec2[], s: number, pathLength: number):
  *
  *  Fewer than 2 points has no curve (empty result); exactly 2 points is just that single segment
  *  (`samplesPerSegment` more points along the straight line, for a uniform sample density with
- *  the multi-point case rather than a special-cased 2-point straight line). */
-export function evaluatePathCurve(points: Vec2[], samplesPerSegment = 12): Vec2[] {
+ *  the multi-point case rather than a special-cased 2-point straight line).
+ *
+ *  `closed` (matching `SceneObject.closed`, Blender's "Cyclic U") adds one more segment closing
+ *  the last control point back to the first, and — unlike the open curve's mirrored phantom
+ *  points at the two ends — every segment's 4-point neighborhood simply wraps cyclically (`points`
+ *  indexed modulo its own length), so the seam gets exactly the same tangent-continuous treatment
+ *  as any interior point rather than a special-cased join. The result's last sample coincides
+ *  with its first (closing the polyline exactly), which is also what lets `samplePolyline`'s
+ *  `closed` wraparound treat it as one continuous loop with no seam-adjacent extrapolation. */
+export function evaluatePathCurve(points: Vec2[], samplesPerSegment = 12, closed = false): Vec2[] {
   if (points.length < 2) return [...points]
-  if (points.length === 2) {
+  if (!closed && points.length === 2) {
     const [a, b] = points
     return Array.from({ length: samplesPerSegment + 1 }, (_, i) => {
       const t = i / samplesPerSegment
       return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
     })
+  }
+
+  if (closed && points.length >= 3) {
+    const n = points.length
+    const at = (i: number) => points[((i % n) + n) % n]
+    const result: Vec2[] = []
+    for (let i = 0; i < n; i++) {
+      const segmentSamples = centripetalSegment(at(i - 1), at(i), at(i + 1), at(i + 2), samplesPerSegment)
+      result.push(...(i === 0 ? segmentSamples : segmentSamples.slice(1)))
+    }
+    return result
   }
 
   // Virtual phantom points before the first and after the last so the real endpoints get a full
@@ -109,13 +135,18 @@ export function evaluatePathCurve(points: Vec2[], samplesPerSegment = 12): Vec2[
  *  chord distance (not the smoothed curve) — good enough for deciding where a newly-inserted
  *  point belongs in the sequence, without needing to map a curve sample back to its source
  *  segment. Returns the insertion index (i.e. `i + 1`, so the new point goes *after* `points[i]`
- *  and before `points[i+1]`). `points` must have at least 2 elements. */
-export function nearestSegmentInsertIndex(points: Vec2[], p: Vec2): number {
+ *  and before `points[i+1]`). `points` must have at least 2 elements.
+ *
+ *  `closed` also considers the closing segment (`points[last]`-`points[0]`) — a point nearest that
+ *  one is simply appended (`points.length`, i.e. after the current last point), since there's no
+ *  "index past the wraparound" for a plain array insert. */
+export function nearestSegmentInsertIndex(points: Vec2[], p: Vec2, closed = false): number {
   let bestIndex = 0
   let bestDistSq = Infinity
-  for (let i = 0; i < points.length - 1; i++) {
+  const segCount = closed ? points.length : points.length - 1
+  for (let i = 0; i < segCount; i++) {
     const a = points[i]
-    const b = points[i + 1]
+    const b = points[(i + 1) % points.length]
     const dx = b.x - a.x
     const dy = b.y - a.y
     const lenSq = dx * dx + dy * dy
@@ -140,7 +171,7 @@ export function nearestSegmentInsertIndex(points: Vec2[], p: Vec2): number {
  *  bound from solving each segment's derivative for critical points) but is accurate enough for
  *  every current use (selection outline, Pixel Frame auto-fit) at negligible extra cost. */
 export function boundsVertices(obj: SceneObject): Vec2[] {
-  return obj.kind === 'path' ? evaluatePathCurve(obj.mesh.vertices) : obj.mesh.vertices
+  return obj.kind === 'path' ? evaluatePathCurve(obj.mesh.vertices, 12, obj.closed) : obj.mesh.vertices
 }
 
 const CENTRIPETAL_ALPHA = 0.5

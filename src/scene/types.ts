@@ -350,6 +350,15 @@ export interface SceneObject {
    *  on a lattice, same as a Path's control points aren't expected to gain faces. */
   latticeCols?: number
   latticeRows?: number
+  /** `kind: 'path'` only — false/absent (default) is an open curve (start/end are distinct points,
+   *  see the start/end arrow drawn in Viewport.tsx). true closes the loop: the curve continues
+   *  from the last control point back to the first (an extra segment, not just a straight line —
+   *  see `evaluatePathCurve`'s `closed` param), with matching tangent continuity at the seam
+   *  (Blender's "Cyclic U" toggle on a curve). Every path-arc-length consumer (`pathDeformRail.ts`,
+   *  `followPath.ts`) reads this from the assigned path object so `progress`/`pathOffset` wrap
+   *  seamlessly across the seam instead of extrapolating straight past an end that no longer
+   *  exists. */
+  closed?: boolean
   mesh: Mesh
   transform: Transform
   zOrder: number

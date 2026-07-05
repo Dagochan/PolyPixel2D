@@ -1187,7 +1187,7 @@ export default function Viewport() {
 
       if (rawObj.kind === 'path') {
         const worldPoints = rawObj.mesh.vertices.map((v) => applyTransform(v, worldTransform))
-        addPathCurveLine(group, evaluatePathCurve(worldPoints), 0.5, isSelected)
+        addPathCurveLine(group, evaluatePathCurve(worldPoints, 12, rawObj.closed), 0.5, isSelected, rawObj.closed)
         if (isSelected) {
           const pxToWorld = 1 / viewRef.current.zoom
           worldPoints.forEach((p) => {
@@ -1625,7 +1625,7 @@ export default function Viewport() {
   /** Shared curve-line builder for both the in-progress draw preview and a confirmed Path
    *  object's persisted rendering — just a plain `LineSegments` through consecutive samples
    *  (`evaluatePathCurve`'s dense polyline approximation), no fill (a Path has no `mesh.faces`). */
-  function addPathCurveLine(target: THREE.Scene | THREE.Group, samples: Vec2[], z: number, isSelected: boolean) {
+  function addPathCurveLine(target: THREE.Scene | THREE.Group, samples: Vec2[], z: number, isSelected: boolean, closed = false) {
     const positions: number[] = []
     for (let i = 0; i < samples.length - 1; i++) {
       const a = samples[i]
@@ -1653,9 +1653,11 @@ export default function Viewport() {
     target.add(line)
 
     // arrowhead at the end point (last control point, i.e. `mesh.vertices[length - 1]`) — the
-    // only visual cue for a Path's otherwise-invisible start/end direction, which will matter
-    // once Path Follow/Path Deform read it as a 0..1 progression from start to end
-    if (samples.length >= 2) {
+    // only visual cue for a Path's otherwise-invisible start/end direction, which matters for
+    // Follow Path/Path Deform (Rail) reading it as a 0..1 progression from start to end. Skipped
+    // for a closed path — there's no distinct "end" once the curve loops back on itself (the last
+    // sample coincides with the first, see `evaluatePathCurve`'s `closed` param). */
+    if (!closed && samples.length >= 2) {
       const tip = samples[samples.length - 1]
       const prev = samples[samples.length - 2]
       const dx = tip.x - prev.x
@@ -2922,10 +2924,10 @@ export default function Viewport() {
         dragRef.current = { kind: 'move-path-point', objectId: rawSelectedObj.id, index: hitIndex }
         return
       }
-      const samples = evaluatePathCurve(worldPoints)
+      const samples = evaluatePathCurve(worldPoints, 12, rawSelectedObj.closed)
       for (let i = 0; i < samples.length - 1; i++) {
         if (pxDistToSegment(world.x, world.y, samples[i].x, samples[i].y, samples[i + 1].x, samples[i + 1].y) < GIZMO_HIT_TOLERANCE) {
-          const insertIndex = nearestSegmentInsertIndex(worldPoints, world)
+          const insertIndex = nearestSegmentInsertIndex(worldPoints, world, rawSelectedObj.closed)
           useSceneStore.getState().insertPathPoint(rawSelectedObj.id, insertIndex, inverseTransform(world, worldTransform))
           return
         }
@@ -3217,7 +3219,7 @@ export default function Viewport() {
         // has no fillable faces to point-in-polygon test — hit-test distance to the curve line
         // itself instead (in screen pixels, so the tolerance stays constant regardless of zoom)
         const worldPoints = obj.mesh.vertices.map((v) => applyTransform(v, worldTransform))
-        const samples = evaluatePathCurve(worldPoints)
+        const samples = evaluatePathCurve(worldPoints, 12, obj.closed)
         for (let i = 0; i < samples.length - 1; i++) {
           if (pxDistToSegment(world.x, world.y, samples[i].x, samples[i].y, samples[i + 1].x, samples[i + 1].y) < GIZMO_HIT_TOLERANCE) {
             return obj.id

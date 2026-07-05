@@ -1503,6 +1503,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const removeFakeBehindMaskRef = useSceneStore((s) => s.removeFakeBehindMaskRef)
   const updatePathDeformRail = useSceneStore((s) => s.updatePathDeformRail)
   const insertPathOffsetKeyframe = useSceneStore((s) => s.insertPathOffsetKeyframe)
+  const togglePathClosed = useSceneStore((s) => s.togglePathClosed)
   const updateFollowPath = useSceneStore((s) => s.updateFollowPath)
   const insertFollowPathProgressKeyframe = useSceneStore((s) => s.insertFollowPathProgressKeyframe)
   const updateFfd = useSceneStore((s) => s.updateFfd)
@@ -1767,9 +1768,20 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               <span>Empty (no mesh, a dummy object for hierarchy)</span>
             </div>
           ) : obj.kind === 'path' ? (
-            <div className="prop-row prop-static">
-              <span>Path ({obj.mesh.vertices.length} control points) — no mesh, meant to be referenced by other objects' Path Follow/Path Deform modifiers</span>
-            </div>
+            <Section title="Path">
+              <div className="prop-row prop-static">
+                <span>Path ({obj.mesh.vertices.length} control points) — no mesh, meant to be referenced by other objects' Follow Path/Path Deform modifiers</span>
+              </div>
+              <div className="prop-row">
+                <button
+                  className={'icon-btn' + (obj.closed ? ' active' : '')}
+                  title="Closed — the curve continues from the last control point back to the first (Blender's Cyclic U), instead of stopping there"
+                  onClick={() => togglePathClosed(obj.id)}
+                >
+                  Closed
+                </button>
+              </div>
+            </Section>
           ) : obj.kind === 'lattice' ? (
             <Section title="Lattice">
               <div className="prop-row prop-static">

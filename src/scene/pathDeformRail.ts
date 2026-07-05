@@ -45,7 +45,7 @@ export function pathDeformRailVertexDeltas(obj: SceneObject, allObjects: SceneOb
 
   const objWorld = getWorldTransform(obj, allObjects)
   const pathWorld = getWorldTransform(pathObj, allObjects)
-  const worldPath = evaluatePathCurve(pathObj.mesh.vertices.map((v) => applyTransform(v, pathWorld)))
+  const worldPath = evaluatePathCurve(pathObj.mesh.vertices.map((v) => applyTransform(v, pathWorld)), 12, pathObj.closed)
   if (worldPath.length < 2) return null
   const pathLength = polylineLength(worldPath)
 
@@ -67,7 +67,7 @@ export function pathDeformRailVertexDeltas(obj: SceneObject, allObjects: SceneOb
     const u = uOf(v)
     const d = dOf(v)
     const s = settings.stretch ? ((u - minU) / localSpan) * pathLength : u + settings.pathOffset
-    const { point, normal } = samplePolyline(worldPath, s, pathLength)
+    const { point, normal } = samplePolyline(worldPath, s, pathLength, pathObj.closed)
     const newWorld = { x: point.x + normal.x * d, y: point.y + normal.y * d }
     const newLocal = inverseTransform(newWorld, objWorld)
     return { x: newLocal.x - v.x, y: newLocal.y - v.y }
