@@ -160,6 +160,31 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     setPlayhead(snapToFrame(xToTime(clientX - rect.left)))
   }
 
+  // all keyframe times on the selected object's tracks (Transform, shape keys, Path Offset,
+  // Follow Path progress) — used by the prev/next-keyframe transport buttons below. Baked Fake
+  // Physics tracks are deliberately excluded: they're dense, machine-generated keyframes (one per
+  // frame), so "jump to keyframe" on them would be indistinguishable from plain frame-stepping.
+  const KEYFRAME_JUMP_EPS = 1e-6
+  const selectedObjectKeyframeTimes = (): number[] => {
+    if (!selectedObjectId) return []
+    const times = new Set<number>()
+    activeClip.tracks.find((t) => t.objectId === selectedObjectId)?.keyframes.forEach((k) => times.add(k.time))
+    for (const skt of (activeClip.shapeKeyTracks ?? []).filter((s) => s.objectId === selectedObjectId)) {
+      skt.keyframes.forEach((k) => times.add(k.time))
+    }
+    ;(activeClip.pathOffsetTracks ?? [])
+      .find((pt) => pt.objectId === selectedObjectId)
+      ?.keyframes.forEach((k) => times.add(k.time))
+    ;(activeClip.followPathProgressTracks ?? [])
+      .find((pt) => pt.objectId === selectedObjectId)
+      ?.keyframes.forEach((k) => times.add(k.time))
+    return Array.from(times).sort((a, b) => a - b)
+  }
+  const prevKeyframeTime = (): number | undefined =>
+    [...selectedObjectKeyframeTimes()].reverse().find((t) => t < playheadTime - KEYFRAME_JUMP_EPS)
+  const nextKeyframeTime = (): number | undefined =>
+    selectedObjectKeyframeTimes().find((t) => t > playheadTime + KEYFRAME_JUMP_EPS)
+
   const zoomBy = (factor: number) =>
     setPxPerSecond((px) => Math.min(MAX_PX_PER_SECOND, Math.max(MIN_PX_PER_SECOND, px * factor)))
 
@@ -320,13 +345,29 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           <button className="timeline-transport-btn" title="Jump to start" onClick={() => setPlayhead(0)}>
             <JumpToStartIcon size={16} />
           </button>
-          <button className="timeline-transport-btn" title="Previous frame" onClick={() => setPlayhead(snapToFrame(playheadTime - 1 / frameRate))}>
+          <button
+            className="timeline-transport-btn"
+            title="Jump to previous keyframe (selected object)"
+            disabled={!selectedObjectId || prevKeyframeTime() === undefined}
+            onClick={() => {
+              const t = prevKeyframeTime()
+              if (t !== undefined) setPlayhead(t)
+            }}
+          >
             <JumpToPrevFrameIcon size={16} />
           </button>
           <button className={`timeline-transport-btn play${isPlaying ? ' active' : ''}`} title={isPlaying ? 'Pause' : 'Play'} onClick={() => setIsPlaying((p) => !p)}>
             {isPlaying ? <PauseIcon size={16} /> : <PlayIcon size={16} />}
           </button>
-          <button className="timeline-transport-btn" title="Next frame" onClick={() => setPlayhead(snapToFrame(playheadTime + 1 / frameRate))}>
+          <button
+            className="timeline-transport-btn"
+            title="Jump to next keyframe (selected object)"
+            disabled={!selectedObjectId || nextKeyframeTime() === undefined}
+            onClick={() => {
+              const t = nextKeyframeTime()
+              if (t !== undefined) setPlayhead(t)
+            }}
+          >
             <JumpToNextFrameIcon size={16} />
           </button>
           <button className="timeline-transport-btn" title="Jump to end" onClick={() => setPlayhead(duration)}>
