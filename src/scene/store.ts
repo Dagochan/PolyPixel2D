@@ -1139,6 +1139,18 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({
       objects: s.objects.filter((o) => o.id !== id),
       selectedObjectId: s.selectedObjectId === id ? null : s.selectedObjectId,
+      // drop every clip's keyframe data for this object too — otherwise a deleted object's
+      // tracks linger forever across every clip, showing as an un-clickable "(deleted object)"
+      // row in the Timeline with no way to clear it.
+      clips: s.clips.map((c) => ({
+        ...c,
+        tracks: c.tracks.filter((t) => t.objectId !== id),
+        shapeKeyTracks: c.shapeKeyTracks?.filter((t) => t.objectId !== id),
+        fakePhysicsTracks: c.fakePhysicsTracks?.filter((t) => t.objectId !== id),
+        fakePhysicsMeshTracks: c.fakePhysicsMeshTracks?.filter((t) => t.objectId !== id),
+        pathOffsetTracks: c.pathOffsetTracks?.filter((t) => t.objectId !== id),
+        followPathProgressTracks: c.followPathProgressTracks?.filter((t) => t.objectId !== id),
+      })),
     }))
   },
 
