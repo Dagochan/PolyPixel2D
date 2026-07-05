@@ -8,6 +8,7 @@ import { quantizeImageData } from '../scene/quantize'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import { boundsVertices } from '../scene/pathCurve'
+import { composeDisplayObjects } from '../scene/composeDisplay'
 import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 
 /** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
@@ -61,8 +62,24 @@ export default function PixelPreview() {
 
     let raf = 0
     const tick = () => {
-      const { objects, pixelFrame } = useSceneStore.getState()
+      const { objects: rawObjects, pixelFrame, editingShapeKeyId, clips, activeClipId, playheadTime, previewFakeFlag } =
+        useSceneStore.getState()
       const res = useSceneStore.getState().pixelPreviewResolution
+
+      // Same deform composition Viewport.tsx's render loop applies (shape keys, Fake Flag, Fake
+      // Physics mesh, Path Deform, FFD) — see `composeDisplayObjects`'s doc for why this needs to
+      // be the exact same call, not a separate copy. No live-drag Fake Physics preview state here
+      // (no interactive dragging happens in this read-only panel), so the default clip-sampled
+      // branch is always used regardless of the main viewport's `previewFakePhysicsMesh` toggle.
+      const activeClip = clips.find((c) => c.id === activeClipId)
+      const fakeFlagTime = previewFakeFlag ? performance.now() / 1000 : playheadTime
+      const objects = composeDisplayObjects(rawObjects, {
+        editingShapeKeyId,
+        fakeFlagTime,
+        fakeFlagLoopDuration: activeClip?.duration ?? 0,
+        activeClip,
+        playheadTime,
+      })
 
       // Pixel Frame set: frame exactly that fixed world-space rect, so the pixel-art scale stays
       // stable regardless of how objects move/deform (e.g. Fake Physics) — no re-fitting, no
