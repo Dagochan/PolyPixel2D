@@ -879,10 +879,24 @@ input[type='range']:disabled {
 
 .timeline-channel-list {
   flex-shrink: 0;
-  width: 110px;
   overflow-y: auto;
-  border-right: 1px solid #111;
   background: #202124;
+}
+
+.timeline-channel-list-resizer {
+  flex-shrink: 0;
+  width: 6px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+  border-right: 1px solid #111;
+}
+
+.timeline-channel-list-resizer:hover,
+.timeline-channel-list-resizer:active {
+  background: #4ea1ff55;
 }
 
 .timeline-channel-list-header {

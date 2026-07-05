@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { useSceneStore } from '../scene/store'
 import { getFakeFlag } from '../scene/fakeFlag'
 import type { EasingType, LoopMode } from '../scene/types'
@@ -10,6 +10,10 @@ const MIN_PX_PER_SECOND = 10
 const MAX_PX_PER_SECOND = 2000
 const DEFAULT_PX_PER_SECOND = 200
 const MIN_TICK_GAP_PX = 60
+
+const CHANNEL_LIST_DEFAULT_WIDTH = 110
+const CHANNEL_LIST_MIN_WIDTH = 90
+const CHANNEL_LIST_MAX_WIDTH = 400
 
 /** Picks a "nice" (1/2/5 × 10^n) tick spacing in seconds, the smallest one whose on-screen gap is
  *  still at least `MIN_TICK_GAP_PX` at the current zoom — same approach most DAW/NLE rulers use so
@@ -95,8 +99,10 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   } | null>(null)
   const [duplicateHoverTime, setDuplicateHoverTime] = useState<number | null>(null)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
+  const [channelListWidth, setChannelListWidth] = useState(CHANNEL_LIST_DEFAULT_WIDTH)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const resizingChannelListRef = useRef(false)
   const draggingKeyRef = useRef<string | null>(null)
   const draggingPlayheadRef = useRef(false)
   const rafRef = useRef<number | null>(null)
@@ -237,6 +243,26 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     const visibleWidth = scrollRef.current?.clientWidth
     if (!visibleWidth || duration <= 0) return
     setPxPerSecond(Math.min(MAX_PX_PER_SECOND, Math.max(MIN_PX_PER_SECOND, visibleWidth / duration)))
+  }
+
+  // drag-resize the channel-name column — same window-pointermove-listener pattern as App.tsx's
+  // sidebar/properties/timeline resizers, just scoped locally since this one only affects this panel.
+  const startChannelListResize = (e: ReactPointerEvent) => {
+    e.preventDefault()
+    resizingChannelListRef.current = true
+    const startX = e.clientX
+    const startWidth = channelListWidth
+    const onMove = (ev: PointerEvent) => {
+      if (!resizingChannelListRef.current) return
+      setChannelListWidth(Math.min(CHANNEL_LIST_MAX_WIDTH, Math.max(CHANNEL_LIST_MIN_WIDTH, startWidth + (ev.clientX - startX))))
+    }
+    const onUp = () => {
+      resizingChannelListRef.current = false
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
   }
 
   const tickInterval = niceTickInterval(pxPerSecond)
@@ -473,7 +499,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
       </div>
 
       <div className="timeline-body">
-        <div className="timeline-channel-list">
+        <div className="timeline-channel-list" style={{ width: channelListWidth }}>
           <div className="timeline-channel-list-header">
             <button
               className="timeline-insert-keyframe-btn"
@@ -579,6 +605,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             <div className="timeline-channel-name empty-hint">No keyframed objects yet</div>
           )}
         </div>
+        <div className="timeline-channel-list-resizer" onPointerDown={startChannelListResize} />
 
         <div className="timeline-scroll" ref={scrollRef}>
           <div
