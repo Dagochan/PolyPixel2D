@@ -26,6 +26,13 @@ export async function bakeReferenceToTexture(
   const imgWidth = image.width * referenceImage.scale
   const imgHeight = image.height * referenceImage.scale
 
+  // undo the reference image's own world rotation, so a world point can be looked up against the
+  // image's unrotated local space (same "R(-theta) * (world - center)" the viewport's rotated
+  // plane implies) — cos/sin of the *negative* angle since we're mapping world space back to
+  // local, the inverse of how the plane itself was rotated by `rotation` for display
+  const cos = Math.cos(-referenceImage.rotation)
+  const sin = Math.sin(-referenceImage.rotation)
+
   const positions: number[] = []
   const uvs: number[] = []
   const indices: number[] = []
@@ -37,8 +44,12 @@ export async function bakeReferenceToTexture(
       // render-space position: the UV atlas coordinate, scaled to pixels of the output texture
       positions.push(islandUvs[i].x * resolution, islandUvs[i].y * resolution, 0)
       // texture coordinate: where this point falls within the reference image, in the same
-      // (0,0)-centered, Y-up convention the reference plane itself is placed in world space
-      uvs.push((world.x - referenceImage.x) / imgWidth + 0.5, (world.y - referenceImage.y) / imgHeight + 0.5)
+      // (0,0)-centered, Y-up, unrotated-local convention the reference plane itself is placed in
+      const dx = world.x - referenceImage.x
+      const dy = world.y - referenceImage.y
+      const localX = dx * cos - dy * sin
+      const localY = dx * sin + dy * cos
+      uvs.push(localX / imgWidth + 0.5, localY / imgHeight + 0.5)
     })
     indexOffset += islandMesh.vertices.length
   }

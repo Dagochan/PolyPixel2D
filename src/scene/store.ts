@@ -27,6 +27,7 @@ import type {
   UvIslandTransform,
   Vec2,
 } from './types'
+import { REFERENCE_IMAGE_ID } from './types'
 import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
 import { DEFAULT_FAKE_BEHIND_SETTINGS, getFakeBehind } from './fakeBehind'
 import { boundsVertices } from './pathCurve'
@@ -233,7 +234,9 @@ interface SceneState {
   setPendingPrimitive: (p: PendingPrimitive | null) => void
   setHairPathConstantWidth: (v: boolean) => void
   setReferenceImage: (url: string | null) => void
-  setReferenceImageTransform: (transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'opacity'>>) => void
+  setReferenceImageTransform: (
+    transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'rotation' | 'opacity' | 'visible'>>,
+  ) => void
   setMeshOpacity: (opacity: number) => void
   setGridSubdivisions: (n: number) => void
   setGridSnapEnabled: (enabled: boolean) => void
@@ -458,6 +461,12 @@ interface SceneState {
    *  redefining what "undeformed" means after intentionally reshaping the cage itself (as
    *  opposed to posing it for others to follow). */
   resetFfdCageRest: (cageObjectId: string) => void
+  /** Blender-style "Apply Scale": bakes `transform.scaleX`/`scaleY` into every local-mesh-space
+   *  field (`mesh.vertices`, `tail`, `uvBaseVertices`, `cageRestVertices`, each shape key's
+   *  `positions`/`arcPivot`) about the pivot (`transform.head`), then resets scale to 1/1. World
+   *  appearance is unchanged; only future Edit Mode rotations/scales stop compounding with a
+   *  stale non-uniform Object-mode scale. */
+  applyScale: (id: string) => void
   /** Live, wall-clock-driven Fake Flag preview, independent of the playhead/active clip — lets a
    *  user see the sway/flutter without laying down any keyframes first. Toggling this never
    *  touches undo history (it's a view setting, not a scene edit). */
@@ -1063,7 +1072,12 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setHairPathConstantWidth: (hairPathConstantWidth) => set({ hairPathConstantWidth }),
 
   setReferenceImage: (url) =>
-    set({ referenceImage: url ? { url, x: 0, y: 0, scale: 1, opacity: 1 } : null }),
+    set((s) => ({
+      referenceImage: url ? { url, x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, visible: true } : null,
+      // removing it while it's the current selection would otherwise leave selectedObjectId
+      // pointing at a sentinel nothing can resolve — same cleanup `removeObject` does
+      selectedObjectId: !url && s.selectedObjectId === REFERENCE_IMAGE_ID ? null : s.selectedObjectId,
+    })),
 
   setReferenceImageTransform: (transform) =>
     set((s) => (s.referenceImage ? { referenceImage: { ...s.referenceImage, ...transform } } : {})),
@@ -2463,6 +2477,36 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) =>
         o.id === cageObjectId ? { ...o, cageRestVertices: o.mesh.vertices.map((v) => ({ ...v })) } : o,
       ),
+    }))
+  },
+
+  applyScale: (id) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const { scaleX, scaleY, head } = o.transform
+        if (scaleX === 1 && scaleY === 1) return o
+        const bake = (v: Vec2): Vec2 => ({
+          x: head.x + (v.x - head.x) * scaleX,
+          y: head.y + (v.y - head.y) * scaleY,
+        })
+        return {
+          ...o,
+          mesh: { ...o.mesh, vertices: o.mesh.vertices.map(bake) },
+          tail: bake(o.tail),
+          uvBaseVertices: o.uvBaseVertices
+            ? Object.fromEntries(Object.entries(o.uvBaseVertices).map(([i, v]) => [i, bake(v)]))
+            : o.uvBaseVertices,
+          cageRestVertices: o.cageRestVertices?.map(bake),
+          shapeKeys: o.shapeKeys?.map((sk) => ({
+            ...sk,
+            positions: Object.fromEntries(Object.entries(sk.positions).map(([i, v]) => [i, bake(v)])),
+            arcPivot: sk.arcPivot ? bake(sk.arcPivot) : sk.arcPivot,
+          })),
+          transform: { ...o.transform, scaleX: 1, scaleY: 1 },
+        }
+      }),
     }))
   },
 

@@ -13,6 +13,7 @@ import {
 } from '../scene/transformUtils'
 import { makeOrthoCamera, screenToWorld, updateOrthoCamera, type ViewState } from './camera2d'
 import type { Mesh, PixelFrame, SceneObject, Transform, Vec2 } from '../scene/types'
+import { REFERENCE_IMAGE_ID } from '../scene/types'
 import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
@@ -241,6 +242,33 @@ type ObjectModal =
       startTransform: SceneObject['transform']
       startDist: number
       axisLock: 'x' | 'y' | null // local-space axis lock, toggled by pressing X/Y again
+    }
+  /** G/R/S on the reference image (see `REFERENCE_IMAGE_ID`'s doc) — a parallel trio of variants
+   *  rather than reusing 'move'/'rotate'/'scale', since the reference image has no hierarchy (no
+   *  parent Transform/tail to route through) and only a single uniform `scale`, not per-axis
+   *  scaleX/scaleY. Not undo-tracked (the reference image was never part of `beginChange`'s
+   *  snapshot — see `setReferenceImage`'s doc), so cancelling restores `startPos`/`startScale`/
+   *  `startRotation` directly instead of calling `cancelChange`. */
+  | {
+      kind: 'refMove'
+      objectId: string // always REFERENCE_IMAGE_ID; kept so every variant shares this field
+      startWorld: Vec2
+      startPos: Vec2
+      axisLock: 'x' | 'y' | null
+    }
+  | {
+      kind: 'refScale'
+      objectId: string
+      pivot: Vec2 // the reference image's center at modal start; scaling never moves it
+      startScale: number
+      startDist: number
+    }
+  | {
+      kind: 'refRotate'
+      objectId: string
+      center: Vec2 // the reference image's center (x, y) — rotation pivot
+      startRotation: number
+      startAngle: number
     }
 
 export default function Viewport() {
@@ -722,6 +750,41 @@ export default function Viewport() {
   function startObjectModal(kind: 'move' | 'rotate' | 'scale') {
     const store = useSceneStore.getState()
     if (store.mode !== 'object' || !store.selectedObjectId) return
+
+    if (store.selectedObjectId === REFERENCE_IMAGE_ID) {
+      const ref = store.referenceImage
+      if (!ref) return
+      const center = { x: ref.x, y: ref.y }
+      if (kind === 'move') {
+        objectModalRef.current = {
+          kind: 'refMove',
+          objectId: REFERENCE_IMAGE_ID,
+          startWorld: currentPointerWorld(),
+          startPos: center,
+          axisLock: null,
+        }
+      } else if (kind === 'rotate') {
+        const world = currentPointerWorld()
+        objectModalRef.current = {
+          kind: 'refRotate',
+          objectId: REFERENCE_IMAGE_ID,
+          center,
+          startRotation: ref.rotation,
+          startAngle: Math.atan2(world.y - center.y, world.x - center.x),
+        }
+      } else {
+        const world = currentPointerWorld()
+        objectModalRef.current = {
+          kind: 'refScale',
+          objectId: REFERENCE_IMAGE_ID,
+          pivot: center,
+          startScale: ref.scale,
+          startDist: Math.max(1e-6, Math.hypot(world.x - center.x, world.y - center.y)),
+        }
+      }
+      return
+    }
+
     const obj = store.objects.find((o) => o.id === store.selectedObjectId)
     if (!obj) return
     const worldTransform = getWorldTransform(obj, store.objects)
@@ -777,6 +840,43 @@ export default function Viewport() {
     const modal = objectModalRef.current
     if (!modal) return
     const store = useSceneStore.getState()
+
+    if (modal.kind === 'refMove') {
+      const world = currentPointerWorld()
+      let dx = world.x - modal.startWorld.x
+      let dy = world.y - modal.startWorld.y
+      if (modal.axisLock === 'x') dy = 0
+      if (modal.axisLock === 'y') dx = 0
+      if (shouldGridSnap(ctrlKey)) {
+        const inc = getGridSnapIncrement()
+        if (modal.axisLock !== 'y') dx = snapToIncrement(modal.startPos.x + dx, inc) - modal.startPos.x
+        if (modal.axisLock !== 'x') dy = snapToIncrement(modal.startPos.y + dy, inc) - modal.startPos.y
+      }
+      store.setReferenceImageTransform({ x: modal.startPos.x + dx, y: modal.startPos.y + dy })
+      return
+    }
+
+    if (modal.kind === 'refScale') {
+      const world = currentPointerWorld()
+      const dist = Math.max(1e-6, Math.hypot(world.x - modal.pivot.x, world.y - modal.pivot.y))
+      let scale = modal.startScale * (dist / modal.startDist)
+      if (ctrlKey) scale = Math.round(scale * 20) / 20 // 5% snap
+      store.setReferenceImageTransform({ scale: Math.max(0.01, scale) })
+      return
+    }
+
+    if (modal.kind === 'refRotate') {
+      const world = currentPointerWorld()
+      const currentAngle = Math.atan2(world.y - modal.center.y, world.x - modal.center.x)
+      let rotation = modal.startRotation + (currentAngle - modal.startAngle)
+      if (ctrlKey) {
+        const step = (5 * Math.PI) / 180
+        rotation = Math.round(rotation / step) * step
+      }
+      store.setReferenceImageTransform({ rotation })
+      return
+    }
+
     const obj = store.objects.find((o) => o.id === modal.objectId)
     if (!obj) return
 
@@ -929,7 +1029,19 @@ export default function Viewport() {
         elementModalRef.current = null
       }
       if (objectModalRef.current) {
-        useSceneStore.getState().cancelChange()
+        const modal = objectModalRef.current
+        // reference-image modals aren't part of `beginChange`'s undo snapshot (the reference
+        // image was never included in it — see `setReferenceImage`'s doc), so `cancelChange`
+        // wouldn't undo anything here; restore the pre-drag values directly instead
+        if (modal.kind === 'refMove') {
+          useSceneStore.getState().setReferenceImageTransform({ x: modal.startPos.x, y: modal.startPos.y })
+        } else if (modal.kind === 'refScale') {
+          useSceneStore.getState().setReferenceImageTransform({ scale: modal.startScale })
+        } else if (modal.kind === 'refRotate') {
+          useSceneStore.getState().setReferenceImageTransform({ rotation: modal.startRotation })
+        } else {
+          useSceneStore.getState().cancelChange()
+        }
         objectModalRef.current = null
       }
       const activeTool = useSceneStore.getState().activeTool
@@ -1057,7 +1169,12 @@ export default function Viewport() {
       // same G/S axis-lock toggle, for the object-mode modal (see `startObjectModal`'s doc) —
       // no GG vertex-slide equivalent here, there's no vertex/edge topology to ride
       const objMoveModal = objectModalRef.current
-      if (objMoveModal && objMoveModal.kind === 'move' && !e.ctrlKey && !e.metaKey) {
+      if (
+        objMoveModal &&
+        (objMoveModal.kind === 'move' || objMoveModal.kind === 'refMove') &&
+        !e.ctrlKey &&
+        !e.metaKey
+      ) {
         const k = e.key.toLowerCase()
         if (k === 'x') objMoveModal.axisLock = objMoveModal.axisLock === 'x' ? null : 'x'
         if (k === 'y') objMoveModal.axisLock = objMoveModal.axisLock === 'y' ? null : 'y'
@@ -1315,7 +1432,7 @@ export default function Viewport() {
       pixelFrame,
     } = useSceneStore.getState()
 
-    if (referenceImage) addReferenceImage(scene, referenceImage)
+    if (referenceImage && referenceImage.visible) addReferenceImage(scene, referenceImage)
     if (gridVisible) addGrid(scene)
     if (pixelFrame) addPixelFrameGizmo(scene, pixelFrame)
 
@@ -1683,7 +1800,7 @@ export default function Viewport() {
             }
           } else if (modal.kind === 'rotate') {
             addObjectModalPreview(scene, modal.center, 'rotate')
-          } else {
+          } else if (modal.kind === 'scale') {
             const pivotWorld = { x: modal.startTransform.x, y: modal.startTransform.y }
             if (modal.axisLock) addObjectMoveAxisLine(scene, pivotWorld, modal.axisLock)
             addObjectModalPreview(scene, pivotWorld, 'scale')
@@ -2073,6 +2190,7 @@ export default function Viewport() {
     })
     const mesh = new THREE.Mesh(geom, mat)
     mesh.position.set(ref.x, ref.y, -50)
+    mesh.rotation.z = ref.rotation
     scene.add(mesh)
   }
 
@@ -2121,12 +2239,15 @@ export default function Viewport() {
     const minorPositions: number[] = []
     let yAxisPositions: number[] | null = null // vertical line through x=0
     let xAxisPositions: number[] | null = null // horizontal line through y=0
+    // the X/Y axis lines get their own, closer-to-camera z (-9.98) so they draw in front of both
+    // the major grid (-10) and the sub-grid (-9.99) instead of getting buried under sub-grid lines
+    // crossing the same pixels
     for (let x = minX; x <= maxX; x += spacing) {
-      if (Math.abs(x) < spacing / 2) yAxisPositions = [x, minY, -10, x, maxY, -10]
+      if (Math.abs(x) < spacing / 2) yAxisPositions = [x, minY, -9.98, x, maxY, -9.98]
       else minorPositions.push(x, minY, -10, x, maxY, -10)
     }
     for (let y = minY; y <= maxY; y += spacing) {
-      if (Math.abs(y) < spacing / 2) xAxisPositions = [minX, y, -10, maxX, y, -10]
+      if (Math.abs(y) < spacing / 2) xAxisPositions = [minX, y, -9.98, maxX, y, -9.98]
       else minorPositions.push(minX, y, -10, maxX, y, -10)
     }
 

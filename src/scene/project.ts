@@ -35,7 +35,11 @@ export function parseProjectFile(json: string): ProjectFile {
   return {
     version: typeof d.version === 'number' ? d.version : PROJECT_VERSION,
     objects: d.objects as SceneObject[],
-    referenceImage: d.referenceImage ?? null,
+    // `visible`/`rotation` are absent in files saved before those existed — default to visible
+    // (so old projects don't silently lose their reference image on load) and unrotated.
+    referenceImage: d.referenceImage
+      ? { ...d.referenceImage, visible: d.referenceImage.visible ?? true, rotation: d.referenceImage.rotation ?? 0 }
+      : null,
     meshOpacity: typeof d.meshOpacity === 'number' ? d.meshOpacity : 1,
     clips: Array.isArray(d.clips) ? d.clips : [],
     pixelFrame: d.pixelFrame ?? null,

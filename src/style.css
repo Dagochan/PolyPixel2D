@@ -48,7 +48,8 @@ body {
 }
 
 .toolbar button.active,
-.tool-pane button.active {
+.tool-pane button.active,
+.properties button.active {
   background: #4ea1ff;
   color: #111;
 }
@@ -539,6 +540,15 @@ input[type='range']:disabled {
    anything itself, it's just inert geometry another object's render is cutting into */
 .layer-name.fake-behind-mask {
   color: #8a8f98;
+  font-style: italic;
+}
+
+/* the scene-wide reference image's Outliner row — italic per the app's "this isn't a real scene
+   object" convention (same idea as .fake-behind-mask), reusing .special-kind's accent blue since
+   it's a "special" non-mesh entry like Empty/Path/Lattice. Not an <input> (unlike ordinary rows)
+   since it has no user-editable name. */
+.layer-name.reference-image {
+  color: #4ea1ff;
   font-style: italic;
 }
 

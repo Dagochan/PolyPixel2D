@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useSceneStore } from '../scene/store'
 import type { SceneObject } from '../scene/types'
+import { REFERENCE_IMAGE_ID } from '../scene/types'
 import { getFakePhysics } from '../scene/fakePhysics'
 import { collectFakeBehindMaskIds } from '../scene/fakeBehind'
 import { VisibleTrueIcon, VisibleFalseIcon, TrashIcon } from './icons'
@@ -26,6 +27,9 @@ export default function Outliner() {
   const renameObject = useSceneStore((s) => s.renameObject)
   const setParent = useSceneStore((s) => s.setParent)
   const reorder = useSceneStore((s) => s.reorder)
+  const referenceImage = useSceneStore((s) => s.referenceImage)
+  const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
+  const setReferenceImage = useSceneStore((s) => s.setReferenceImage)
   const [dragOver, setDragOver] = useState<{ id: string; zone: DropZone } | null>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   // objects currently referenced by some other object's Fake Behind `maskObjectIds` — being a
@@ -188,8 +192,40 @@ export default function Outliner() {
           if (draggedId) setParent(draggedId, null)
         }}
       >
+        {referenceImage && (
+          <li>
+            <div
+              className={'layer-item' + (selectedObjectId === REFERENCE_IMAGE_ID ? ' selected' : '')}
+              onClick={() => selectObject(REFERENCE_IMAGE_ID)}
+            >
+              <span className="collapse-toggle-spacer" />
+              <span className="collapse-toggle-spacer" />
+              <span className="layer-name reference-image">Reference image</span>
+              <button
+                className="icon-btn"
+                title="Toggle visibility"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setReferenceImageTransform({ visible: !referenceImage.visible })
+                }}
+              >
+                {referenceImage.visible ? <VisibleTrueIcon size={18} /> : <VisibleFalseIcon size={18} />}
+              </button>
+              <button
+                className="icon-btn"
+                title="Delete"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setReferenceImage(null)
+                }}
+              >
+                <TrashIcon size={14} />
+              </button>
+            </div>
+          </li>
+        )}
         {roots.map((obj) => renderRow(obj, 0))}
-        {roots.length === 0 && <li className="empty-hint">No objects</li>}
+        {roots.length === 0 && !referenceImage && <li className="empty-hint">No objects</li>}
       </ul>
     </div>
   )

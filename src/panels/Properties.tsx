@@ -16,6 +16,7 @@ import type {
   PathDeformRailSettings,
   SceneObject,
 } from '../scene/types'
+import { REFERENCE_IMAGE_ID } from '../scene/types'
 import UvEditor from './UvEditor'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
@@ -1447,6 +1448,7 @@ function ModifiersSection(props: {
 }
 
 export default function Properties({ style }: { style?: CSSProperties }) {
+  const selectedObjectId = useSceneStore((s) => s.selectedObjectId)
   const obj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
   const objects = useSceneStore((s) => s.objects)
   const setTransform = useSceneStore((s) => s.setTransform)
@@ -1457,7 +1459,23 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setMaterialColor = useSceneStore((s) => s.setMaterialColor)
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
   const referenceImage = useSceneStore((s) => s.referenceImage)
+  const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
+  const meshOpacity = useSceneStore((s) => s.meshOpacity)
+  const setMeshOpacity = useSceneStore((s) => s.setMeshOpacity)
+  const gridSubdivisions = useSceneStore((s) => s.gridSubdivisions)
+  const setGridSubdivisions = useSceneStore((s) => s.setGridSubdivisions)
+  const gridSnapEnabled = useSceneStore((s) => s.gridSnapEnabled)
+  const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
+  const gridVisible = useSceneStore((s) => s.gridVisible)
+  const setGridVisible = useSceneStore((s) => s.setGridVisible)
+  const wireframeVisible = useSceneStore((s) => s.wireframeVisible)
+  const setWireframeVisible = useSceneStore((s) => s.setWireframeVisible)
+  const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
+  const setPixelPreviewEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
+  const pixelFrame = useSceneStore((s) => s.pixelFrame)
+  const togglePixelFrame = useSceneStore((s) => s.togglePixelFrame)
   const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
+  const applyScale = useSceneStore((s) => s.applyScale)
   const moveIslandZOrder = useSceneStore((s) => s.moveIslandZOrder)
   const selectIsland = useSceneStore((s) => s.selectIsland)
   const setIslandName = useSceneStore((s) => s.setIslandName)
@@ -1573,8 +1591,115 @@ export default function Properties({ style }: { style?: CSSProperties }) {
     <CollapseContext.Provider value={{ collapsed: collapsedSections, toggle: toggleSection }}>
     <div className="panel properties" style={style}>
       <div className="panel-title">Properties</div>
-      {!obj ? (
-        <div className="empty-hint">No object selected</div>
+      {selectedObjectId === REFERENCE_IMAGE_ID && referenceImage ? (
+        <div className="prop-body">
+          <Section title="Transform">
+            <div className="prop-row">
+              <NumberField
+                label="Position X"
+                value={referenceImage.x}
+                onChange={(v) => setReferenceImageTransform({ x: v })}
+              />
+              <NumberField
+                label="Position Y"
+                value={referenceImage.y}
+                onChange={(v) => setReferenceImageTransform({ y: v })}
+              />
+            </div>
+            <div className="prop-row">
+              <NumberField
+                label="Rotation (°)"
+                value={(referenceImage.rotation * 180) / Math.PI}
+                onChange={(v) => setReferenceImageTransform({ rotation: (v * Math.PI) / 180 })}
+              />
+            </div>
+            <div className="prop-row">
+              <NumberField
+                label="Scale"
+                value={referenceImage.scale}
+                step={0.1}
+                onChange={(v) => setReferenceImageTransform({ scale: Math.max(0.01, v) })}
+              />
+            </div>
+            <div className="prop-row">
+              <button
+                title="Reset position to (0, 0), rotation to 0, and scale to 1"
+                onClick={() => setReferenceImageTransform({ x: 0, y: 0, rotation: 0, scale: 1 })}
+              >
+                Reset Transform
+              </button>
+            </div>
+          </Section>
+        </div>
+      ) : !obj ? (
+        <div className="prop-body">
+          <Section title="Viewport">
+            <div className="prop-row">
+              <label className="seg-input" title="Lowers all objects' opacity to make tracing the reference image easier">
+                Mesh opacity
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={meshOpacity}
+                  onChange={(e) => setMeshOpacity(+e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="prop-row">
+              <label
+                className="seg-input"
+                title="How many subdivisions each main grid cell is split into (also sets the grid-snap interval)"
+              >
+                Subgrid
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={gridSubdivisions}
+                  onChange={(e) => setGridSubdivisions(+e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="prop-row">
+              <label className="uv-hint uv-density-toggle" title="Always snap to the grid while moving (hold Ctrl to temporarily invert this)">
+                <input type="checkbox" checked={gridSnapEnabled} onChange={(e) => setGridSnapEnabled(e.target.checked)} />
+                Grid snap
+              </label>
+            </div>
+            <div className="prop-row">
+              <label className="uv-hint uv-density-toggle" title="Toggle the viewport grid display (grid snapping still works regardless of visibility)">
+                <input type="checkbox" checked={gridVisible} onChange={(e) => setGridVisible(e.target.checked)} />
+                Show grid
+              </label>
+            </div>
+            <div className="prop-row">
+              <label className="uv-hint uv-density-toggle" title="Toggle every mesh's edge wireframe overlay in the viewport">
+                <input type="checkbox" checked={wireframeVisible} onChange={(e) => setWireframeVisible(e.target.checked)} />
+                Show wireframe
+              </label>
+            </div>
+          </Section>
+          <Section title="Pixel Preview">
+            <div className="prop-row">
+              <button
+                className={pixelPreviewEnabled ? 'active' : ''}
+                title="Preview the final pixel-art look at low resolution with nearest-neighbor scaling"
+                onClick={() => setPixelPreviewEnabled(!pixelPreviewEnabled)}
+              >
+                ▦ Pixel preview
+              </button>
+              <button
+                className={pixelFrame ? 'active' : ''}
+                title="Pixel Preview's fixed 'main render camera' — a fixed world-space rectangle (drag its edges to move, corners to resize) that Pixel Preview always frames exactly, so the pixel-art scale stays stable as objects move/deform instead of re-fitting every frame"
+                onClick={() => togglePixelFrame()}
+              >
+                ▧ Pixel frame
+              </button>
+            </div>
+          </Section>
+        </div>
       ) : (
         <div className="prop-body">
           <Section title="Slot name">
@@ -1651,6 +1776,15 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 step={0.1}
                 onChange={(v) => setTransform(obj.id, { scaleY: v })}
               />
+            </div>
+            <div className="prop-row">
+              <button
+                title="Bake the current Scale X/Y into the mesh (vertices, Tail, UVs, shape keys, etc.) and reset Scale to 1/1. Appearance is unchanged — use this before Edit Mode rotations so a non-uniform Object-mode scale doesn't distort them"
+                disabled={obj.transform.scaleX === 1 && obj.transform.scaleY === 1}
+                onClick={() => applyScale(obj.id)}
+              >
+                Apply Scale
+              </button>
             </div>
           </Section>
 

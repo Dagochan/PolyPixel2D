@@ -25,19 +25,7 @@ export default function Toolbar() {
   const setPendingPrimitive = useSceneStore((s) => s.setPendingPrimitive)
   const hairPathConstantWidth = useSceneStore((s) => s.hairPathConstantWidth)
   const setHairPathConstantWidth = useSceneStore((s) => s.setHairPathConstantWidth)
-  const referenceImage = useSceneStore((s) => s.referenceImage)
   const setReferenceImage = useSceneStore((s) => s.setReferenceImage)
-  const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
-  const meshOpacity = useSceneStore((s) => s.meshOpacity)
-  const setMeshOpacity = useSceneStore((s) => s.setMeshOpacity)
-  const gridSubdivisions = useSceneStore((s) => s.gridSubdivisions)
-  const setGridSubdivisions = useSceneStore((s) => s.setGridSubdivisions)
-  const gridSnapEnabled = useSceneStore((s) => s.gridSnapEnabled)
-  const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
-  const gridVisible = useSceneStore((s) => s.gridVisible)
-  const setGridVisible = useSceneStore((s) => s.setGridVisible)
-  const wireframeVisible = useSceneStore((s) => s.wireframeVisible)
-  const setWireframeVisible = useSceneStore((s) => s.setWireframeVisible)
   const loadProject = useSceneStore((s) => s.loadProject)
   const undo = useSceneStore((s) => s.undo)
   const redo = useSceneStore((s) => s.redo)
@@ -46,10 +34,6 @@ export default function Toolbar() {
   const setActiveTool = useSceneStore((s) => s.setActiveTool)
   const gizmoOrientation = useSceneStore((s) => s.gizmoOrientation)
   const setGizmoOrientation = useSceneStore((s) => s.setGizmoOrientation)
-  const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
-  const setPixelPreviewEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
-  const pixelFrame = useSceneStore((s) => s.pixelFrame)
-  const togglePixelFrame = useSceneStore((s) => s.togglePixelFrame)
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
 
   const [segX, setSegX] = useState(1)
@@ -180,82 +164,6 @@ export default function Toolbar() {
         <button title="Load a reference image for tracing" onClick={() => refFileInputRef.current?.click()}>
           <ReferenceImageIcon />
         </button>
-        {referenceImage && (
-          <>
-            <label className="seg-input">
-              X
-              <input
-                type="number"
-                value={referenceImage.x}
-                onChange={(e) => setReferenceImageTransform({ x: +e.target.value })}
-              />
-            </label>
-            <label className="seg-input">
-              Y
-              <input
-                type="number"
-                value={referenceImage.y}
-                onChange={(e) => setReferenceImageTransform({ y: +e.target.value })}
-              />
-            </label>
-            <label className="seg-input">
-              Scale
-              <input
-                type="number"
-                step={0.1}
-                min={0.01}
-                value={referenceImage.scale}
-                onChange={(e) => setReferenceImageTransform({ scale: +e.target.value })}
-              />
-            </label>
-            <button title="Remove reference image" onClick={() => setReferenceImage(null)}>
-              Remove reference image
-            </button>
-          </>
-        )}
-      </div>
-
-      <div className="toolbar-group">
-        <label className="seg-input" title="Lowers all objects' opacity to make tracing the reference image easier">
-          Mesh opacity
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={meshOpacity}
-            onChange={(e) => setMeshOpacity(+e.target.value)}
-          />
-        </label>
-      </div>
-
-      <div className="toolbar-group">
-        <label className="seg-input" title="How many subdivisions each main grid cell is split into (also sets the grid-snap interval)">
-          Subgrid
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={gridSubdivisions}
-            onChange={(e) => setGridSubdivisions(+e.target.value)}
-          />
-        </label>
-        <label className="seg-input" title="Always snap to the grid while moving (hold Ctrl to temporarily invert this)">
-          Grid snap
-          <input
-            type="checkbox"
-            checked={gridSnapEnabled}
-            onChange={(e) => setGridSnapEnabled(e.target.checked)}
-          />
-        </label>
-        <label className="seg-input" title="Toggle the viewport grid display (grid snapping still works regardless of visibility)">
-          Show grid
-          <input type="checkbox" checked={gridVisible} onChange={(e) => setGridVisible(e.target.checked)} />
-        </label>
-        <label className="seg-input" title="Toggle every mesh's edge wireframe overlay in the viewport">
-          Show wireframe
-          <input type="checkbox" checked={wireframeVisible} onChange={(e) => setWireframeVisible(e.target.checked)} />
-        </label>
       </div>
 
       {mode === 'object' && (
@@ -398,23 +306,6 @@ export default function Toolbar() {
             </div>
           </div>
         )}
-      </div>
-
-      <div className="toolbar-group">
-        <button
-          className={pixelPreviewEnabled ? 'active' : ''}
-          title="Preview the final pixel-art look at low resolution with nearest-neighbor scaling"
-          onClick={() => setPixelPreviewEnabled(!pixelPreviewEnabled)}
-        >
-          ▦ Pixel preview
-        </button>
-        <button
-          className={pixelFrame ? 'active' : ''}
-          title="Pixel Preview's fixed 'main render camera' — a fixed world-space rectangle (drag its edges to move, corners to resize) that Pixel Preview always frames exactly, so the pixel-art scale stays stable as objects move/deform instead of re-fitting every frame"
-          onClick={() => togglePixelFrame()}
-        >
-          ▧ Pixel frame
-        </button>
       </div>
 
     </div>

@@ -32,8 +32,19 @@ export interface ReferenceImage {
   x: number
   y: number
   scale: number
+  rotation: number // radians, about the image's own center (x, y)
   opacity: number
+  visible: boolean
 }
+
+/** Sentinel `selectedObjectId` value standing in for the reference image — it isn't a
+ *  `SceneObject` (there's at most one, scene-wide, stored separately as `referenceImage`), but
+ *  reusing the existing single-slot `selectedObjectId`/`selectObject` selection machinery (rather
+ *  than adding a parallel "what kind of thing is selected" flag everywhere) means every place that
+ *  already does `objects.find((o) => o.id === selectedObjectId)` naturally treats it as "nothing
+ *  selected" for free, and Outliner/Properties/Viewport only need to special-case this one id
+ *  where the reference image's behavior actually differs (no mesh, no hierarchy). */
+export const REFERENCE_IMAGE_ID = '__reference_image__'
 
 /** A fixed world-space rectangle — Pixel Preview's "main render camera": when set, Pixel Preview
  *  frames exactly this rectangle (world units) instead of auto-fitting to the current visible
