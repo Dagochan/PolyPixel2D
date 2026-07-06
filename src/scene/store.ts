@@ -53,7 +53,7 @@ import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knif
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, pruneOrphanVerticesTracked, mergeMeshAsIsland, clampToMesh } from './meshUtils'
 import { findIslands, type Island } from './uv'
 import { remapObjectVertexData } from './remapVertexData'
-import { getWorldTransform, worldBounds } from './transformUtils'
+import { getWorldTransform, getParentWorldTransform, worldPositionToLocalOffset, worldBounds } from './transformUtils'
 
 export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath' | 'place-path'
 
@@ -1561,7 +1561,19 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setConnected: (id, connected) => {
     get().beginChange()
     set((s) => ({
-      objects: s.objects.map((o) => (o.id === id ? { ...o, connected } : o)),
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        if (connected) return { ...o, connected }
+        // a connected child's own transform.x/y is ignored entirely (forced to the parent's
+        // tail — see getWorldTransform), so it can be stale (e.g. left over from before this
+        // object was ever parented, or from a previous disconnect/reconnect); recompute it from
+        // where the object is actually sitting right now, or disconnecting would suddenly reveal
+        // that stale offset as a jump instead of leaving the object exactly where it visibly was
+        const { transform: parentWorld, tail: parentTail } = getParentWorldTransform(o, s.objects)
+        const currentWorld = getWorldTransform(o, s.objects)
+        const localXY = worldPositionToLocalOffset({ x: currentWorld.x, y: currentWorld.y }, parentWorld, parentTail)
+        return { ...o, connected, transform: { ...o.transform, x: localXY.x, y: localXY.y } }
+      }),
     }))
   },
 

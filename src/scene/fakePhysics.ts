@@ -192,10 +192,20 @@ export function simulateFakePhysicsChain(
       if (!settings?.enabled) continue
       const springParams = stiffnessToSpringParams(settings.stiffness)
       const spring = (target: number[]) => applyConvergence(simulateSpring(target, dt, springParams), settings.convergeStart)
+      // the spring must chase (this child's own rest x/y/rotation) + (however much the parent's
+      // own channel has moved from ITS rest, i.e. parentSignal[0]) — not the parent's raw signal
+      // directly, which would replace the child's own local offset/rotation with a copy of the
+      // parent's instead of just lagging behind however the parent itself moves. A parent that
+      // only rotates in place (parentSignal.x/y constant) must leave a disconnected child sitting
+      // at its own authored offset, not snap it to x=0/y=0.
+      const restX = parentSignal.x[0]
+      const restY = parentSignal.y[0]
+      const restRotation = parentSignal.rotation[0]
+      const target = (base: number, signal: number[], rest: number) => signal.map((v) => base + (v - rest))
       const simulated: FakePhysicsSignal = {
-        x: spring(parentSignal.x),
-        y: spring(parentSignal.y),
-        rotation: spring(parentSignal.rotation),
+        x: spring(target(child.transform.x, parentSignal.x, restX)),
+        y: spring(target(child.transform.y, parentSignal.y, restY)),
+        rotation: spring(target(child.transform.rotation, parentSignal.rotation, restRotation)),
       }
       results.set(child.id, simulated)
       walk(child, simulated)
