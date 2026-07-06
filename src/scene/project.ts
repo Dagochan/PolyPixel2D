@@ -1,7 +1,7 @@
 import type { AnimationClip, PixelFrame, ReferenceImage, SceneObject } from './types'
 
 export const PROJECT_VERSION = 2
-export const PROJECT_EXTENSION = '.fltd'
+export const PROJECT_EXTENSION = '.pptd'
 
 export interface ProjectFile {
   version: number
@@ -20,7 +20,7 @@ export function serializeProject(data: ProjectFile): string {
   return JSON.stringify(data)
 }
 
-/** Parse and lightly validate a `.fltd` file's contents (plain JSON). Throws on malformed input. */
+/** Parse and lightly validate a `.pptd` file's contents (plain JSON). Throws on malformed input. */
 export function parseProjectFile(json: string): ProjectFile {
   let data: unknown
   try {

@@ -1973,9 +1973,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: st.objects.map((o) =>
         o.id === objectId ? { ...o, mesh: { ...o.mesh, faces: [...o.mesh.faces, orderedIndices] } } : o,
       ),
-      editElementType: 'face',
-      selectedVertices: new Set(),
-      selectedEdges: new Set(),
       selectedFaces: new Set([newFaceIndex]),
     }))
   },

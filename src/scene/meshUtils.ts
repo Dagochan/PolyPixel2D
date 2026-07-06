@@ -26,6 +26,59 @@ export function getEdges(mesh: Mesh): [number, number][] {
   return edges
 }
 
+/** Blender-style Ctrl+click "shortest path select": Dijkstra over the mesh's edge graph,
+ *  weighted by edge length, from `start` to `end`. Returns the vertex indices along the path
+ *  (inclusive of both ends), or null if they're not connected. */
+export function findShortestVertexPath(mesh: Mesh, start: number, end: number): number[] | null {
+  const n = mesh.vertices.length
+  if (start < 0 || start >= n || end < 0 || end >= n) return null
+  if (start === end) return [start]
+
+  const adj: Array<Array<[number, number]>> = Array.from({ length: n }, () => [])
+  for (const [a, b] of getEdges(mesh)) {
+    const va = mesh.vertices[a]
+    const vb = mesh.vertices[b]
+    const w = Math.hypot(va.x - vb.x, va.y - vb.y)
+    adj[a].push([b, w])
+    adj[b].push([a, w])
+  }
+
+  const dist = new Array(n).fill(Infinity)
+  const prev = new Array(n).fill(-1)
+  const visited = new Array(n).fill(false)
+  dist[start] = 0
+  for (let iter = 0; iter < n; iter++) {
+    let u = -1
+    let best = Infinity
+    for (let i = 0; i < n; i++) {
+      if (!visited[i] && dist[i] < best) {
+        best = dist[i]
+        u = i
+      }
+    }
+    if (u === -1) break
+    visited[u] = true
+    if (u === end) break
+    for (const [v, w] of adj[u]) {
+      if (dist[u] + w < dist[v]) {
+        dist[v] = dist[u] + w
+        prev[v] = u
+      }
+    }
+  }
+  if (dist[end] === Infinity) return null
+
+  const path: number[] = []
+  let cur = end
+  while (cur !== -1) {
+    path.push(cur)
+    if (cur === start) break
+    cur = prev[cur]
+  }
+  path.reverse()
+  return path
+}
+
 /** Ear-clipping triangulation of a single simple polygon (convex or concave, no holes or
  *  self-intersections). Returns triangles as indices into `points` itself (0..points.length-1),
  *  not into any outer vertex array — callers map these back to real indices as needed. */

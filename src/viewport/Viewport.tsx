@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
-import { triangulateWithFaceIds, triangulatePolygon, getEdges, edgeKey, parseEdgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
+import { triangulateWithFaceIds, triangulatePolygon, getEdges, edgeKey, parseEdgeKey, getBounds, localBoundsCenter, findShortestVertexPath } from '../scene/meshUtils'
 import {
   applyTransform,
   inverseTransform,
@@ -140,6 +140,13 @@ type DragMode =
       startClientY: number
       endClientX: number
       endClientY: number
+      // face select-mode only: a face's hit-test is "point inside its polygon", which covers
+      // essentially the whole mesh interior — unlike vertex/edge's small hit radius, that leaves
+      // no "empty space" to start a box-select drag from. So pointerdown always defers to here:
+      // -1 means the down-click missed every face, >=0 is the face it landed on. pointerup then
+      // decides, based on how far the mouse actually moved, whether this was a click (toggle just
+      // that face, Blender-style) or a real drag (run the box-select rect below).
+      faceClickCandidate?: number
     }
 
 interface LoopCutHover {
@@ -3804,6 +3811,22 @@ export default function Viewport() {
       const threshold = (VERTEX_HIT_RADIUS) ** 2
       if (hitIndex >= 0 && bestDist < threshold) {
         const store = useSceneStore.getState()
+        // Ctrl/Cmd+click: Blender-style shortest-path select — walk the mesh's edge graph from
+        // the last-selected vertex to this one and add every vertex along the way.
+        if (e.ctrlKey || e.metaKey) {
+          const prevSelected = Array.from(store.selectedVertices)
+          const anchor = prevSelected[prevSelected.length - 1]
+          if (anchor !== undefined && anchor !== hitIndex) {
+            const path = findShortestVertexPath(selectedObj.mesh, anchor, hitIndex)
+            if (path) {
+              const next = new Set(store.selectedVertices)
+              for (const idx of path) next.add(idx)
+              store.setSelectedVertices(next)
+              dragRef.current = { kind: 'none' }
+              return
+            }
+          }
+        }
         // shift toggles membership in the existing selection; a plain click always narrows to
         // just this vertex, even if it was already part of a multi-selection (matches edge/face
         // select below, and Blender's plain-click behavior)
@@ -3892,17 +3915,9 @@ export default function Viewport() {
           hitFace = fi
         }
       })
-      if (hitFace >= 0) {
-        const store = useSceneStore.getState()
-        const already = store.selectedFaces.has(hitFace)
-        const next = e.shiftKey ? new Set(store.selectedFaces) : new Set<number>()
-        if (e.shiftKey && already) next.delete(hitFace)
-        else next.add(hitFace)
-        store.setSelectedFaces(next)
-        dragRef.current = { kind: 'none' }
-        return
-      }
-      if (!e.shiftKey) useSceneStore.getState().setSelectedFaces(new Set())
+      // Don't commit a selection change yet — a face's hit area covers essentially the whole
+      // mesh interior, so most box-select drags start on top of one. Defer to pointerup, which
+      // knows whether the mouse actually moved (a real drag) or this was just a click.
       dragRef.current = {
         kind: 'box-select',
         objectId: selectedObj.id,
@@ -3911,6 +3926,7 @@ export default function Viewport() {
         startClientY: e.clientY,
         endClientX: e.clientX,
         endClientY: e.clientY,
+        faceClickCandidate: hitFace,
       }
       return
     }
@@ -4245,7 +4261,21 @@ export default function Viewport() {
       if (box) box.style.display = 'none'
 
       const movedPx = Math.hypot(drag.endClientX - drag.startClientX, drag.endClientY - drag.startClientY)
-      if (movedPx > 4) {
+      if (movedPx <= 4 && drag.faceClickCandidate !== undefined) {
+        // wasn't a real drag — resolve it as a plain face click instead (see faceClickCandidate's
+        // doc comment on why this can't be decided at pointerdown time)
+        const store = useSceneStore.getState()
+        const hitFace = drag.faceClickCandidate
+        if (hitFace >= 0) {
+          const already = store.selectedFaces.has(hitFace)
+          const next = drag.additive ? new Set(store.selectedFaces) : new Set<number>()
+          if (drag.additive && already) next.delete(hitFace)
+          else next.add(hitFace)
+          store.setSelectedFaces(next)
+        } else if (!drag.additive) {
+          store.setSelectedFaces(new Set())
+        }
+      } else if (movedPx > 4) {
         const store = useSceneStore.getState()
         const rawObj = store.objects.find((o) => o.id === drag.objectId)
         const obj = rawObj && getEffectiveObj(rawObj, store.editingShapeKeyId, true)
