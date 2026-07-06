@@ -2,10 +2,17 @@ import type { Mesh } from './types'
 import { edgeKey, parseEdgeKey } from './meshUtils'
 
 export interface LoopPath {
-  /** Ordered, directed cut edges; cuts.length === quads.length + 1. Consecutive cuts bound one quad,
-   *  and each cut's [a,b] direction is consistent across the whole path (same "side" = same t). */
+  /** Ordered, directed cut edges. For an open strip, `cuts.length === quads.length + 1`
+   *  (consecutive cuts bound one quad, with one extra cut closing off each end). For a *closed*
+   *  strip (`closed: true`, e.g. a ring/annulus with no distinct ends), `cuts.length === quads.length`
+   *  instead — the strip wraps back on itself, so `quads[last]` sits between `cuts[last]` and
+   *  `cuts[0]` rather than a separate final cut. Either way each cut's `[a,b]` direction is
+   *  consistent across the whole path (same "side" = same t). */
   cuts: [number, number][]
   quads: number[]
+  /** True when the quad strip loops back on itself (e.g. a ring cut's annulus) rather than
+   *  terminating at two distinct ends — see `cuts`' doc for how that changes its length/wraparound. */
+  closed: boolean
 }
 
 function buildEdgeFaceMap(mesh: Mesh): Map<string, number[]> {
@@ -41,9 +48,17 @@ function walkOneDirection(
   let face = startFace
   let a = entryA
   let b = entryB
+  let closed = false
 
   while (true) {
-    if (visited.has(face)) break // guard against closed (cyclic) loops
+    // this walk's own `visited` only ever contains faces *it* has stepped through starting from
+    // `startFace`, and each step advances to a uniquely-determined next face, so the only way to
+    // land back on an already-visited face is completing the cycle back to `startFace` itself —
+    // i.e. a closed (cyclic) strip like a ring cut's annulus, which has no distinct ends at all.
+    if (visited.has(face)) {
+      closed = face === startFace
+      break
+    }
     const f = mesh.faces[face]
     if (f.length !== 4) break
 
@@ -82,7 +97,7 @@ function walkOneDirection(
     b = exitB
   }
 
-  return { cuts, quads }
+  return { cuts, quads, closed }
 }
 
 /** Find the full loop (walking both directions) through the edge (hoverA, hoverB). Null if neither side is a quad. */
@@ -94,6 +109,13 @@ export function findFullLoop(mesh: Mesh, hoverA: number, hoverB: number): LoopPa
   if (adjFaces.length === 0) return null
 
   const fwd = walkOneDirection(mesh, edgeFaceMap, adjFaces[0], hoverA, hoverB)
+  if (fwd.closed) {
+    // a closed strip (e.g. a ring cut's annulus) has no distinct ends — walking "the other
+    // direction" from this same edge would just retrace this exact loop again, so combining it
+    // in like the open-strip case below would double every cut/quad in the ring. `cuts[last]`
+    // duplicates `cuts[0]` (the walk closing back on itself), so it's dropped here.
+    return { cuts: fwd.cuts.slice(0, -1), quads: fwd.quads, closed: true }
+  }
   if (adjFaces.length === 1) return fwd
 
   const bwd = walkOneDirection(mesh, edgeFaceMap, adjFaces[1], hoverB, hoverA)
@@ -106,6 +128,7 @@ export function findFullLoop(mesh: Mesh, hoverA: number, hoverB: number): LoopPa
   return {
     cuts: [...bwdCutsRest, ...fwd.cuts],
     quads: [...bwdQuadsRest, ...fwd.quads],
+    closed: false,
   }
 }
 

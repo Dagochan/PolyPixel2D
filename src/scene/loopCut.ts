@@ -30,7 +30,10 @@ export function applyLoopCut(mesh: Mesh, path: LoopPath, ts: number[]): { mesh: 
   const newFaces: number[][] = []
   for (let qi = 0; qi < path.quads.length; qi++) {
     const chainA = chains[qi]
-    const chainB = chains[qi + 1]
+    // a closed strip (see `LoopPath.closed`'s doc) has as many chains as quads, not one more —
+    // the last quad sits between the last chain and the first, wrapping back around, rather than
+    // a separate trailing chain
+    const chainB = path.closed ? chains[(qi + 1) % chains.length] : chains[qi + 1]
     for (let k = 0; k < chainA.length - 1; k++) {
       newFaces.push([chainA[k], chainA[k + 1], chainB[k + 1], chainB[k]])
     }
