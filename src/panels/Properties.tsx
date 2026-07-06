@@ -262,6 +262,87 @@ function IslandZOrderSection({
   )
 }
 
+/** Lists every distinct color currently painted across `obj.mesh`'s faces (a face without an
+ *  entry in `faceColors` counts as the object's own material color) — modeled directly on
+ *  `IslandZOrderSection`: one row per color, a select button (`selectFacesByColor`) to grab every
+ *  face sharing it, its swatch, and how many faces that is. The "assign to selection" row only
+ *  shows once some faces are actually selected — the list itself is useful even with nothing
+ *  selected, as a way to *find* a color's faces in the first place. */
+function FaceColorSection({
+  obj,
+  selectedFaces,
+  setFaceColor,
+  clearFaceColor,
+  selectFacesByColor,
+}: {
+  obj: SceneObject
+  selectedFaces: Set<number>
+  setFaceColor: (id: string, faceIndices: number[], color: string) => void
+  clearFaceColor: (id: string, faceIndices: number[]) => void
+  selectFacesByColor: (faceIndices: number[]) => void
+}) {
+  if (obj.mesh.faces.length === 0) return null
+
+  const groups = new Map<string, number[]>()
+  obj.mesh.faces.forEach((_, fi) => {
+    const color = (obj.mesh.faceColors?.[fi] ?? obj.material.color).toLowerCase()
+    const list = groups.get(color)
+    if (list) list.push(fi)
+    else groups.set(color, [fi])
+  })
+  const entries = Array.from(groups.entries()).sort((a, b) => a[1][0] - b[1][0])
+
+  return (
+    <Section title="Face Color">
+      {selectedFaces.size > 0 && (
+        <div className="prop-row">
+          <label className="prop-field">
+            <span>{selectedFaces.size > 1 ? `Color (${selectedFaces.size} faces)` : 'Color'}</span>
+            <input
+              type="color"
+              value={obj.mesh.faceColors?.[Array.from(selectedFaces)[0]] ?? obj.material.color}
+              onChange={(e) => setFaceColor(obj.id, Array.from(selectedFaces), e.target.value)}
+            />
+          </label>
+          <button
+            title="Apply the color shown above to every currently selected face — e.g. after box-selecting a mixed-color group, to make them all match the first one's color"
+            onClick={() =>
+              setFaceColor(
+                obj.id,
+                Array.from(selectedFaces),
+                obj.mesh.faceColors?.[Array.from(selectedFaces)[0]] ?? obj.material.color,
+              )
+            }
+          >
+            Assign
+          </button>
+          <button
+            disabled={!Array.from(selectedFaces).some((fi) => obj.mesh.faceColors?.[fi] !== undefined)}
+            onClick={() => clearFaceColor(obj.id, Array.from(selectedFaces))}
+          >
+            Clear
+          </button>
+        </div>
+      )}
+      {entries.map(([color, faceIndices]) => (
+        <div className="prop-row" key={color}>
+          <button
+            className="icon-btn"
+            title={`Select the ${faceIndices.length} face${faceIndices.length > 1 ? 's' : ''} using this color`}
+            onClick={() => selectFacesByColor(faceIndices)}
+          >
+            <IslandSelectIcon size={18} />
+          </button>
+          <input type="color" value={color} disabled />
+          <span>
+            {faceIndices.length} face{faceIndices.length > 1 ? 's' : ''}
+          </span>
+        </div>
+      ))}
+    </Section>
+  )
+}
+
 /** Blender-style shape keys (morph targets) — a list of named alternate vertex poses blended
  *  additively on top of the live mesh (the "Basis") by their own weight. Modeled directly on
  *  `IslandZOrderSection` above: one `.prop-row` per key, editable name, and a delete button. The
@@ -1458,6 +1539,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setConnected = useSceneStore((s) => s.setConnected)
   const setMaterialColor = useSceneStore((s) => s.setMaterialColor)
   const setMaterialTexture = useSceneStore((s) => s.setMaterialTexture)
+  const setFaceColor = useSceneStore((s) => s.setFaceColor)
+  const clearFaceColor = useSceneStore((s) => s.clearFaceColor)
+  const selectFacesByColor = useSceneStore((s) => s.selectFacesByColor)
+  const editElementType = useSceneStore((s) => s.editElementType)
+  const selectedFaces = useSceneStore((s) => s.selectedFaces)
   const referenceImage = useSceneStore((s) => s.referenceImage)
   const setReferenceImageTransform = useSceneStore((s) => s.setReferenceImageTransform)
   const meshOpacity = useSceneStore((s) => s.meshOpacity)
@@ -1982,6 +2068,16 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                   )}
                 </div>
               </Section>
+
+              {mode === 'edit' && editElementType === 'face' && (
+                <FaceColorSection
+                  obj={obj}
+                  selectedFaces={selectedFaces}
+                  setFaceColor={setFaceColor}
+                  clearFaceColor={clearFaceColor}
+                  selectFacesByColor={selectFacesByColor}
+                />
+              )}
 
               <Section title="UV">
                 <div className="prop-row">

@@ -109,6 +109,26 @@ export function triangulate(mesh: Mesh): number[] {
   return indices
 }
 
+/** Same triangulation as `triangulate`, but also reports which face (index into `mesh.faces`)
+ *  each output triangle came from — needed to paint a per-face fill color (see `Mesh.faceColors`)
+ *  with a hard boundary at adjacent differently-colored faces. A shared-vertex indexed geometry
+ *  can't do that (a shared vertex only carries one color, so the GPU would blend it across the
+ *  boundary), so callers building a colored fill mesh use this to duplicate vertices per
+ *  triangle corner instead of indexing into a shared vertex buffer. */
+export function triangulateWithFaceIds(mesh: Mesh): { indices: number[]; faceIndexPerTriangle: number[] } {
+  const indices: number[] = []
+  const faceIndexPerTriangle: number[] = []
+  mesh.faces.forEach((face, fi) => {
+    const pts = face.map((i) => mesh.vertices[i])
+    const tris = triangulatePolygon(pts)
+    for (let k = 0; k < tris.length; k += 3) {
+      indices.push(face[tris[k]], face[tris[k + 1]], face[tris[k + 2]])
+      faceIndexPerTriangle.push(fi)
+    }
+  })
+  return { indices, faceIndexPerTriangle }
+}
+
 function pruneOrphanVerticesTrackedInternal(mesh: Mesh): { mesh: Mesh; oldToNew: Map<number, number> } {
   const used = new Set<number>()
   for (const face of mesh.faces) for (const i of face) used.add(i)
@@ -124,8 +144,10 @@ function pruneOrphanVerticesTrackedInternal(mesh: Mesh): { mesh: Mesh; oldToNew:
   for (let i = 0; i < mesh.vertices.length; i++) {
     if (used.has(i)) oldToNew.set(i, next++)
   }
+  // faces keep their exact indices here (only the vertex indices *within* each face change), so
+  // `faceColors` (see `Mesh.faceColors`) carries over untouched
   const faces = mesh.faces.map((f) => f.map((i) => oldToNew.get(i)!))
-  return { mesh: { vertices, faces }, oldToNew }
+  return { mesh: { vertices, faces, ...(mesh.faceColors ? { faceColors: mesh.faceColors } : {}) }, oldToNew }
 }
 
 /** Drop any vertex not referenced by at least one face, and reindex faces to match. */

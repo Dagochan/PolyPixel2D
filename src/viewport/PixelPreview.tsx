@@ -1,7 +1,7 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import * as THREE from 'three'
 import { useSceneStore } from '../scene/store'
-import { triangulate } from '../scene/meshUtils'
+import { triangulateWithFaceIds } from '../scene/meshUtils'
 import { getWorldTransform, worldBounds } from '../scene/transformUtils'
 import { computeSplitUVIslands } from '../scene/uv'
 import { quantizeImageData } from '../scene/quantize'
@@ -252,7 +252,11 @@ function buildFillMaterial(
     }
   }
   const material = new THREE.MeshBasicMaterial({
-    color: obj.material.color,
+    // per-face color (see `Mesh.faceColors`) is carried entirely by the geometry's vertex color
+    // attribute (built in `drawIsland`, resolved against `obj.material.color` as the fallback) —
+    // this stays neutral white so it doesn't double-tint on top of that.
+    color: 0xffffff,
+    vertexColors: true,
     map: texture,
     side: THREE.DoubleSide,
     // a texture's own alpha channel (e.g. a baked/transparent PNG) must be respected, or fully
@@ -303,7 +307,7 @@ function drawIsland(
   scene: THREE.Scene,
   obj: SceneObject,
   objects: SceneObject[],
-  perIsland: { mesh: Mesh; uvs: Vec2[] }[],
+  perIsland: { mesh: Mesh; uvs: Vec2[]; colors: string[] }[],
   material: THREE.MeshBasicMaterial,
   islandIdx: number,
   z: number,
@@ -311,12 +315,29 @@ function drawIsland(
 ) {
   const worldTransform = getWorldTransform(obj, objects)
   const pivot = worldTransform.head
-  const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
-  const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+  const { mesh: islandMesh, uvs: islandUvs, colors: islandColors } = perIsland[islandIdx]
+  // see `Viewport.tsx`'s `buildIslandMesh` doc — non-indexed so a face's color never bleeds into
+  // an adjacent, differently-colored face across a shared vertex.
+  const { indices, faceIndexPerTriangle } = triangulateWithFaceIds(islandMesh)
+  const positions: number[] = []
+  const uvsFlat: number[] = []
+  const colorsFlat: number[] = []
+  const colorScratch = new THREE.Color()
+  for (let t = 0; t < faceIndexPerTriangle.length; t++) {
+    colorScratch.set(islandColors[faceIndexPerTriangle[t]] ?? '#ffffff')
+    for (let c = 0; c < 3; c++) {
+      const vi = indices[t * 3 + c]
+      const v = islandMesh.vertices[vi]
+      positions.push(v.x - pivot.x, v.y - pivot.y, 0)
+      const uv = islandUvs[vi]
+      uvsFlat.push(uv.x, uv.y)
+      colorsFlat.push(colorScratch.r, colorScratch.g, colorScratch.b)
+    }
+  }
   const geom = new THREE.BufferGeometry()
   geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
-  geom.setIndex(triangulate(islandMesh))
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvsFlat, 2))
+  geom.setAttribute('color', new THREE.Float32BufferAttribute(colorsFlat, 3))
   const mesh = new THREE.Mesh(geom, material)
   // see `Viewport.tsx`'s `buildIslandMesh` doc — a FakeBehind mask must stencil-write before any
   // target reads it, independent of normal zOrder
@@ -340,7 +361,13 @@ function drawAllIslands(
   textureLoader: THREE.TextureLoader,
   maskBits: Map<string, number>,
 ) {
-  const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+  const perIsland = computeSplitUVIslands(
+    obj.mesh,
+    obj.uvIslandTransforms,
+    obj.uvBaseVertices,
+    obj.mesh.faceColors,
+    obj.material.color,
+  )
   const material = buildFillMaterial(obj, textureCache, textureLoader, maskBits)
   const islandOrder = perIsland
     .map((_, i) => i)
@@ -385,7 +412,13 @@ function rebuildScene(
 
     // this host has at least one filled insert slot — islands and inserted objects must be
     // interleaved by rank so an insert sandwiched between two islands actually renders between them
-    const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+    const perIsland = computeSplitUVIslands(
+      obj.mesh,
+      obj.uvIslandTransforms,
+      obj.uvBaseVertices,
+      obj.mesh.faceColors,
+      obj.material.color,
+    )
     const material = buildFillMaterial(obj, textureCache, textureLoader, maskBits)
     type Entry =
       | { kind: 'island'; islandIdx: number; rank: number }

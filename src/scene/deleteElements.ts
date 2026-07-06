@@ -61,10 +61,23 @@ export function deleteEdges(mesh: Mesh, edgeKeys: string[]): Mesh {
 
 /**
  * Delete faces: removes only the selected faces. Vertices that end up touching no remaining
- * face are pruned by the caller (store.ts wraps this with pruneOrphanVertices).
+ * face are pruned by the caller (store.ts wraps this with pruneOrphanVertices). Also remaps
+ * `faceColors` onto the surviving faces' new indices — one of the few topology-changing ops that
+ * carries it over (see `Mesh.faceColors`'s doc for the ones that don't).
  */
 export function deleteFaces(mesh: Mesh, faceIndices: number[]): Mesh {
   const selected = new Set(faceIndices)
-  const faces = mesh.faces.filter((_, fi) => !selected.has(fi))
-  return { vertices: mesh.vertices.map((v) => ({ ...v })), faces }
+  const faces: number[][] = []
+  const faceColors: Record<number, string> = {}
+  mesh.faces.forEach((face, fi) => {
+    if (selected.has(fi)) return
+    const color = mesh.faceColors?.[fi]
+    if (color) faceColors[faces.length] = color
+    faces.push(face)
+  })
+  return {
+    vertices: mesh.vertices.map((v) => ({ ...v })),
+    faces,
+    ...(mesh.faceColors ? { faceColors } : {}),
+  }
 }

@@ -269,6 +269,10 @@ interface SceneState {
   renameObject: (id: string, name: string) => void
   setMaterialColor: (id: string, color: string) => void
   setMaterialTexture: (id: string, textureUrl: string | undefined) => void
+  /** Override color for the given faces (indexed like `selectedFaces`) — see `Mesh.faceColors`. */
+  setFaceColor: (id: string, faceIndices: number[], color: string) => void
+  /** Remove the color override for the given faces, reverting them to the object's material color. */
+  clearFaceColor: (id: string, faceIndices: number[]) => void
   /** Merge a partial transform into one UV island's manual offset/scale (by island order). */
   setUvIslandTransform: (id: string, islandIndex: number, transform: Partial<UvIslandTransform>) => void
   /** Swap this island's draw-order rank with the island immediately in front of/behind it
@@ -369,6 +373,10 @@ interface SceneState {
   /** Select every vertex/edge/face in one island (by `findIslands` order) and switch to edit
    *  mode — used by the Properties panel's island list. */
   selectIsland: (islandIndex: number) => void
+  /** Select every vertex/edge/face touching the given faces and switch to edit mode/face
+   *  select — used by the Properties panel's Face Color list to select all faces sharing one
+   *  color, same idea as `selectIsland`. */
+  selectFacesByColor: (faceIndices: number[]) => void
   /** Merge the current vertex selection (2+) into one vertex, positioned per `mode`. */
   mergeSelectedVertices: (mode: MergeMode) => void
   /** Create one new face directly from the selected vertices, in selection (click) order. */
@@ -579,7 +587,11 @@ function cloneObjects(objects: SceneObject[]): SceneObject[] {
     ...o,
     transform: { ...o.transform, head: { ...o.transform.head } },
     tail: { ...o.tail },
-    mesh: { vertices: o.mesh.vertices.map((v) => ({ ...v })), faces: o.mesh.faces.map((f) => [...f]) },
+    mesh: {
+      vertices: o.mesh.vertices.map((v) => ({ ...v })),
+      faces: o.mesh.faces.map((f) => [...f]),
+      ...(o.mesh.faceColors ? { faceColors: { ...o.mesh.faceColors } } : {}),
+    },
   }))
 }
 
@@ -1192,6 +1204,28 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? { ...o, material: { ...o.material, color } } : o)),
     })),
+
+  setFaceColor: (id, faceIndices, color) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const faceColors = { ...o.mesh.faceColors }
+        for (const fi of faceIndices) faceColors[fi] = color
+        return { ...o, mesh: { ...o.mesh, faceColors } }
+      }),
+    })),
+
+  clearFaceColor: (id, faceIndices) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== id) return o
+        const faceColors = { ...o.mesh.faceColors }
+        for (const fi of faceIndices) delete faceColors[fi]
+        return { ...o, mesh: { ...o.mesh, faceColors } }
+      }),
+    }))
+  },
 
   setMaterialTexture: (id, textureUrl) => {
     get().beginChange()
@@ -1856,6 +1890,30 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const islands = findIslands(obj.mesh)
     if (!islands[islandIndex]) return
     set({ mode: 'edit', ...islandSelectionState(obj, islands, [islandIndex]) })
+  },
+
+  selectFacesByColor: (faceIndices) => {
+    const s = get()
+    const obj = s.objects.find((o) => o.id === s.selectedObjectId)
+    if (!obj) return
+    const faces = new Set(faceIndices)
+    const vertices = new Set<number>()
+    const edges = new Set<string>()
+    faces.forEach((fi) => {
+      const face = obj.mesh.faces[fi]
+      if (!face) return
+      for (let i = 0; i < face.length; i++) {
+        vertices.add(face[i])
+        edges.add(edgeKey(face[i], face[(i + 1) % face.length]))
+      }
+    })
+    set({
+      mode: 'edit',
+      editElementType: 'face',
+      selectedVertices: vertices,
+      selectedEdges: edges,
+      selectedFaces: faces,
+    })
   },
 
   mergeSelectedVertices: (mode) => {

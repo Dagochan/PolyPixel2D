@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useSceneStore, selectedVertexIndices, type PendingPrimitive, type ReferenceImage } from '../scene/store'
-import { triangulate, triangulatePolygon, getEdges, edgeKey, parseEdgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
+import { triangulateWithFaceIds, triangulatePolygon, getEdges, edgeKey, parseEdgeKey, getBounds, localBoundsCenter } from '../scene/meshUtils'
 import {
   applyTransform,
   inverseTransform,
@@ -1288,7 +1288,11 @@ export default function Viewport() {
     }
     const { meshOpacity } = useSceneStore.getState()
     const material = new THREE.MeshBasicMaterial({
-      color: targetObj.material.color,
+      // per-face color (see `Mesh.faceColors`) is carried entirely by the geometry's vertex
+      // color attribute (built in `buildIslandMesh`, resolved against `targetObj.material.color`
+      // as the fallback) — this stays neutral white so it doesn't double-tint on top of that.
+      color: 0xffffff,
+      vertexColors: true,
       map: texture,
       side: THREE.DoubleSide,
       transparent: meshOpacity < 1 || !!texture,
@@ -1318,6 +1322,9 @@ export default function Viewport() {
       mat.colorWrite = isSelected
       if (isSelected) {
         mat.color.set(0xffcc00)
+        // a flat, undistorted guide color — vertex colors (per-face overrides) would otherwise
+        // multiply into it and tint the guide unevenly across faces
+        mat.vertexColors = false
         mat.map = null
         mat.transparent = true
         mat.opacity = 0.35
@@ -1351,19 +1358,37 @@ export default function Viewport() {
 
   function buildIslandMesh(
     targetObj: SceneObject,
-    perIsland: { mesh: Mesh; uvs: Vec2[] }[],
+    perIsland: { mesh: Mesh; uvs: Vec2[]; colors: string[] }[],
     islandIdx: number,
     material: THREE.MeshBasicMaterial,
     pivot: Vec2,
     worldTransform: Transform,
     z: number,
   ): THREE.Mesh {
-    const { mesh: islandMesh, uvs: islandUvs } = perIsland[islandIdx]
-    const positions = islandMesh.vertices.flatMap((v) => [v.x - pivot.x, v.y - pivot.y, 0])
+    const { mesh: islandMesh, uvs: islandUvs, colors: islandColors } = perIsland[islandIdx]
+    // non-indexed (vertices duplicated per triangle corner) rather than a shared-vertex indexed
+    // buffer, so a face's color never bleeds into an adjacent, differently-colored face across a
+    // shared vertex — see `triangulateWithFaceIds`'s doc.
+    const { indices, faceIndexPerTriangle } = triangulateWithFaceIds(islandMesh)
+    const positions: number[] = []
+    const uvsFlat: number[] = []
+    const colorsFlat: number[] = []
+    const colorScratch = new THREE.Color()
+    for (let t = 0; t < faceIndexPerTriangle.length; t++) {
+      colorScratch.set(islandColors[faceIndexPerTriangle[t]] ?? '#ffffff')
+      for (let c = 0; c < 3; c++) {
+        const vi = indices[t * 3 + c]
+        const v = islandMesh.vertices[vi]
+        positions.push(v.x - pivot.x, v.y - pivot.y, 0)
+        const uv = islandUvs[vi]
+        uvsFlat.push(uv.x, uv.y)
+        colorsFlat.push(colorScratch.r, colorScratch.g, colorScratch.b)
+      }
+    }
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    geom.setAttribute('uv', new THREE.Float32BufferAttribute(islandUvs.flatMap((uv) => [uv.x, uv.y]), 2))
-    geom.setIndex(triangulate(islandMesh))
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvsFlat, 2))
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colorsFlat, 3))
     const mesh = new THREE.Mesh(geom, material)
     // a FakeBehind mask must stencil-write before any target reads it, regardless of normal
     // zOrder — pushing it far ahead in THREE's renderOrder sort (independent of the depth buffer)
@@ -1394,7 +1419,13 @@ export default function Viewport() {
         : { ...rawTargetObj, mesh: { ...rawTargetObj.mesh, vertices: displayVerts } }
     const targetWorldTransform = getWorldTransform(targetObj, objects)
     const pivot = targetWorldTransform.head
-    const perIsland = computeSplitUVIslands(targetObj.mesh, targetObj.uvIslandTransforms, targetObj.uvBaseVertices)
+    const perIsland = computeSplitUVIslands(
+      targetObj.mesh,
+      targetObj.uvIslandTransforms,
+      targetObj.uvBaseVertices,
+      targetObj.mesh.faceColors,
+      targetObj.material.color,
+    )
     const material = buildFillMaterialFor(targetObj)
     const islandOrder = perIsland
       .map((_, i) => i)
@@ -1563,9 +1594,13 @@ export default function Viewport() {
         }
       }
       // material.color always multiplies the texture (if any) — the Properties panel labels
-      // this explicitly so a colored default doesn't unexpectedly tint an imported texture
+      // this explicitly so a colored default doesn't unexpectedly tint an imported texture. Per-
+      // face color overrides (see `Mesh.faceColors`) are carried by the geometry's vertex color
+      // attribute instead (built below, resolved against `obj.material.color` as the fallback),
+      // so this stays neutral white rather than double-tinting on top of that.
       const mat = new THREE.MeshBasicMaterial({
-        color: obj.material.color,
+        color: 0xffffff,
+        vertexColors: true,
         map: texture,
         side: THREE.DoubleSide,
         // also on whenever there's a texture, not just when opacity<1 — the texture's own alpha
@@ -1611,7 +1646,13 @@ export default function Viewport() {
       // neighboring object's `depthIndex` slot, which are spaced 1 apart. An object consumed by
       // another's insert slot draws its fill nested over there instead (see below) — everything
       // else here (wireframe, edit overlays, labels) still runs normally so it stays editable.
-      const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
+      const perIsland = computeSplitUVIslands(
+        obj.mesh,
+        obj.uvIslandTransforms,
+        obj.uvBaseVertices,
+        obj.mesh.faceColors,
+        obj.material.color,
+      )
       // A lattice is a cage, not a renderable shape — skip its filled/textured quads entirely so
       // it never visually obstructs whatever it's deforming (only the wireframe below, forced on
       // regardless of the global "Show wireframe" toggle, plus the ordinary vertex/edge Edit Mode
@@ -1754,9 +1795,13 @@ export default function Viewport() {
         }
 
         if (editElementType === 'face') {
-          obj.mesh.faces.forEach((face, fi) => {
-            if (hiddenFaces.has(fi) || lockedFaces.has(fi)) return
-            if (!selectedFaces.has(fi)) return
+          const pxToWorld = 1 / viewRef.current.zoom
+          const visibleSelectedFaceIndices = obj.mesh.faces
+            .map((_, fi) => fi)
+            .filter((fi) => selectedFaces.has(fi) && !hiddenFaces.has(fi) && !lockedFaces.has(fi))
+
+          visibleSelectedFaceIndices.forEach((fi) => {
+            const face = obj.mesh.faces[fi]
             const pts = face.map((i) => applyTransform(obj.mesh.vertices[i], worldTransform))
             const positions = pts.flatMap((p) => [p.x, p.y, 0])
             const indices = triangulatePolygon(pts)
@@ -1768,6 +1813,35 @@ export default function Viewport() {
             faceMesh.position.z = 0.015
             group.add(faceMesh)
           })
+
+          // outline only the *outer* boundary of the selected group — an edge shared between two
+          // selected faces is interior to the selection and would just clutter a multi-face
+          // selection, so only edges touching exactly one selected face (here) get outlined
+          const edgeCount = new Map<string, number>()
+          for (const fi of visibleSelectedFaceIndices) {
+            const face = obj.mesh.faces[fi]
+            for (let i = 0; i < face.length; i++) {
+              const key = edgeKey(face[i], face[(i + 1) % face.length])
+              edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1)
+            }
+          }
+          const boundarySegments: [Vec2, Vec2][] = []
+          for (const fi of visibleSelectedFaceIndices) {
+            const face = obj.mesh.faces[fi]
+            for (let i = 0; i < face.length; i++) {
+              const a = face[i]
+              const b = face[(i + 1) % face.length]
+              if ((edgeCount.get(edgeKey(a, b)) ?? 0) > 1) continue
+              boundarySegments.push([
+                applyTransform(obj.mesh.vertices[a], worldTransform),
+                applyTransform(obj.mesh.vertices[b], worldTransform),
+              ])
+            }
+          }
+          // the yellow tint alone can vanish against a similarly-colored (e.g. yellow) face —
+          // this adds a black/white "candy cane" border so at least one of the two always
+          // contrasts against the face's own color
+          if (boundarySegments.length > 0) addFaceSelectionOutline(group, boundarySegments, pxToWorld, 0.016)
         }
       }
 
@@ -2604,6 +2678,60 @@ export default function Viewport() {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     geom.setIndex(indices)
     scene.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })))
+  }
+
+  /** Black/white "candy cane" dashed border along the given edge segments — a single-color
+   *  translucent tint (see the face-select overlay above) can all but vanish when the face's own
+   *  color happens to be close to the tint (e.g. a yellow-ish material under the default yellow
+   *  selection tint), so alternating the dash color between the two extremes guarantees at least
+   *  one of them stays in strong contrast against any face color. Quad-based like
+   *  `addDashedThickLine`, since LineDashedMaterial ignores WebGL linewidth; the alternating phase
+   *  resets at the start of each segment rather than carrying across joins, which is simpler and
+   *  not visually noticeable at this dash size. Callers pass only the selection's outer boundary
+   *  segments (an edge interior to a multi-face selection is deliberately omitted) rather than
+   *  every face's own edges, so an adjacent pair of selected faces doesn't get a border drawn
+   *  down their shared edge. */
+  function addFaceSelectionOutline(container: THREE.Object3D, segments: [Vec2, Vec2][], pxToWorld: number, z: number) {
+    const halfWidth = 0.6 * pxToWorld
+    const dash = 5 * pxToWorld
+    const buckets: Record<'black' | 'white', { positions: number[]; indices: number[]; vi: number }> = {
+      black: { positions: [], indices: [], vi: 0 },
+      white: { positions: [], indices: [], vi: 0 },
+    }
+    for (const [a, b] of segments) {
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const len = Math.hypot(dx, dy)
+      if (len < 1e-6) continue
+      const ux = dx / len
+      const uy = dy / len
+      const nx = -uy * halfWidth
+      const ny = ux * halfWidth
+      const count = Math.ceil(len / dash)
+      for (let i = 0; i < count; i++) {
+        const start = i * dash
+        if (start >= len) break
+        const end = Math.min(start + dash, len)
+        const sx = a.x + ux * start
+        const sy = a.y + uy * start
+        const ex = a.x + ux * end
+        const ey = a.y + uy * end
+        const bucket = buckets[i % 2 === 0 ? 'black' : 'white']
+        bucket.positions.push(sx + nx, sy + ny, 0, sx - nx, sy - ny, 0, ex - nx, ey - ny, 0, ex + nx, ey + ny, 0)
+        bucket.indices.push(bucket.vi, bucket.vi + 1, bucket.vi + 2, bucket.vi, bucket.vi + 2, bucket.vi + 3)
+        bucket.vi += 4
+      }
+    }
+    for (const [name, color] of [['black', 0x000000], ['white', 0xffffff]] as const) {
+      const { positions, indices } = buckets[name]
+      if (positions.length === 0) continue
+      const geom = new THREE.BufferGeometry()
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+      geom.setIndex(indices)
+      const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ color, depthTest: false }))
+      mesh.position.z = z
+      container.add(mesh)
+    }
   }
 
   /** Live feedback while a G move is axis-locked (X/Y): a dashed world-space line through the

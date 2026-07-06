@@ -7,6 +7,12 @@ export interface Mesh {
   vertices: Vec2[]
   // each face is an ordered list of vertex indices (CCW), triangle/quad/ngon
   faces: number[][]
+  /** Per-face color override (hex string), keyed by index into `faces` — same indexing as
+   *  `SceneState.selectedFaces`. A face absent here falls back to the object's own
+   *  `Material.color`. Only survives face-index-preserving edits (delete faces, extrude) that
+   *  explicitly remap this map; other topology-changing tools (knife, loop cut, subdivide, merge)
+   *  don't yet carry it over and may leave affected faces reset to the fallback color. */
+  faceColors?: Record<number, string>
 }
 
 export interface Transform {

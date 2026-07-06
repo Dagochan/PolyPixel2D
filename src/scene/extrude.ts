@@ -106,5 +106,12 @@ export function extrudeEdges(
     newEdgeKeys.push(edgeKey(na, nb))
   }
 
-  return { mesh: { vertices, faces }, newVertexIndices: Array.from(vertexMap.values()), newEdgeKeys }
+  // original faces keep their exact indices (new wall faces are only ever appended after them),
+  // so `faceColors` (see `Mesh.faceColors`) carries over untouched — new wall faces simply have
+  // no entry yet, falling back to the object's material color like any other uncolored face.
+  return {
+    mesh: { vertices, faces, ...(mesh.faceColors ? { faceColors: mesh.faceColors } : {}) },
+    newVertexIndices: Array.from(vertexMap.values()),
+    newEdgeKeys,
+  }
 }

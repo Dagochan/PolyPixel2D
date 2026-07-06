@@ -189,7 +189,11 @@ export function computeSplitUVIslands(
   mesh: Mesh,
   transforms?: UvIslandTransform[],
   baseVertices?: Record<number, Vec2>,
-): { mesh: Mesh; uvs: Vec2[] }[] {
+  /** Resolved into `colors`, one entry per island face (see `faceColors`'s own doc) — a face
+   *  absent here falls back to `defaultColor`. */
+  faceColors?: Record<number, string>,
+  defaultColor?: string,
+): { mesh: Mesh; uvs: Vec2[]; colors: string[] }[] {
   const islands = findIslands(mesh)
   const defaults = defaultIslandTransforms(mesh, islands, baseVertices)
 
@@ -201,6 +205,7 @@ export function computeSplitUVIslands(
     const vertices: Vec2[] = []
     const uvs: Vec2[] = []
     const faces: number[][] = []
+    const colors: string[] = []
     const newIndex = new Map<number, number>()
     for (const fi of island.faces) {
       const newFace = mesh.faces[fi].map((origIndex) => {
@@ -214,8 +219,9 @@ export function computeSplitUVIslands(
         return ni
       })
       faces.push(newFace)
+      colors.push(faceColors?.[fi] ?? defaultColor ?? '#ffffff')
     }
-    return { mesh: { vertices, faces }, uvs }
+    return { mesh: { vertices, faces }, uvs, colors }
   })
 }
 
