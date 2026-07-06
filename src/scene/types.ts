@@ -41,6 +41,19 @@ export interface ReferenceImage {
   rotation: number // radians, about the image's own center (x, y)
   opacity: number
   visible: boolean
+  /** GIF only (see `scene/gifDecode.ts`) — seconds added to the playhead before mapping into the
+   *  GIF's own per-frame timeline, so a larger value skips further ahead into the GIF at any
+   *  given playhead position (letting frame 0 be aligned to wherever the user wants the reference
+   *  animation to "start" relative to the clip). The mapping loops over the GIF's own real
+   *  (authored) duration, entirely independent of `AnimationClip.frameRate` (which is just a
+   *  keyframe-snapping display granularity, not an authoritative clock — see its doc). Ignored
+   *  for a non-GIF image. Absent/undefined = 0 (no shift). */
+  gifOffset?: number
+  /** Mirrors the image horizontally (about its own center) — e.g. tracing a reference drawn/
+   *  filmed facing the opposite way the object is modeled. Applied as a texture-space flip (`u`
+   *  reversed), not a geometry/transform change, so it composes independently of `rotation`.
+   *  Absent/undefined = not flipped. */
+  flipX?: boolean
 }
 
 /** Sentinel `selectedObjectId` value standing in for the reference image — it isn't a

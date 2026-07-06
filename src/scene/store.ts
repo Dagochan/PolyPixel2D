@@ -235,7 +235,9 @@ interface SceneState {
   setHairPathConstantWidth: (v: boolean) => void
   setReferenceImage: (url: string | null) => void
   setReferenceImageTransform: (
-    transform: Partial<Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'rotation' | 'opacity' | 'visible'>>,
+    transform: Partial<
+      Pick<ReferenceImage, 'x' | 'y' | 'scale' | 'rotation' | 'opacity' | 'visible' | 'gifOffset' | 'flipX'>
+    >,
   ) => void
   setMeshOpacity: (opacity: number) => void
   setGridSubdivisions: (n: number) => void

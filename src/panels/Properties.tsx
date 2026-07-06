@@ -3,6 +3,7 @@ import { selectedVertexIndices, useSceneStore } from '../scene/store'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
+import { decodeGif, gifFrameAt, gifFrameStartMs, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
 import type {
   AppMode,
   FakeBehindSettings,
@@ -1633,6 +1634,25 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   )
   const textureInputRef = useRef<HTMLInputElement>(null)
   const [baking, setBaking] = useState(false)
+  // decoded independently of the viewport's own GIF cache (see `Viewport.tsx`'s `gifCacheRef`) —
+  // a one-time decode per url is cheap enough not to bother sharing that cache just for this.
+  // Kept in full (not just a frame count) so "Start offset" can be shown/edited as a frame index
+  // (see `gifFrameStartMs`) rather than raw seconds.
+  const [gif, setGif] = useState<DecodedGif | null>(null)
+  useEffect(() => {
+    if (!referenceImage || !isGifDataUrl(referenceImage.url)) {
+      setGif(null)
+      return
+    }
+    let cancelled = false
+    setGif(null)
+    decodeGif(referenceImage.url).then((decoded) => {
+      if (!cancelled) setGif(decoded)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [referenceImage?.url])
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const toggleSection = (title: string) =>
     setCollapsedSections((prev) => {
@@ -1666,7 +1686,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
     if (!referenceImage) return
     setBaking(true)
     try {
-      const dataUrl = await bakeReferenceToTexture(target, objects, referenceImage, uvResolution)
+      const dataUrl = await bakeReferenceToTexture(target, objects, referenceImage, uvResolution, playheadTime)
       setMaterialTexture(target.id, dataUrl)
     } finally {
       setBaking(false)
@@ -1709,6 +1729,13 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             </div>
             <div className="prop-row">
               <button
+                className={'icon-btn' + (referenceImage.flipX ? ' active' : '')}
+                title="Mirror the image horizontally, about its own center"
+                onClick={() => setReferenceImageTransform({ flipX: !referenceImage.flipX })}
+              >
+                Flip X
+              </button>
+              <button
                 title="Reset position to (0, 0), rotation to 0, and scale to 1"
                 onClick={() => setReferenceImageTransform({ x: 0, y: 0, rotation: 0, scale: 1 })}
               >
@@ -1716,6 +1743,30 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               </button>
             </div>
           </Section>
+          {isGifDataUrl(referenceImage.url) && (
+            <Section title="GIF">
+              <div className="prop-row prop-static">
+                <span>Follows the timeline playhead automatically, looping over the GIF's own real per-frame timing</span>
+              </div>
+              <div className="prop-row prop-static">
+                <span>{!gif ? 'Frames: decoding…' : `Frames: 0–${gif.frames.length - 1}`}</span>
+              </div>
+              {gif && (
+                <div className="prop-row">
+                  <NumberField
+                    label="Start offset (frame)"
+                    value={gifFrameAt(gif, (referenceImage.gifOffset ?? 0) * 1000)}
+                    step={1}
+                    onChange={(v) => {
+                      const count = gif.frames.length
+                      const wrapped = ((Math.round(v) % count) + count) % count
+                      setReferenceImageTransform({ gifOffset: gifFrameStartMs(gif, wrapped) / 1000 })
+                    }}
+                  />
+                </div>
+              )}
+            </Section>
+          )}
         </div>
       ) : !obj ? (
         <div className="prop-body">

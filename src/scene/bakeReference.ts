@@ -4,6 +4,34 @@ import type { ReferenceImage } from './store'
 import { getWorldTransform, applyTransform } from './transformUtils'
 import { computeSplitUVIslands } from './uv'
 import { triangulate } from './meshUtils'
+import { decodeGif, gifFrameAt, isGifDataUrl } from './gifDecode'
+
+/** Same frame this `referenceImage` is currently showing in the viewport (see
+ *  `Viewport.tsx`'s `getGifFrameTexture`) — baking must sample *that* frame, not just whatever a
+ *  fresh, independent load of the raw GIF file happens to decode to (which is always its first
+ *  frame, regardless of the playhead/offset the user is actually looking at). A plain (non-GIF)
+ *  image is still just loaded directly. */
+async function loadReferenceTexture(
+  referenceImage: ReferenceImage,
+  playheadTime: number,
+): Promise<{ texture: THREE.Texture; width: number; height: number }> {
+  if (isGifDataUrl(referenceImage.url)) {
+    const gif = await decodeGif(referenceImage.url)
+    const elapsedMs = (playheadTime + (referenceImage.gifOffset ?? 0)) * 1000
+    const frameIndex = gifFrameAt(gif, elapsedMs)
+    const canvas = document.createElement('canvas')
+    canvas.width = gif.width
+    canvas.height = gif.height
+    canvas.getContext('2d')!.putImageData(gif.frames[frameIndex].imageData, 0, 0)
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    return { texture, width: gif.width, height: gif.height }
+  }
+  const texture = await new THREE.TextureLoader().loadAsync(referenceImage.url)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const image = texture.image as HTMLImageElement
+  return { texture, width: image.width, height: image.height }
+}
 
 /** Bakes the reference image into a UV-mapped texture for `obj`: for every point on the mesh,
  *  looks up where that point sits in the reference image (via its world position and the
@@ -16,15 +44,14 @@ export async function bakeReferenceToTexture(
   objects: SceneObject[],
   referenceImage: ReferenceImage,
   resolution: number,
+  playheadTime: number,
 ): Promise<string> {
   const worldTransform = getWorldTransform(obj, objects)
   const perIsland = computeSplitUVIslands(obj.mesh, obj.uvIslandTransforms, obj.uvBaseVertices)
 
-  const texture = await new THREE.TextureLoader().loadAsync(referenceImage.url)
-  texture.colorSpace = THREE.SRGBColorSpace
-  const image = texture.image as HTMLImageElement
-  const imgWidth = image.width * referenceImage.scale
-  const imgHeight = image.height * referenceImage.scale
+  const { texture, width: rawWidth, height: rawHeight } = await loadReferenceTexture(referenceImage, playheadTime)
+  const imgWidth = rawWidth * referenceImage.scale
+  const imgHeight = rawHeight * referenceImage.scale
 
   // undo the reference image's own world rotation, so a world point can be looked up against the
   // image's unrotated local space (same "R(-theta) * (world - center)" the viewport's rotated
@@ -47,8 +74,11 @@ export async function bakeReferenceToTexture(
       // (0,0)-centered, Y-up, unrotated-local convention the reference plane itself is placed in
       const dx = world.x - referenceImage.x
       const dy = world.y - referenceImage.y
-      const localX = dx * cos - dy * sin
+      let localX = dx * cos - dy * sin
       const localY = dx * sin + dy * cos
+      // matches the viewport's texture-space flip (see `addReferenceImage`'s `flipX` handling) —
+      // mirroring the *lookup* about the image's own center rather than the mesh/geometry
+      if (referenceImage.flipX) localX = -localX
       uvs.push(localX / imgWidth + 0.5, localY / imgHeight + 0.5)
     })
     indexOffset += islandMesh.vertices.length

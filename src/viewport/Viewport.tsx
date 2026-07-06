@@ -34,6 +34,7 @@ import {
   type FakePhysicsMeshLiveState,
 } from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
+import { decodeGif, gifFrameAt, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
 import { boundsVertices, evaluatePathCurve, nearestSegmentInsertIndex } from '../scene/pathCurve'
 
 const HANDLE_SIZE = 8 // px
@@ -306,6 +307,17 @@ export default function Viewport() {
   const placePreviewRef = useRef<Vec2 | null>(null)
   const textureCacheRef = useRef(new Map<string, THREE.Texture>())
   const textureLoaderRef = useRef(new THREE.TextureLoader())
+  // GIF reference image support (see `scene/gifDecode.ts`) — decoding is async, so a url starts
+  // 'pending' the first time it's seen (and stays that way while the fetch/decode is in flight)
+  // and flips to the decoded result once ready; the render loop just keeps calling
+  // `addReferenceImage` every frame regardless, so it naturally starts drawing real frames as
+  // soon as this resolves, no manual "refresh" needed. `canvas`/`texture` persist across frames
+  // per url (only their pixel contents get redrawn, and only when the frame index changes) so
+  // per-frame rebuilds don't thrash a brand new GPU upload every tick.
+  const gifCacheRef = useRef(new Map<string, DecodedGif | 'pending'>())
+  const gifCanvasRef = useRef(
+    new Map<string, { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; frameIndex: number }>(),
+  )
   const selectionBoxRef = useRef<HTMLDivElement>(null)
   // Live (unbaked) Fake Physics Mesh preview state, keyed by object id — persists across rAF
   // frames so the spring simulation keeps its position/velocity between renders instead of
@@ -2242,17 +2254,35 @@ export default function Viewport() {
 
   /** Trace-over reference image, drawn behind the grid and every object. */
   function addReferenceImage(scene: THREE.Scene, ref: ReferenceImage) {
-    let texture = textureCacheRef.current.get(ref.url)
-    if (!texture) {
-      texture = textureLoaderRef.current.load(ref.url)
-      texture.colorSpace = THREE.SRGBColorSpace
-      textureCacheRef.current.set(ref.url, texture)
-    }
-    const image = texture.image as HTMLImageElement | undefined
-    if (!image?.width) return // not loaded yet — skip this frame, retry next
+    let width: number
+    let height: number
+    let texture: THREE.Texture
 
-    const width = image.width * ref.scale
-    const height = image.height * ref.scale
+    if (isGifDataUrl(ref.url)) {
+      const gifTexture = getGifFrameTexture(ref)
+      if (!gifTexture) return // still decoding (or a bad file) — skip this frame, retry next
+      texture = gifTexture.texture
+      width = gifTexture.width * ref.scale
+      height = gifTexture.height * ref.scale
+    } else {
+      let loaded = textureCacheRef.current.get(ref.url)
+      if (!loaded) {
+        loaded = textureLoaderRef.current.load(ref.url)
+        loaded.colorSpace = THREE.SRGBColorSpace
+        textureCacheRef.current.set(ref.url, loaded)
+      }
+      const image = loaded.image as HTMLImageElement | undefined
+      if (!image?.width) return // not loaded yet — skip this frame, retry next
+      texture = loaded
+      width = image.width * ref.scale
+      height = image.height * ref.scale
+    }
+
+    // a texture-space flip (reversed `u`) rather than a geometry/scale flip, so it composes
+    // independently of `rotation` and never risks a winding-order/backface-culling surprise
+    texture.repeat.x = ref.flipX ? -1 : 1
+    texture.offset.x = ref.flipX ? 1 : 0
+
     const geom = new THREE.PlaneGeometry(width, height)
     const mat = new THREE.MeshBasicMaterial({
       map: texture,
@@ -2266,6 +2296,49 @@ export default function Viewport() {
     mesh.position.set(ref.x, ref.y, -50)
     mesh.rotation.z = ref.rotation
     scene.add(mesh)
+  }
+
+  /** Lazily decodes (once per url — see `gifCacheRef`'s doc) and returns the `CanvasTexture`
+   *  showing whichever GIF frame the current playhead (advanced by `ref.gifOffset`) maps to (see
+   *  `scene/gifDecode.ts`). Returns `null` while a brand new url's decode is still in flight (or
+   *  failed), so the caller just skips drawing the reference image for this tick and retries the
+   *  next — same "not ready yet" convention as the plain-image path's `!image?.width` check. */
+  function getGifFrameTexture(ref: ReferenceImage): { texture: THREE.CanvasTexture; width: number; height: number } | null {
+    const cached = gifCacheRef.current.get(ref.url)
+    if (!cached) {
+      gifCacheRef.current.set(ref.url, 'pending')
+      decodeGif(ref.url)
+        .then((gif) => gifCacheRef.current.set(ref.url, gif))
+        .catch(() => gifCacheRef.current.delete(ref.url)) // let a corrupt/unsupported file retry rather than wedge forever
+      return null
+    }
+    if (cached === 'pending') return null
+    const gif = cached
+
+    const playheadTime = useSceneStore.getState().playheadTime
+    // + (not -): a larger offset skips further ahead into the GIF at any given playhead position,
+    // matching the intuitive "turn this dial up to advance further" expectation, rather than
+    // delaying when the animation starts (which reads as rewinding at a fixed playhead)
+    const elapsedMs = (playheadTime + (ref.gifOffset ?? 0)) * 1000
+    const frameIndex = gifFrameAt(gif, elapsedMs)
+
+    let entry = gifCanvasRef.current.get(ref.url)
+    if (!entry) {
+      const canvas = document.createElement('canvas')
+      canvas.width = gif.width
+      canvas.height = gif.height
+      const ctx = canvas.getContext('2d')!
+      const texture = new THREE.CanvasTexture(canvas)
+      texture.colorSpace = THREE.SRGBColorSpace
+      entry = { canvas, ctx, texture, frameIndex: -1 }
+      gifCanvasRef.current.set(ref.url, entry)
+    }
+    if (entry.frameIndex !== frameIndex) {
+      entry.ctx.putImageData(gif.frames[frameIndex].imageData, 0, 0)
+      entry.texture.needsUpdate = true
+      entry.frameIndex = frameIndex
+    }
+    return { texture: entry.texture, width: gif.width, height: gif.height }
   }
 
   /** The adaptive major grid spacing for the current zoom (world units) — lines stay ~60px apart
