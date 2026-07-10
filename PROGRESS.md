@@ -65,6 +65,7 @@
 - [x] Head/Tailは常にメッシュ自身のシルエット内にクランプ（`clampToMesh`）
 - [x] プロパティパネルのHead X/Y・Tail X/Yフィールドからも数値編集可能
 - [x] **Character Partsプリセット**(2026-07-11)。Toolbarの「+ Add」→「Character Parts」サブメニューに Torso / Head / Limb の3種。中身はRect/Circleと同じメッシュ生成だが、`transform.head`/`tail`をあらかじめ形状の下端/上端に配置済みで追加される点だけが異なる（[store.ts](src/scene/store.ts)の`addTorso`/`addCharacterHead`/`addLimb`）。Torso: Head=下端(骨盤)/Tail=上端(首)。Head: Head=下端(首)/Tail=上端(頭頂)。Limb: Head=下端(根本)/Tail=上端(先端)、上腕/前腕/太もも/すね兼用。追加後のリネーム・リサイズ・Head/Tail再調整は他オブジェクトと同様に可能
+- [x] **My Partsプリセットライブラリ**(2026-07-11)。ユーザー自身がモデリングしたオブジェクトを「+ Add」→「My Parts」から何度でも呼び出せるプリセットとして保存する仕組み。選択中オブジェクトのProperties パネルに出る「Save as Preset」ボタンでmesh・Head・Tail・色を保存。プロジェクト(`.pptd`)には含めず`localStorage`(`polypixel2d.partPresets`)に保存するので**プロジェクトを跨いで使い回せる**（[partPresetsStore.ts](src/scene/partPresetsStore.ts)、シーンのUndo/Redo対象からは意図的に分離）。Toolbarの「My Parts」サブメニューから追加、各プリセット行のゴミ箱アイコンで削除。挿入は`store.ts`の`addFromPartPreset`（`structuredClone`でプリセット側とのメッシュ共有を回避）
 
 ### アイランドZオーダー
 - [x] 1オブジェクトの複数アイランドに個別の重なり順を設定可能。`islandZOrders`でランク管理、Viewportはアイランドごとに描画してZを微小オフセット
@@ -126,7 +127,7 @@
 ### アウトライナー・UI改善
 - [x] 階層折りたたみ、特殊オブジェクト種別（Empty/Path/Lattice）の色分け・記号表示
 - [x] プロパティパネルの初期高さ調整
-- [x] **数値入力フォームのUX改善**(2026-07-11)。共通コンポーネント[`NumberInput`](src/panels/NumberInput.tsx)を新設し、アプリ全体の`<input type="number">`(Properties/Toolbar/Timeline/PixelPreview、20箇所以上)を置き換え。フォーカス中はローカルな下書き文字列を保持し、blur/Enterで初めてparse→clamp→ストアへcommitする設計に変更。これにより「Backspaceで全消去できない」「範囲制限のある値の入力途中で強制的に丸められる」「Enterでフォーカスが外れない」の3点がすべて解消（Enterはcommit後に`blur()`も呼ぶ）。範囲のある`<input type="range">`スライダーは対象外(既存の規約通り)
+- [x] **数値入力フォームのUX改善**(2026-07-11)。共通コンポーネント[`NumberInput`](src/panels/NumberInput.tsx)を新設し、アプリ全体の`<input type="number">`(Properties/Toolbar/Timeline/PixelPreview、20箇所以上)を置き換え。フォーカス中はローカルな下書き文字列を保持し、blur/Enterで初めてparse→clamp→ストアへcommitする設計に変更。これにより「Backspaceで全消去できない」「範囲制限のある値の入力途中で強制的に丸められる」「Enterでフォーカスが外れない」の3点がすべて解消（Enterはcommit後に`blur()`も呼ぶ）。範囲のある`<input type="range">`スライダーは対象外(既存の規約通り)。**追加修正(同日)**: スピナー矢印ボタン/フォーカス中の↑↓キーはネイティブの`change`イベントが即座に飛ぶ(直接入力はblurするまで来ない)というHTML仕様上の違いを利用し、`change`イベントリスナーをネイティブで直接張って即時commitするよう変更——ボタン操作はEnter不要で即反映になった
 
 ### ピクセルプレビュー・下絵ベイク・パレット量子化
 - [x] ピクセルプレビューパネル。低解像度・ニアレストネイバーでシーンの塗りのみをレンダリングし、`image-rendering: pixelated`で拡大表示。固定Pixel Frame（安定したフレーミング）or 自動フレーミング、解像度調整可能
