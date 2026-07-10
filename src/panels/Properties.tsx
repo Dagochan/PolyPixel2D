@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { selectedVertexIndices, useSceneStore } from '../scene/store'
+import { usePartPresetsStore } from '../scene/partPresetsStore'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
@@ -1644,6 +1645,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const togglePixelFrame = useSceneStore((s) => s.togglePixelFrame)
   const reunwrapUVs = useSceneStore((s) => s.reunwrapUVs)
   const applyScale = useSceneStore((s) => s.applyScale)
+  const addPartPreset = usePartPresetsStore((s) => s.addPreset)
   const moveIslandZOrder = useSceneStore((s) => s.moveIslandZOrder)
   const selectIsland = useSceneStore((s) => s.selectIsland)
   const setIslandName = useSceneStore((s) => s.setIslandName)
@@ -2027,6 +2029,27 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               />
             </div>
           </Section>
+
+          {obj.mesh.faces.length > 0 && (
+            <Section title="Part preset">
+              <div className="prop-row">
+                <button
+                  title="Save this object's mesh, Head, Tail, and color as a reusable preset in the '+ Add' → 'My Parts' menu — persists across projects (localStorage), independent of this .pptd file"
+                  onClick={() =>
+                    addPartPreset({
+                      name: obj.name,
+                      mesh: obj.mesh,
+                      head: obj.transform.head,
+                      tail: obj.tail,
+                      color: obj.material.color,
+                    })
+                  }
+                >
+                  Save as Preset
+                </button>
+              </div>
+            </Section>
+          )}
 
           <ModifiersSection
             obj={obj}

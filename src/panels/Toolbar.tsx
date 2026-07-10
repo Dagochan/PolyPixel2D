@@ -15,6 +15,8 @@ import {
   PathPrimitiveIcon,
 } from './icons'
 import NumberInput from './NumberInput'
+import { usePartPresetsStore } from '../scene/partPresetsStore'
+import { TrashIcon } from './icons'
 
 export default function Toolbar() {
   const mode = useSceneStore((s) => s.mode)
@@ -23,6 +25,9 @@ export default function Toolbar() {
   const addTorso = useSceneStore((s) => s.addTorso)
   const addCharacterHead = useSceneStore((s) => s.addCharacterHead)
   const addLimb = useSceneStore((s) => s.addLimb)
+  const addFromPartPreset = useSceneStore((s) => s.addFromPartPreset)
+  const partPresets = usePartPresetsStore((s) => s.presets)
+  const removePartPreset = usePartPresetsStore((s) => s.removePreset)
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
   const addEmpty = useSceneStore((s) => s.addEmpty)
   const addLattice = useSceneStore((s) => s.addLattice)
@@ -48,7 +53,7 @@ export default function Toolbar() {
   const projectFileInputRef = useRef<HTMLInputElement>(null)
 
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const [addSubmenu, setAddSubmenu] = useState<'primitives' | 'characterParts' | null>(null)
+  const [addSubmenu, setAddSubmenu] = useState<'primitives' | 'characterParts' | 'myParts' | null>(null)
   const addMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -313,6 +318,48 @@ export default function Toolbar() {
                   >
                     <RectPrimitiveIcon size={14} /> Limb
                   </div>
+                </div>
+              )}
+            </div>
+            <div
+              className="dropdown-item has-submenu"
+              onMouseEnter={() => setAddSubmenu('myParts')}
+              onMouseLeave={() => setAddSubmenu(null)}
+              onClick={() => setAddSubmenu('myParts')}
+            >
+              My Parts ▸
+              {addSubmenu === 'myParts' && (
+                <div className="dropdown-submenu">
+                  {partPresets.length === 0 ? (
+                    <div className="dropdown-item" title="Select an object and use its Properties panel's 'Save as Preset' button to add one">
+                      (No saved presets yet)
+                    </div>
+                  ) : (
+                    partPresets.map((preset) => (
+                      <div key={preset.id} className="dropdown-item-row">
+                        <button
+                          className="primitive-btn"
+                          title={`Add "${preset.name}"`}
+                          onClick={() => {
+                            addFromPartPreset(preset)
+                            closeAddMenu()
+                          }}
+                        >
+                          {preset.name}
+                        </button>
+                        <button
+                          className="icon-btn"
+                          title="Delete this preset"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removePartPreset(preset.id)
+                          }}
+                        >
+                          <TrashIcon size={14} />
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>

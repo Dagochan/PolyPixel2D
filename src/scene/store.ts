@@ -216,6 +216,10 @@ interface SceneState {
    *  the new object's transform is identity) — see `createHairPathMesh`. */
   addHairPath: (points: Vec2[], width: number, constantWidth?: boolean) => void
   addImportedMesh: (mesh: Mesh, name: string) => void
+  /** Inserts a user-saved part preset (see `src/scene/partPresetsStore.ts`'s "My Parts" library,
+   *  independent of this scene store — saved presets persist across projects via localStorage)
+   *  as a fresh object, carrying over its mesh, Head/Tail, and color exactly as saved. */
+  addFromPartPreset: (preset: { mesh: Mesh; head: Vec2; tail: Vec2; color: string; name: string }) => void
   /** Adds a mesh-less hierarchy-only dummy object (e.g. a rig root), positioned at the origin. */
   addEmpty: () => void
   /** Adds a new `kind: 'path'` object — `points` (world space, since the new object's transform
@@ -1018,6 +1022,29 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(mesh, undefined),
       tail: { x: 0, y: height / 2 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addFromPartPreset: (preset) => {
+    get().beginChange()
+    const objects = get().objects
+    // deep-clone the preset's mesh so later edits to the inserted object never mutate the saved
+    // preset (and vice versa) — presets live in a separate localStorage-backed store, so nothing
+    // else would catch this kind of aliasing
+    const mesh: Mesh = structuredClone(preset.mesh)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: preset.name,
+      mesh,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { ...preset.head } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: preset.color },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { ...preset.tail },
       parentId: null,
       connected: true,
     }
