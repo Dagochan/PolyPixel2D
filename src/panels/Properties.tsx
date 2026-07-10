@@ -55,6 +55,20 @@ function round(v: number) {
   return Math.round(v * 1000) / 1000
 }
 
+/** Magnetic snap for the shape key blend slider — 0 (Basis) and 1 (the sculpted target) are the
+ *  two values you actually want to land on most, but they sit in the middle of the [-1, 2] range
+ *  (which allows a bit of corrective over/undershoot beyond them), so a mouse drag easily lands a
+ *  hair off either one. Snapping within a small window makes them "magnetic" without blocking free
+ *  dragging anywhere else in the range. */
+const SHAPE_KEY_SNAP_TARGETS = [0, 1]
+const SHAPE_KEY_SNAP_THRESHOLD = 0.04
+function snapShapeKeyValue(v: number): number {
+  for (const target of SHAPE_KEY_SNAP_TARGETS) {
+    if (Math.abs(v - target) < SHAPE_KEY_SNAP_THRESHOLD) return target
+  }
+  return v
+}
+
 /** Which `Section` titles are collapsed — global UI state (not per-object, not undo-tracked),
  *  matching Blender's panel-collapse behavior: it's about how you like to view the properties
  *  editor, not something that travels with the selected object or the scene file. */
@@ -437,7 +451,7 @@ function ShapeKeysSection({
               max={2}
               step={0.01}
               value={value}
-              onChange={(e) => setShapeKeyValue(obj.id, key.id, +e.target.value)}
+              onChange={(e) => setShapeKeyValue(obj.id, key.id, snapShapeKeyValue(+e.target.value))}
             />
             <span className="shapekey-value-readout">{round(value)}</span>
             <button

@@ -748,11 +748,12 @@ function buildFakePhysicsTracksForRoot(
 /** Same idea as `buildFakePhysicsTracksForRoot`, for one object's `simulateFakePhysicsMeshSections`
  *  — the shared core behind `bakeFakePhysicsMesh` and `bakeAllFakePhysics`. */
 function buildFakePhysicsMeshTracksForObject(
+  allObjects: SceneObject[],
   obj: SceneObject,
   clip: AnimationClip,
   frameCount: number,
 ): FakePhysicsMeshTrack[] {
-  const simulated = simulateFakePhysicsMeshSections(obj, clip)
+  const simulated = simulateFakePhysicsMeshSections(allObjects, obj, clip)
   const newTracks: FakePhysicsMeshTrack[] = []
   simulated.forEach((signal, section) => {
     const keyframes = signal.rotation.map((rotation, f) => ({
@@ -2726,7 +2727,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const obj = s.objects.find((o) => o.id === id)
     if (!obj) return
     const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
-    const newTracks = buildFakePhysicsMeshTracksForObject(obj, clip, frameCount)
+    const newTracks = buildFakePhysicsMeshTracksForObject(s.objects, obj, clip, frameCount)
     if (newTracks.length === 0) return
     get().beginChange()
     set((st) => ({
@@ -2768,7 +2769,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     const meshTracks: FakePhysicsMeshTrack[] = []
     for (const obj of s.objects) {
       if (!getFakePhysicsMesh(obj)?.enabled) continue
-      meshTracks.push(...buildFakePhysicsMeshTracksForObject(obj, clip, frameCount))
+      meshTracks.push(...buildFakePhysicsMeshTracksForObject(s.objects, obj, clip, frameCount))
     }
     if (chainTracks.length === 0 && meshTracks.length === 0) return
 

@@ -55,8 +55,11 @@ function rotateScale(v: Vec2, t: Transform): Vec2 {
   return { x: sx * cos - sy * sin, y: sx * sin + sy * cos }
 }
 
-/** Inverse of rotateScale: undo a world transform's rotation+scale only (no translation). */
-function inverseRotateScale(v: Vec2, t: Transform): Vec2 {
+/** Inverse of rotateScale: undo a world transform's rotation+scale only (no translation). Exported
+ *  for `fakePhysicsMesh.ts`, which needs to convert a world-space position delta (from a physics
+ *  cascade driven by resolved world motion) back into the object's own local mesh space before
+ *  adding it to a vertex — see that module's doc for why. */
+export function inverseRotateScale(v: Vec2, t: Transform): Vec2 {
   const cos = Math.cos(-t.rotation)
   const sin = Math.sin(-t.rotation)
   const rx = v.x * cos - v.y * sin

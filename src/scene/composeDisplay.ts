@@ -32,11 +32,20 @@ export interface ComposeDisplayOptions {
  *  Both Viewport.tsx and PixelPreview.tsx need this exact composition — a mismatch is precisely
  *  what caused PixelPreview.tsx to silently omit every one of these deforms for a long stretch
  *  (see project spec/issue notes): it drew `obj.mesh.vertices` raw, never having called any of
- *  this. Pulled out here as the one shared place both call, instead of split, drifting copies. */
+ *  this. Pulled out here as the one shared place both call, instead of split, drifting copies.
+ *
+ *  Runs in two passes rather than one single `.map` because FFD needs its cage's *already
+ *  shape-keyed(+Fake Flag+Fake Physics)* vertices, not its raw Basis (see `ffd.ts`'s doc) — and an
+ *  object can reference another object as its cage regardless of array order. Pass 1 computes
+ *  every object's pose up through Fake Physics (mesh) and stashes it by id; pass 2 does Path
+ *  Deform + FFD, letting FFD look its cage up in that map instead of reading `cage.mesh.vertices`
+ *  directly. */
 export function composeDisplayObjects(rawObjects: SceneObject[], opts: ComposeDisplayOptions): SceneObject[] {
   const objects = applyFollowPath(applyFakeFlagSway(rawObjects, opts.fakeFlagTime, opts.fakeFlagLoopDuration))
-  return objects.map((rawObj) => {
-    if (rawObj.kind === 'empty' || rawObj.kind === 'path') return rawObj
+
+  const physicsDeformedById = new Map<string, Vec2[]>()
+  for (const rawObj of objects) {
+    if (rawObj.kind === 'empty' || rawObj.kind === 'path') continue
 
     const isSelected = rawObj.id === opts.isolatedShapeKeyObjectId
     const shapeKeyVerts = displayVertices(rawObj, opts.editingShapeKeyId, isSelected)
@@ -52,12 +61,19 @@ export function composeDisplayObjects(rawObjects: SceneObject[], opts: ComposeDi
       ? swayedVerts.map((v, i) => ({ x: v.x + physicsMeshDeltas[i].x, y: v.y + physicsMeshDeltas[i].y }))
       : swayedVerts
 
+    physicsDeformedById.set(rawObj.id, physicsDeformedVerts)
+  }
+
+  return objects.map((rawObj) => {
+    if (rawObj.kind === 'empty' || rawObj.kind === 'path') return rawObj
+    const physicsDeformedVerts = physicsDeformedById.get(rawObj.id)!
+
     const pathDeformDeltas = pathDeformRailVertexDeltas(rawObj, objects)
     const pathDeformedVerts = pathDeformDeltas
       ? physicsDeformedVerts.map((v, i) => ({ x: v.x + pathDeformDeltas[i].x, y: v.y + pathDeformDeltas[i].y }))
       : physicsDeformedVerts
 
-    const ffdDeltas = ffdVertexDeltas(rawObj, objects)
+    const ffdDeltas = ffdVertexDeltas(rawObj, objects, physicsDeformedById)
     const displayVerts = ffdDeltas
       ? pathDeformedVerts.map((v, i) => ({ x: v.x + ffdDeltas[i].x, y: v.y + ffdDeltas[i].y }))
       : pathDeformedVerts

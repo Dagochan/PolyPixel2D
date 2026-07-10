@@ -1,5 +1,6 @@
 import { sampleTrack } from './animation'
-import { applyConvergence, simulateSpring, stepSpring, stiffnessToSpringParams, type FakePhysicsSignal } from './fakePhysics'
+import { applyConvergence, simulateSpring, simulateSpringLooped, stepSpring, stiffnessToSpringParams, type FakePhysicsSignal } from './fakePhysics'
+import { getWorldTransform, inverseRotateScale } from './transformUtils'
 import type { AnimationClip, FakePhysicsMeshSettings, FakePhysicsMeshTrack, Modifier, SceneObject, Transform, Vec2 } from './types'
 
 export const DEFAULT_FAKE_PHYSICS_MESH_SETTINGS: FakePhysicsMeshSettings = {
@@ -21,20 +22,48 @@ export function getFakePhysicsMesh(obj: SceneObject): FakePhysicsMeshSettings | 
 const SECTIONS = [1, 2, 3, 4, 5] as const
 export type FakePhysicsMeshSection = (typeof SECTIONS)[number]
 
-/** Simulates this object's 5-section chain (see `FakePhysicsMeshSettings`): the object's own raw
- *  x/y/rotation (from its `tracks` entry, or its static pose if it has none) is the thing Section 1
- *  lags behind; Section 2 then lags Section 1, Section 3 lags Section 2, and so on — every section
- *  is a real damped-spring stage with its own stiffness, cascading exactly like
- *  `simulateFakePhysicsChain`'s parent/child walk, just within one object's 5 fixed sections
- *  instead of a real object chain. (At the default stiffness of 1/rigid, a section tracks whatever
- *  it's following exactly — so Section 1 defaulting to rigid reproduces the "ROOT just *is* the
- *  object's motion" behavior of an earlier version, as a special case rather than a hardcoded rule.)
+/** Every object's transform at `time` seconds within `clip` — each object's own track (if any) is
+ *  sampled at that time, falling back to its live/static `transform` otherwise. Feeding this into
+ *  `getWorldTransform` is what lets `simulateFakePhysicsMeshSections` resolve an object's *ambient*
+ *  world pose at each baked frame — its whole ancestor chain's own animation included, not just
+ *  this object's own local track. */
+function sampleObjectsAtTime(
+  allObjects: SceneObject[],
+  clip: AnimationClip,
+  time: number,
+  cycle: { duration: number } | undefined,
+): SceneObject[] {
+  return allObjects.map((o) => {
+    const track = clip.tracks.find((t) => t.objectId === o.id)
+    if (!track) return o
+    const sampled = sampleTrack(track, time, cycle)
+    return sampled ? { ...o, transform: sampled } : o
+  })
+}
+
+/** Simulates this object's 5-section chain (see `FakePhysicsMeshSettings`): the thing Section 1
+ *  lags behind is this object's *resolved world* x/y/rotation — not just its own local track, but
+ *  the whole ancestor chain's animation composed in (via `getWorldTransform`, re-evaluated at every
+ *  sampled time through `sampleObjectsAtTime`) — so e.g. a hair mesh with no keyframes of its own,
+ *  parented to a swaying head, still gets secondary motion from the head's sway. Section 2 then
+ *  lags Section 1, Section 3 lags Section 2, and so on — every section is a real damped-spring
+ *  stage with its own stiffness, cascading exactly like `simulateFakePhysicsChain`'s parent/child
+ *  walk, just within one object's 5 fixed sections instead of a real object chain. (At the default
+ *  stiffness of 1/rigid, a section tracks whatever it's following exactly — so Section 1 defaulting
+ *  to rigid reproduces the "ROOT just *is* the object's motion" behavior of an earlier version, as
+ *  a special case rather than a hardcoded rule.)
  *
- *  Returns each section's *offset* from the object's own raw signal (not its absolute value) —
- *  what actually gets applied on top of the object's own motion at render/bake time, since the
+ *  Returns each section's *offset* from the object's own ambient world signal, converted back into
+ *  this object's own local mesh space (its rotation channel is frame-invariant either way — an
+ *  extra local rotation applied before this object's own world rotation contributes exactly that
+ *  much extra world rotation, regardless of frame — but the x/y channel is a world-space delta,
+ *  and `applySectionOffset` adds it straight to a local vertex, so each frame's delta is un-rotated/
+ *  scaled by that frame's own ambient world transform first, via `inverseRotateScale`). This offset
+ *  is what actually gets applied on top of the object's own motion at render/bake time, since the
  *  object's transform already carries that motion for every vertex regardless of section. Pure —
  *  no store writes; the caller (`bakeFakePhysicsMesh`) turns this into `FakePhysicsMeshTrack`s. */
 export function simulateFakePhysicsMeshSections(
+  allObjects: SceneObject[],
   obj: SceneObject,
   clip: AnimationClip,
 ): Map<FakePhysicsMeshSection, FakePhysicsSignal> {
@@ -45,35 +74,45 @@ export function simulateFakePhysicsMeshSections(
   const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
   const dt = 1 / clip.frameRate
   const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
-  const track = clip.tracks.find((t) => t.objectId === obj.id)
 
   const rootSignal: FakePhysicsSignal = { x: [], y: [], rotation: [] }
+  const worldByFrame: Transform[] = []
   for (let f = 0; f <= frameCount; f++) {
     const time = (f / frameCount) * clip.duration
-    const sampled = track ? sampleTrack(track, time, cycle) : null
-    const t = sampled ?? obj.transform
-    rootSignal.x.push(t.x)
-    rootSignal.y.push(t.y)
-    rootSignal.rotation.push(t.rotation)
+    const sampledObjects = sampleObjectsAtTime(allObjects, clip, time, cycle)
+    const sampledSelf = sampledObjects.find((o) => o.id === obj.id) ?? obj
+    const world = getWorldTransform(sampledSelf, sampledObjects)
+    worldByFrame.push(world)
+    rootSignal.x.push(world.x)
+    rootSignal.y.push(world.y)
+    rootSignal.rotation.push(world.rotation)
   }
 
+  const isLoop = clip.loopMode === 'loop'
   let previous = rootSignal
   SECTIONS.forEach((section, i) => {
     const springParams = stiffnessToSpringParams(settings.sectionStiffness[i])
     const spring = (target: number[]) =>
-      applyConvergence(simulateSpring(target, dt, springParams), settings.convergeStart)
+      applyConvergence(
+        isLoop ? simulateSpringLooped(target, dt, springParams, clip.duration) : simulateSpring(target, dt, springParams),
+        settings.convergeStart,
+      )
     const simulated: FakePhysicsSignal = {
       x: spring(previous.x),
       y: spring(previous.y),
       rotation: spring(previous.rotation),
     }
-    results.set(section, {
-      x: simulated.x.map((v, f) => v - rootSignal.x[f]),
-      y: simulated.y.map((v, f) => v - rootSignal.y[f]),
-      rotation: simulated.rotation.map((v, f) => v - rootSignal.rotation[f]),
-    })
-    // the next section cascades off this section's ABSOLUTE simulated signal, not its offset —
-    // matches the object-chain version's child-follows-parent's-actual-signal behavior
+    const x: number[] = new Array(simulated.x.length)
+    const y: number[] = new Array(simulated.x.length)
+    for (let f = 0; f < simulated.x.length; f++) {
+      const worldDelta = { x: simulated.x[f] - rootSignal.x[f], y: simulated.y[f] - rootSignal.y[f] }
+      const localDelta = inverseRotateScale(worldDelta, worldByFrame[f])
+      x[f] = localDelta.x
+      y[f] = localDelta.y
+    }
+    results.set(section, { x, y, rotation: simulated.rotation.map((v, f) => v - rootSignal.rotation[f]) })
+    // the next section cascades off this section's ABSOLUTE simulated (world) signal, not its
+    // offset — matches the object-chain version's child-follows-parent's-actual-signal behavior
     previous = simulated
   })
 
@@ -180,20 +219,25 @@ export type FakePhysicsMeshLiveState = FakePhysicsMeshLiveSectionState[]
 
 /** A fresh live state with every section starting in sync with the object's current pose (zero
  *  velocity) — matches `simulateSpring`'s "starts exactly at target[0]" convention, so a preview
- *  that's just been turned on doesn't jump/snap on its first frame. */
-export function createFakePhysicsMeshLiveState(root: Pick<Transform, 'x' | 'y' | 'rotation'>): FakePhysicsMeshLiveState {
+ *  that's just been turned on doesn't jump/snap on its first frame. `root` is the object's
+ *  *resolved world* transform (see `stepFakePhysicsMeshLive`'s doc for why), not its own local one. */
+export function createFakePhysicsMeshLiveState(root: Transform): FakePhysicsMeshLiveState {
   return SECTIONS.map(() => ({ x: root.x, y: root.y, rotation: root.rotation, vx: 0, vy: 0, vrotation: 0 }))
 }
 
 /** Advances a live preview simulation by `dt` real seconds, given the object's actual current
- *  x/y/rotation as the raw signal Section 1 lags behind — mutates `state` in place (cheap enough
- *  to call every rendered frame) and returns it back for convenience/chaining. Unlike `simulateSpring`
- *  (which needs the whole clip's signal known up front, for baking), this only ever needs "now",
- *  so it works for direct-manipulation dragging with no keyframes involved at all. */
+ *  *resolved world* x/y/rotation (its whole ancestor chain's live transform composed in, via
+ *  `getWorldTransform` — matches `simulateFakePhysicsMeshSections`'s bake-time behavior, so e.g. a
+ *  hair mesh parented to a head being dragged around still shows secondary motion in Preview, not
+ *  just when this exact object is the one being dragged) as the raw signal Section 1 lags behind —
+ *  mutates `state` in place (cheap enough to call every rendered frame) and returns it back for
+ *  convenience/chaining. Unlike `simulateSpring` (which needs the whole clip's signal known up
+ *  front, for baking), this only ever needs "now", so it works for direct-manipulation dragging
+ *  with no keyframes involved at all. */
 export function stepFakePhysicsMeshLive(
   state: FakePhysicsMeshLiveState,
   settings: FakePhysicsMeshSettings,
-  root: Pick<Transform, 'x' | 'y' | 'rotation'>,
+  root: Transform,
   dt: number,
 ): FakePhysicsMeshLiveState {
   let targetX = root.x
@@ -213,12 +257,15 @@ export function stepFakePhysicsMeshLive(
 }
 
 /** Same idea as `fakePhysicsMeshVertexDeltas`, but reading each section's offset from a live
- *  (unbaked) simulation state instead of a sampled keyframe — see `stepFakePhysicsMeshLive`. */
+ *  (unbaked) simulation state instead of a sampled keyframe — see `stepFakePhysicsMeshLive`. `root`
+ *  is the object's resolved world transform; the x/y channel is a world-space delta between the
+ *  live-simulated state and `root`, so (same reasoning as `simulateFakePhysicsMeshSections`) it's
+ *  un-rotated/scaled back into local mesh space via `inverseRotateScale` before being applied. */
 export function fakePhysicsMeshVertexDeltasLive(
   obj: SceneObject,
   settings: FakePhysicsMeshSettings,
   state: FakePhysicsMeshLiveState,
-  root: Pick<Transform, 'x' | 'y' | 'rotation'>,
+  root: Transform,
 ): Vec2[] | null {
   const sectionOf = sectionOfEachVertex(settings)
   if (sectionOf.size === 0) return null
@@ -228,7 +275,9 @@ export function fakePhysicsMeshVertexDeltasLive(
     const section = sectionOf.get(i)
     if (!section) return { x: 0, y: 0 }
     const ch = state[section - 1]
-    const offset = { x: ch.x - root.x, y: ch.y - root.y, rotation: ch.rotation - root.rotation }
+    const worldDelta = { x: ch.x - root.x, y: ch.y - root.y }
+    const localDelta = inverseRotateScale(worldDelta, root)
+    const offset = { x: localDelta.x, y: localDelta.y, rotation: ch.rotation - root.rotation }
     return applySectionOffset(v, pivotFor(section), offset)
   })
 }

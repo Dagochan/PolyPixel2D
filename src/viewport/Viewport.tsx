@@ -20,10 +20,9 @@ import type { KnifeCutPoint } from '../scene/knifeCut'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
-import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, fakeFlagVertexDeltas, getFakeFlag } from '../scene/fakeFlag'
-import { pathDeformRailVertexDeltas } from '../scene/pathDeformRail'
+import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, getFakeFlag } from '../scene/fakeFlag'
 import { applyFollowPath } from '../scene/followPath'
-import { ffdVertexDeltas } from '../scene/ffd'
+import { composeDisplayObjects } from '../scene/composeDisplay'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
   createFakePhysicsMeshLiveState,
@@ -1512,6 +1511,44 @@ export default function Viewport() {
     // already folded in before any Follow Path child's world-to-local conversion reads it.
     const objects = applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration))
 
+    // The actual displayed pose (shape keys → Fake Flag vertex-mode → Fake Physics mesh → Path
+    // Deform → FFD) for the mesh-fill rendering below — shares `composeDisplayObjects` with
+    // PixelPreview.tsx rather than keeping its own drifting copy of the same chain (see that
+    // function's doc). Deliberately a *separate* map from `objects` above: every editing/gizmo use
+    // of `objects` elsewhere in this function wants the raw (sway-only) pose, since Edit Mode
+    // hit-testing and dragging operate on `mesh.vertices` (the Basis), not this displayed one.
+    const composedById = new Map(
+      composeDisplayObjects(rawObjects, {
+        editingShapeKeyId,
+        fakeFlagTime,
+        fakeFlagLoopDuration,
+        activeClip,
+        playheadTime,
+        isolatedShapeKeyObjectId: selectedObjectId,
+        // Fake Physics (Mesh) preview is different from Fake Flag's: it's not a pure function of
+        // time, it's a live spring simulation driven by the object's *actual* current transform
+        // each frame — see `physicsMeshDt`'s own comment above for why this needs a real per-frame
+        // dt that nothing else in this file tracks. Uses the *resolved world* transform (not just
+        // `o.transform`, which is local) so an object with no keyframes of its own — e.g. a hair
+        // mesh parented to a swaying/dragged head — still reacts to its ancestor chain's motion,
+        // matching `simulateFakePhysicsMeshSections`'s bake-time behavior.
+        physicsMeshDeltasOverride: (o) => {
+          const physicsMeshSettings = getFakePhysicsMesh(o)
+          if (!(previewFakePhysicsMesh && physicsMeshSettings?.enabled)) {
+            return fakePhysicsMeshVertexDeltas(o, activeClip, playheadTime)
+          }
+          const worldT = getWorldTransform(o, objects)
+          let state = fakePhysicsMeshLiveStatesRef.current.get(o.id)
+          if (!state) {
+            state = createFakePhysicsMeshLiveState(worldT)
+            fakePhysicsMeshLiveStatesRef.current.set(o.id, state)
+          }
+          stepFakePhysicsMeshLive(state, physicsMeshSettings, worldT, physicsMeshDt)
+          return fakePhysicsMeshVertexDeltasLive(o, physicsMeshSettings, state, worldT)
+        },
+      }).map((o) => [o.id, o] as const),
+    )
+
     const { insertsByHost, consumedIds } = resolveInsertSlots(objects)
     const sorted = [...objects].sort((a, b) => a.zOrder - b.zOrder)
 
@@ -1562,41 +1599,11 @@ export default function Viewport() {
         return
       }
 
-      // shadow `obj` with a shape-key-evaluated (+ Fake Flag vertex-mode, if anchored) view for
-      // the rest of this iteration — every other field is identical to `rawObj`, so this is
-      // transparent to all the rendering code below, which just needs to draw/hit-test the
-      // *displayed* pose instead of the raw Basis
-      const shapeKeyVerts = displayVertices(rawObj, editingShapeKeyId, isSelected)
-      const flagDeltas = fakeFlagVertexDeltas(rawObj, fakeFlagTime, fakeFlagLoopDuration)
-      const swayedVerts = flagDeltas
-        ? shapeKeyVerts.map((v, i) => ({ x: v.x + flagDeltas[i].x, y: v.y + flagDeltas[i].y }))
-        : shapeKeyVerts
-      const physicsMeshSettings = getFakePhysicsMesh(rawObj)
-      const physicsMeshDeltas =
-        previewFakePhysicsMesh && physicsMeshSettings?.enabled
-          ? (() => {
-              let state = fakePhysicsMeshLiveStatesRef.current.get(rawObj.id)
-              if (!state) {
-                state = createFakePhysicsMeshLiveState(rawObj.transform)
-                fakePhysicsMeshLiveStatesRef.current.set(rawObj.id, state)
-              }
-              stepFakePhysicsMeshLive(state, physicsMeshSettings, rawObj.transform, physicsMeshDt)
-              return fakePhysicsMeshVertexDeltasLive(rawObj, physicsMeshSettings, state, rawObj.transform)
-            })()
-          : fakePhysicsMeshVertexDeltas(rawObj, activeClip, playheadTime)
-      const physicsDeformedVerts = physicsMeshDeltas
-        ? swayedVerts.map((v, i) => ({ x: v.x + physicsMeshDeltas[i].x, y: v.y + physicsMeshDeltas[i].y }))
-        : swayedVerts
-      const pathDeformDeltas = pathDeformRailVertexDeltas(rawObj, objects)
-      const pathDeformedVerts = pathDeformDeltas
-        ? physicsDeformedVerts.map((v, i) => ({ x: v.x + pathDeformDeltas[i].x, y: v.y + pathDeformDeltas[i].y }))
-        : physicsDeformedVerts
-      const ffdDeltas = ffdVertexDeltas(rawObj, objects)
-      const displayVerts = ffdDeltas
-        ? pathDeformedVerts.map((v, i) => ({ x: v.x + ffdDeltas[i].x, y: v.y + ffdDeltas[i].y }))
-        : pathDeformedVerts
-      const obj: SceneObject =
-        displayVerts === rawObj.mesh.vertices ? rawObj : { ...rawObj, mesh: { ...rawObj.mesh, vertices: displayVerts } }
+      // shadow `obj` with its fully-composed displayed pose (shape keys, Fake Flag, Fake Physics
+      // mesh, Path Deform, FFD — see `composedById` above) for the rest of this iteration — every
+      // other field is identical to `rawObj`, so this is transparent to all the rendering code
+      // below, which just needs to draw/hit-test the *displayed* pose instead of the raw Basis
+      const obj = composedById.get(rawObj.id) ?? rawObj
 
       // THREE's Object3D position/rotation/scale always pivots about the local origin, but our
       // objects can have an arbitrary head — so bake the head offset into the geometry itself
@@ -4110,10 +4117,23 @@ export default function Viewport() {
       const mc = drag.meshCornerRel
       const rawScaleX = mc.x !== 0 ? relX / mc.x : drag.startTransform.scaleX
       const rawScaleY = mc.y !== 0 ? relY / mc.y : drag.startTransform.scaleY
-      // an edge-midpoint handle (axisLock set) only ever touches its own axis — the other axis's
-      // scale is left exactly as it was at drag start, regardless of where the cursor wanders
-      const newScaleX = drag.axisLock === 'y' ? drag.startTransform.scaleX : rawScaleX
-      const newScaleY = drag.axisLock === 'x' ? drag.startTransform.scaleY : rawScaleY
+      let newScaleX: number
+      let newScaleY: number
+      if (e.shiftKey && drag.axisLock === null) {
+        // Shift on a corner handle: keep the object's original scaleX:scaleY ratio, driven by
+        // whichever axis the cursor moved further from its start value (matches the usual
+        // Illustrator/Photoshop free-transform convention) — not just "force both to 1:1".
+        const kFromX = drag.startTransform.scaleX !== 0 ? rawScaleX / drag.startTransform.scaleX : 1
+        const kFromY = drag.startTransform.scaleY !== 0 ? rawScaleY / drag.startTransform.scaleY : 1
+        const k = Math.abs(kFromX - 1) >= Math.abs(kFromY - 1) ? kFromX : kFromY
+        newScaleX = drag.startTransform.scaleX * k
+        newScaleY = drag.startTransform.scaleY * k
+      } else {
+        // an edge-midpoint handle (axisLock set) only ever touches its own axis — the other axis's
+        // scale is left exactly as it was at drag start, regardless of where the cursor wanders
+        newScaleX = drag.axisLock === 'y' ? drag.startTransform.scaleX : rawScaleX
+        newScaleY = drag.axisLock === 'x' ? drag.startTransform.scaleY : rawScaleY
+      }
       store.setTransform(drag.objectId, {
         scaleX: Math.abs(newScaleX) < 0.01 ? 0.01 * Math.sign(newScaleX || 1) : newScaleX,
         scaleY: Math.abs(newScaleY) < 0.01 ? 0.01 * Math.sign(newScaleY || 1) : newScaleY,

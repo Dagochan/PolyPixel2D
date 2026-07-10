@@ -111,6 +111,41 @@ export function simulateSpring(target: number[], dt: number, params: SpringParam
   return result
 }
 
+/** How many extra times to prepend a duplicate of a looping clip's driving cycle before the one
+ *  actually kept, so a damped spring chasing it has time to decay `simulateSpring`'s "start exactly
+ *  at rest at target[0]" assumption and settle into the periodic steady-state response that the
+ *  signal's own period would actually produce forever. Derived from the spring's own decay time
+ *  constant (~1/(zeta*omega)) vs. the cycle's duration — a soft/underdamped spring needs more
+ *  repeats to settle, a near-rigid one needs none. Floored at 1 (there's always at least one
+ *  "previous cycle" worth of warm-up) and capped for sanity (a very short loop clip paired with the
+ *  softest usable stiffness — see `DIAL_FLOOR`'s doc — could otherwise ask for a lot). */
+const MIN_WARMUP_CYCLES = 1
+const MAX_WARMUP_CYCLES = 20
+function warmupCyclesFor(params: SpringParams, cycleDuration: number): number {
+  if (params.rigid || cycleDuration <= 0) return 0
+  const settleTime = 5 / Math.max(1e-6, params.zeta * params.omega)
+  return Math.min(MAX_WARMUP_CYCLES, Math.max(MIN_WARMUP_CYCLES, Math.ceil(settleTime / cycleDuration)))
+}
+
+/** Like `simulateSpring`, but `target` is one full cycle of a *looping* clip's driving signal
+ *  (`target[0]` and `target[target.length - 1]` are the same instant — the loop seam). Internally
+ *  repeats the cycle `warmupCyclesFor` extra times before the one actually kept and simulates
+ *  straight through, so the returned cycle is the spring's genuine periodic steady-state response
+ *  — which loops far more cleanly on its own than forcing the tail to blend back toward the start
+ *  ever could (`applyConvergence` is still applied afterward by callers, now just a cheap safety
+ *  net for whatever residual mismatch is left, rather than the primary mechanism). Falls back to a
+ *  single `simulateSpring` pass when no warm-up is needed (a rigid spring, or too short a target). */
+export function simulateSpringLooped(target: number[], dt: number, params: SpringParams, cycleDuration: number): number[] {
+  const warmupCycles = warmupCyclesFor(params, cycleDuration)
+  if (warmupCycles === 0 || target.length < 2) return simulateSpring(target, dt, params)
+  const cycleBody = target.slice(0, target.length - 1) // drop the duplicate seam sample before repeating
+  const extended: number[] = []
+  for (let c = 0; c < warmupCycles; c++) extended.push(...cycleBody)
+  extended.push(...target)
+  const simulated = simulateSpring(extended, dt, params)
+  return simulated.slice(warmupCycles * cycleBody.length)
+}
+
 /** Blends the tail of `result` (from `convergeStart` fraction of the way through, to the end)
  *  toward `result[0]`, so baking a 'loop' clip doesn't leave a pop at the seam where frame N+1
  *  would otherwise jump back to frame 0's very different simulated value. `convergeStart >= 1`
@@ -186,12 +221,17 @@ export function simulateFakePhysicsChain(
     return { x, y, rotation }
   }
 
+  const isLoop = clip.loopMode === 'loop'
   function walk(current: SceneObject, parentSignal: FakePhysicsSignal) {
     for (const child of byParent.get(current.id) ?? []) {
       const settings = getFakePhysics(child)
       if (!settings?.enabled) continue
       const springParams = stiffnessToSpringParams(settings.stiffness)
-      const spring = (target: number[]) => applyConvergence(simulateSpring(target, dt, springParams), settings.convergeStart)
+      const spring = (target: number[]) =>
+        applyConvergence(
+          isLoop ? simulateSpringLooped(target, dt, springParams, clip.duration) : simulateSpring(target, dt, springParams),
+          settings.convergeStart,
+        )
       // the spring must chase (this child's own rest x/y/rotation) + (however much the parent's
       // own channel has moved from ITS rest, i.e. parentSignal[0]) — not the parent's raw signal
       // directly, which would replace the child's own local offset/rotation with a copy of the

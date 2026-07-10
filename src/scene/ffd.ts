@@ -40,9 +40,19 @@ function bilerp(p00: Vec2, p10: Vec2, p01: Vec2, p11: Vec2, tx: number, ty: numb
  *  follow along — the cage's regular, evenly-spaced grid is a much better-behaved target for that
  *  bend's own arc-length math than an arbitrary silhouette mesh is (see project spec), and every
  *  object referencing that cage inherits the same smooth bend via the bilinear interpolation
- *  below. Other cage modifiers (shape keys, Fake Flag, Fake Physics) are *not* folded in — those
- *  carry per-frame animation state this pure function has no access to. */
-export function ffdVertexDeltas(obj: SceneObject, allObjects: SceneObject[]): Vec2[] | null {
+ *  below.
+ *
+ *  Other cage modifiers (shape keys, Fake Flag, Fake Physics) carry per-frame animation state this
+ *  pure function has no access to on its own — `deformedVerticesById`, if supplied, is the
+ *  caller's own precomputed map of every object's post-shape-key(+Fake Flag+Fake Physics) vertices
+ *  (see `composeDisplayObjects`'s two-pass structure), so the cage's *current* grid can reflect a
+ *  sculpted Shape Key on the Lattice itself instead of always reading its raw Basis. Falls back to
+ *  `cage.mesh.vertices` when omitted (or the cage has no entry), same as before. */
+export function ffdVertexDeltas(
+  obj: SceneObject,
+  allObjects: SceneObject[],
+  deformedVerticesById?: Map<string, Vec2[]>,
+): Vec2[] | null {
   const settings = getFfd(obj)
   if (!settings?.enabled || !settings.cageObjectId) return null
   const cage = allObjects.find((o) => o.id === settings.cageObjectId)
@@ -69,10 +79,11 @@ export function ffdVertexDeltas(obj: SceneObject, allObjects: SceneObject[]): Ve
 
   const objWorld = getWorldTransform(obj, allObjects)
   const cageWorld = getWorldTransform(cage, allObjects)
+  const cageBaseVerts = deformedVerticesById?.get(cage.id) ?? cage.mesh.vertices
   const cagePathDeformDeltas = pathDeformRailVertexDeltas(cage, allObjects)
   const current = cagePathDeformDeltas
-    ? cage.mesh.vertices.map((v, i) => ({ x: v.x + cagePathDeformDeltas[i].x, y: v.y + cagePathDeformDeltas[i].y }))
-    : cage.mesh.vertices
+    ? cageBaseVerts.map((v, i) => ({ x: v.x + cagePathDeformDeltas[i].x, y: v.y + cagePathDeformDeltas[i].y }))
+    : cageBaseVerts
 
   return obj.mesh.vertices.map((v) => {
     const world = applyTransform(v, objWorld)
