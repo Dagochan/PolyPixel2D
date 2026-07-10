@@ -1,4 +1,4 @@
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import * as THREE from 'three'
 import { useSceneStore } from '../scene/store'
 import { triangulateWithFaceIds } from '../scene/meshUtils'
@@ -19,6 +19,7 @@ import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 export default function PixelPreview() {
   const displayCanvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
   const sceneRef = useRef(new THREE.Scene())
   const resolution = useSceneStore((s) => s.pixelPreviewResolution)
   const setResolution = useSceneStore((s) => s.setPixelPreviewResolution)
@@ -32,6 +33,9 @@ export default function PixelPreview() {
   const setPaletteEnabled = useSceneStore((s) => s.setPixelPreviewPaletteEnabled)
   const paletteSize = useSceneStore((s) => s.pixelPreviewPaletteSize)
   const setPaletteSize = useSceneStore((s) => s.setPixelPreviewPaletteSize)
+  const [sheetRows, setSheetRows] = useState(4)
+  const [sheetColumns, setSheetColumns] = useState(4)
+  const [exporting, setExporting] = useState(false)
 
   const handleHeaderPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     dragRef.current = { startX: e.clientX, startY: e.clientY, startOffsetX: offset.x, startOffsetY: offset.y }
@@ -59,6 +63,7 @@ export default function PixelPreview() {
 
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000)
     camera.position.z = 100
+    cameraRef.current = camera
 
     let raf = 0
     const tick = () => {
@@ -162,8 +167,106 @@ export default function PixelPreview() {
       renderer.dispose()
       for (const tex of textureCacheRef.current.values()) tex.dispose()
       textureCacheRef.current.clear()
+      cameraRef.current = null
     }
   }, [])
+
+  const handleExportSpriteSheet = () => {
+    const renderer = rendererRef.current
+    const camera = cameraRef.current
+    if (!renderer || !camera) return
+    const { pixelFrame, clips, activeClipId } = useSceneStore.getState()
+    if (!pixelFrame) {
+      alert('Sprite sheet export requires a Pixel Frame — set one first so every frame shares the same fixed size.')
+      return
+    }
+    const rows = Math.max(1, Math.round(sheetRows))
+    const columns = Math.max(1, Math.round(sheetColumns))
+    const frameCount = rows * columns
+    const activeClip = clips.find((c) => c.id === activeClipId)
+    const duration = activeClip?.duration ?? 0
+    const loopMode = activeClip?.loopMode ?? 'none'
+    const originalPlayheadTime = useSceneStore.getState().playheadTime
+    const setPlayhead = useSceneStore.getState().setPlayhead
+
+    setExporting(true)
+    try {
+      const res = useSceneStore.getState().pixelPreviewResolution
+      const { width: w, height: h, x: cx, y: cy } = pixelFrame
+      const canvasW = w >= h ? res : Math.max(1, Math.round((res * w) / h))
+      const canvasH = h > w ? res : Math.max(1, Math.round((res * h) / w))
+      const margin = 1
+
+      camera.left = cx - (w * margin) / 2
+      camera.right = cx + (w * margin) / 2
+      camera.top = cy + (h * margin) / 2
+      camera.bottom = cy - (h * margin) / 2
+      camera.updateProjectionMatrix()
+      renderer.setSize(canvasW, canvasH, false)
+
+      const sheet = document.createElement('canvas')
+      sheet.width = canvasW * columns
+      sheet.height = canvasH * rows
+      const sctx = sheet.getContext('2d')!
+
+      const { pixelPreviewPaletteEnabled, pixelPreviewPaletteSize } = useSceneStore.getState()
+      const tmp = document.createElement('canvas')
+      tmp.width = canvasW
+      tmp.height = canvasH
+      const tctx = tmp.getContext('2d')!
+
+      for (let i = 0; i < frameCount; i++) {
+        // 'loop'/'pingpong' sample the full cycle *excluding* its endpoint (i/frameCount), so the
+        // sheet tiles seamlessly instead of repeating the same pose in two different cells; a
+        // pingpong's cycle is twice the duration (out and back) — `setPlayhead`'s own
+        // `resolvePlaybackTime` folds a time past `duration` back down via the reflection, so
+        // passing it a raw time up to 2*duration is enough, no separate reflection math needed here.
+        // 'none' has no cycle to avoid repeating, so it samples *inclusive* of both ends
+        // (i/(frameCount-1)) to actually capture the authored final pose instead of stopping short.
+        let t: number
+        if (duration <= 0) t = 0
+        else if (loopMode === 'none') t = frameCount > 1 ? (i / (frameCount - 1)) * duration : 0
+        else t = (i / frameCount) * (loopMode === 'pingpong' ? duration * 2 : duration)
+        // resample every keyframed Transform/shape-key weight/pathOffset/followPath progress onto
+        // `objects` for this frame's time — the same mechanism the Timeline scrubber uses (see
+        // `setPlayhead`'s doc). `composeDisplayObjects`'s own `playheadTime`/`fakeFlagTime` params
+        // only cover Fake Physics/Fake Flag, not the base per-object Transform, so without this every
+        // exported frame was identical (whatever pose the playhead happened to be at when exporting).
+        setPlayhead(t)
+        const { objects: rawObjects, editingShapeKeyId } = useSceneStore.getState()
+        const objects = composeDisplayObjects(rawObjects, {
+          editingShapeKeyId,
+          fakeFlagTime: t,
+          fakeFlagLoopDuration: duration,
+          activeClip,
+          playheadTime: t,
+        })
+        rebuildScene(sceneRef.current, objects, textureCacheRef.current, textureLoaderRef.current)
+        renderer.render(sceneRef.current, camera)
+
+        tctx.clearRect(0, 0, canvasW, canvasH)
+        tctx.drawImage(renderer.domElement, 0, 0)
+        if (pixelPreviewPaletteEnabled) {
+          const imageData = tctx.getImageData(0, 0, canvasW, canvasH)
+          quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+          tctx.putImageData(imageData, 0, 0)
+        }
+
+        const col = i % columns
+        const row = Math.floor(i / columns)
+        sctx.drawImage(tmp, col * canvasW, row * canvasH)
+      }
+
+      const url = sheet.toDataURL('image/png')
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${activeClip?.name ?? 'spritesheet'}_${columns}x${rows}.png`
+      link.click()
+    } finally {
+      setPlayhead(originalPlayheadTime)
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="pixel-preview" style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}>
@@ -217,6 +320,31 @@ export default function PixelPreview() {
       </div>
       <div className="pixel-preview-canvas">
         <canvas ref={displayCanvasRef} />
+      </div>
+      <div className="pixel-preview-controls">
+        <label>
+          Columns
+          <input
+            type="number"
+            min={1}
+            max={32}
+            value={sheetColumns}
+            onChange={(e) => setSheetColumns(Number(e.target.value))}
+          />
+        </label>
+        <label>
+          Rows
+          <input
+            type="number"
+            min={1}
+            max={32}
+            value={sheetRows}
+            onChange={(e) => setSheetRows(Number(e.target.value))}
+          />
+        </label>
+        <button onClick={handleExportSpriteSheet} disabled={exporting}>
+          {exporting ? 'Exporting…' : 'Export sprite sheet'}
+        </button>
       </div>
     </div>
   )
