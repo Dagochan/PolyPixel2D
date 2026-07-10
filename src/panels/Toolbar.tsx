@@ -14,6 +14,7 @@ import {
   HairPathPrimitiveIcon,
   PathPrimitiveIcon,
 } from './icons'
+import NumberInput from './NumberInput'
 
 export default function Toolbar() {
   const mode = useSceneStore((s) => s.mode)
@@ -215,11 +216,11 @@ export default function Toolbar() {
                     </button>
                     <label className="seg-input">
                       Segments X
-                      <input type="number" min={1} value={segX} onChange={(e) => setSegX(+e.target.value)} />
+                      <NumberInput min={1} value={segX} onCommit={(v) => setSegX(Math.round(v))} />
                     </label>
                     <label className="seg-input">
                       Segments Y
-                      <input type="number" min={1} value={segY} onChange={(e) => setSegY(+e.target.value)} />
+                      <NumberInput min={1} value={segY} onCommit={(v) => setSegY(Math.round(v))} />
                     </label>
                   </div>
                   <div className="dropdown-item-row">
@@ -240,12 +241,7 @@ export default function Toolbar() {
                     </button>
                     <label className="seg-input">
                       Segments
-                      <input
-                        type="number"
-                        min={3}
-                        value={circleSegs}
-                        onChange={(e) => setCircleSegs(+e.target.value)}
-                      />
+                      <NumberInput min={3} value={circleSegs} onCommit={(v) => setCircleSegs(Math.round(v))} />
                     </label>
                   </div>
                   <div className="dropdown-item-row">

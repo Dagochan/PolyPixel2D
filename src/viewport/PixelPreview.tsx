@@ -9,6 +9,7 @@ import { resolveInsertSlots } from '../scene/insertSlots'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import { boundsVertices } from '../scene/pathCurve'
 import { composeDisplayObjects } from '../scene/composeDisplay'
+import NumberInput from '../panels/NumberInput'
 import type { Mesh, SceneObject, Vec2 } from '../scene/types'
 
 /** Renders the scene's fill geometry only (no grid, wireframe, gizmos, or edit overlays) into a
@@ -279,14 +280,7 @@ export default function PixelPreview() {
         <span>Pixel preview</span>
         <label onPointerDown={(e) => e.stopPropagation()}>
           Resolution
-          <input
-            type="number"
-            min={16}
-            max={1024}
-            step={8}
-            value={resolution}
-            onChange={(e) => setResolution(Number(e.target.value))}
-          />
+          <NumberInput min={16} max={1024} step={8} value={resolution} onCommit={(v) => setResolution(Math.round(v))} />
         </label>
         <button
           className="icon-btn"
@@ -308,14 +302,7 @@ export default function PixelPreview() {
         </label>
         <label>
           Colors
-          <input
-            type="number"
-            min={2}
-            max={64}
-            value={paletteSize}
-            disabled={!paletteEnabled}
-            onChange={(e) => setPaletteSize(Number(e.target.value))}
-          />
+          <NumberInput min={2} max={64} value={paletteSize} disabled={!paletteEnabled} onCommit={(v) => setPaletteSize(Math.round(v))} />
         </label>
       </div>
       <div className="pixel-preview-canvas">
@@ -324,23 +311,11 @@ export default function PixelPreview() {
       <div className="pixel-preview-controls">
         <label>
           Columns
-          <input
-            type="number"
-            min={1}
-            max={32}
-            value={sheetColumns}
-            onChange={(e) => setSheetColumns(Number(e.target.value))}
-          />
+          <NumberInput min={1} max={32} value={sheetColumns} onCommit={(v) => setSheetColumns(Math.round(v))} />
         </label>
         <label>
           Rows
-          <input
-            type="number"
-            min={1}
-            max={32}
-            value={sheetRows}
-            onChange={(e) => setSheetRows(Number(e.target.value))}
-          />
+          <NumberInput min={1} max={32} value={sheetRows} onCommit={(v) => setSheetRows(Math.round(v))} />
         </label>
         <button onClick={handleExportSpriteSheet} disabled={exporting}>
           {exporting ? 'Exporting…' : 'Export sprite sheet'}

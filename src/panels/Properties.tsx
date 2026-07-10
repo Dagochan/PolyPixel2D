@@ -20,6 +20,7 @@ import type {
 } from '../scene/types'
 import { REFERENCE_IMAGE_ID } from '../scene/types'
 import UvEditor from './UvEditor'
+import NumberInput from './NumberInput'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
 function NumberField({
@@ -38,16 +39,7 @@ function NumberField({
   return (
     <label className="prop-field">
       <span>{label}</span>
-      <input
-        type="number"
-        step={step}
-        disabled={disabled}
-        value={Number.isFinite(value) ? round(value) : 0}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value)
-          if (!Number.isNaN(v)) onChange(v)
-        }}
-      />
+      <NumberInput value={Number.isFinite(value) ? value : 0} onCommit={onChange} step={step} disabled={disabled} />
     </label>
   )
 }
@@ -1880,13 +1872,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                 title="How many subdivisions each main grid cell is split into (also sets the grid-snap interval)"
               >
                 Subgrid
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={gridSubdivisions}
-                  onChange={(e) => setGridSubdivisions(+e.target.value)}
-                />
+                <NumberInput min={1} max={100} value={gridSubdivisions} onCommit={setGridSubdivisions} />
               </label>
             </div>
             <div className="prop-row">

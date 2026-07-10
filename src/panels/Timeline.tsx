@@ -3,6 +3,7 @@ import { useSceneStore } from '../scene/store'
 import { getFakeFlag } from '../scene/fakeFlag'
 import type { EasingType, LoopMode } from '../scene/types'
 import { AddKeyframeIcon, DuplicateKeyframeIcon, PlayheadIcon, PlayIcon, PauseIcon, JumpToStartIcon, JumpToEndIcon, JumpToPrevFrameIcon, JumpToNextFrameIcon, TrashIcon } from './icons'
+import NumberInput from './NumberInput'
 
 const EASING_OPTIONS: EasingType[] = ['linear', 'easeIn', 'easeOut', 'easeInOut']
 
@@ -405,13 +406,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         </button>
         <label className="seg-input">
           Duration (s)
-          <input
-            type="number"
-            min={0}
-            step={0.1}
-            value={duration}
-            onChange={(e) => setClipDuration(activeClip.id, +e.target.value)}
-          />
+          <NumberInput min={0} step={0.1} value={duration} onCommit={(v) => setClipDuration(activeClip.id, v)} />
         </label>
         <label className="seg-input">
           Loop
@@ -426,13 +421,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         </label>
         <label className="seg-input" title="Snapping/display granularity for the timeline (the time axis itself stays seconds-based)">
           Frame rate
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={frameRate}
-            onChange={(e) => setClipFrameRate(activeClip.id, +e.target.value)}
-          />
+          <NumberInput min={1} step={1} value={frameRate} onCommit={(v) => setClipFrameRate(activeClip.id, Math.round(v))} />
         </label>
         <div className="timeline-transport">
           <button className="timeline-transport-btn" title="Jump to start" onClick={() => setPlayhead(0)}>
@@ -469,13 +458,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
         </div>
         <label className="seg-input">
           Time (s)
-          <input
-            type="number"
-            min={0}
-            step={1 / frameRate}
-            value={Math.round(playheadTime * 1000) / 1000}
-            onChange={(e) => setPlayhead(snapToFrame(+e.target.value))}
-          />
+          <NumberInput min={0} step={1 / frameRate} value={playheadTime} onCommit={(v) => setPlayhead(snapToFrame(v))} />
         </label>
         <span className="timeline-frame-readout">frame {Math.round(playheadTime * frameRate)}</span>
         <button
