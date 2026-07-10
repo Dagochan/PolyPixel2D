@@ -20,6 +20,9 @@ export default function Toolbar() {
   const mode = useSceneStore((s) => s.mode)
   const addRect = useSceneStore((s) => s.addRect)
   const addCircle = useSceneStore((s) => s.addCircle)
+  const addTorso = useSceneStore((s) => s.addTorso)
+  const addCharacterHead = useSceneStore((s) => s.addCharacterHead)
+  const addLimb = useSceneStore((s) => s.addLimb)
   const addImportedMesh = useSceneStore((s) => s.addImportedMesh)
   const addEmpty = useSceneStore((s) => s.addEmpty)
   const addLattice = useSceneStore((s) => s.addLattice)
@@ -45,7 +48,7 @@ export default function Toolbar() {
   const projectFileInputRef = useRef<HTMLInputElement>(null)
 
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const [addSubmenu, setAddSubmenu] = useState<'primitives' | null>(null)
+  const [addSubmenu, setAddSubmenu] = useState<'primitives' | 'characterParts' | null>(null)
   const addMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -267,6 +270,48 @@ export default function Toolbar() {
                         onChange={(e) => setHairPathConstantWidth(e.target.checked)}
                       />
                     </label>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div
+              className="dropdown-item has-submenu"
+              onMouseEnter={() => setAddSubmenu('characterParts')}
+              onMouseLeave={() => setAddSubmenu(null)}
+              onClick={() => setAddSubmenu('characterParts')}
+            >
+              Character Parts ▸
+              {addSubmenu === 'characterParts' && (
+                <div className="dropdown-submenu">
+                  <div
+                    className="dropdown-item"
+                    title="Add a Torso: a rectangle with Head pre-placed at the bottom (pelvis) and Tail at the top (neck)"
+                    onClick={() => {
+                      addTorso(80, 140)
+                      closeAddMenu()
+                    }}
+                  >
+                    <RectPrimitiveIcon size={14} /> Torso
+                  </div>
+                  <div
+                    className="dropdown-item"
+                    title="Add a Head: a circle with Head pre-placed at the bottom (neck) and Tail at the top (crown)"
+                    onClick={() => {
+                      addCharacterHead(50)
+                      closeAddMenu()
+                    }}
+                  >
+                    <CirclePrimitiveIcon size={14} /> Head
+                  </div>
+                  <div
+                    className="dropdown-item"
+                    title="Add a Limb: a long rectangle with Head pre-placed at the bottom (root) and Tail at the top (tip) — for an upper arm, forearm, thigh, or shin"
+                    onClick={() => {
+                      addLimb(30, 100)
+                      closeAddMenu()
+                    }}
+                  >
+                    <RectPrimitiveIcon size={14} /> Limb
                   </div>
                 </div>
               )}

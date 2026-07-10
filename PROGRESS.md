@@ -64,6 +64,7 @@
 - [x] 専用の「ピボットモード」を新設。オブジェクトモードではHead/Tailは中抜きの参照リングとして表示されるのみでドラッグ不可、ピボットモードに切り替えた時だけ塗りの円としてドラッグ編集可能
 - [x] Head/Tailは常にメッシュ自身のシルエット内にクランプ（`clampToMesh`）
 - [x] プロパティパネルのHead X/Y・Tail X/Yフィールドからも数値編集可能
+- [x] **Character Partsプリセット**(2026-07-11)。Toolbarの「+ Add」→「Character Parts」サブメニューに Torso / Head / Limb の3種。中身はRect/Circleと同じメッシュ生成だが、`transform.head`/`tail`をあらかじめ形状の下端/上端に配置済みで追加される点だけが異なる（[store.ts](src/scene/store.ts)の`addTorso`/`addCharacterHead`/`addLimb`）。Torso: Head=下端(骨盤)/Tail=上端(首)。Head: Head=下端(首)/Tail=上端(頭頂)。Limb: Head=下端(根本)/Tail=上端(先端)、上腕/前腕/太もも/すね兼用。追加後のリネーム・リサイズ・Head/Tail再調整は他オブジェクトと同様に可能
 
 ### アイランドZオーダー
 - [x] 1オブジェクトの複数アイランドに個別の重なり順を設定可能。`islandZOrders`でランク管理、Viewportはアイランドごとに描画してZを微小オフセット

@@ -204,6 +204,14 @@ interface SceneState {
    *  vertex-for-vertex. No-op on a non-lattice object. */
   resizeLattice: (id: string, cols: number, rows: number) => void
   addCircle: (radius: number, segments: number) => void
+  /** Character-part presets (Toolbar's "Character Parts" submenu) — same rectangle/circle meshes
+   *  as "Add Rectangle"/"Add Circle", but with `transform.head`/`tail` pre-placed at the shape's
+   *  own bottom/top instead of both defaulting to the center. Saves the user from having to enter
+   *  Pivot mode and drag Head/Tail into place by hand for every limb-like part; renaming, resizing,
+   *  and re-adjusting Head/Tail afterward all work exactly like any other object. */
+  addTorso: (width: number, height: number) => void
+  addCharacterHead: (radius: number) => void
+  addLimb: (width: number, height: number) => void
   /** Standalone new object from a hand-drawn path (`points` already in world/local space, since
    *  the new object's transform is identity) — see `createHairPathMesh`. */
   addHairPath: (points: Vec2[], width: number, constantWidth?: boolean) => void
@@ -948,6 +956,68 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       material: { color: DEFAULT_MATERIAL_COLOR },
       uvBaseVertices: seedUvBaseVertices(mesh, undefined),
       tail: { x: 0, y: 0 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addTorso: (width, height) => {
+    get().beginChange()
+    const objects = get().objects
+    const mesh = createRectMesh(width, height, 1, 1)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Torso_${objects.length + 1}`,
+      mesh,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: -height / 2 } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: height / 2 },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addCharacterHead: (radius) => {
+    get().beginChange()
+    const objects = get().objects
+    const mesh = createCircleMesh(radius, 16)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Head_${objects.length + 1}`,
+      mesh,
+      // the neck attaches here, so Head (the pivot) sits at the bottom; Tail sits at the crown in
+      // case something (hair, an accessory) ever wants to parent off the top
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: -radius } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: radius },
+      parentId: null,
+      connected: true,
+    }
+    set({ objects: [...objects, obj], selectedObjectId: obj.id })
+  },
+
+  addLimb: (width, height) => {
+    get().beginChange()
+    const objects = get().objects
+    const mesh = createRectMesh(width, height, 1, 1)
+    const obj: SceneObject = {
+      id: genId('obj'),
+      name: `Limb_${objects.length + 1}`,
+      mesh,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, head: { x: 0, y: -height / 2 } },
+      zOrder: objects.length,
+      visible: true,
+      material: { color: DEFAULT_MATERIAL_COLOR },
+      uvBaseVertices: seedUvBaseVertices(mesh, undefined),
+      tail: { x: 0, y: height / 2 },
       parentId: null,
       connected: true,
     }
