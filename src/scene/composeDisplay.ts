@@ -1,5 +1,6 @@
 import { applyFakeFlagSway, fakeFlagVertexDeltas } from './fakeFlag'
 import { applyFollowPath } from './followPath'
+import { applyVolumePreserve } from './volumePreserve'
 import { fakePhysicsMeshVertexDeltas } from './fakePhysicsMesh'
 import { ffdVertexDeltas } from './ffd'
 import { pathDeformRailVertexDeltas } from './pathDeformRail'
@@ -23,7 +24,8 @@ export interface ComposeDisplayOptions {
 }
 
 /** Every visible object's fully-composed *displayed* pose for one frame: Fake Flag sway/Follow
- *  Path baked into `transform` (see `applyFakeFlagSway`/`applyFollowPath`), then every per-vertex
+ *  Path/Volume Preserve baked into `transform` (see `applyFakeFlagSway`/`applyFollowPath`/
+ *  `applyVolumePreserve`), then every per-vertex
  *  deform chained onto `mesh.vertices` in the same order Viewport.tsx's render loop applies them
  *  (shape keys → Fake Flag vertex-mode → Fake Physics mesh → Path Deform → FFD). `kind: 'empty'`/
  *  `'path'` objects have no mesh to deform and pass through unchanged (aside from the transform
@@ -41,7 +43,7 @@ export interface ComposeDisplayOptions {
  *  Deform + FFD, letting FFD look its cage up in that map instead of reading `cage.mesh.vertices`
  *  directly. */
 export function composeDisplayObjects(rawObjects: SceneObject[], opts: ComposeDisplayOptions): SceneObject[] {
-  const objects = applyFollowPath(applyFakeFlagSway(rawObjects, opts.fakeFlagTime, opts.fakeFlagLoopDuration))
+  const objects = applyVolumePreserve(applyFollowPath(applyFakeFlagSway(rawObjects, opts.fakeFlagTime, opts.fakeFlagLoopDuration)))
 
   const physicsDeformedById = new Map<string, Vec2[]>()
   for (const rawObj of objects) {

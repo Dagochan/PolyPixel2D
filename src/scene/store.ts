@@ -26,6 +26,7 @@ import type {
   Transform,
   UvIslandTransform,
   Vec2,
+  VolumePreserveSettings,
 } from './types'
 import { REFERENCE_IMAGE_ID } from './types'
 import { resolvePlaybackTime, sampleClipAtTime, sampleTrack, shapeKeyTrackKey } from './animation'
@@ -35,6 +36,7 @@ import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS, getPathDeformRail } from './pathDeformRail'
 import { DEFAULT_FOLLOW_PATH_SETTINGS, getFollowPath } from './followPath'
 import { DEFAULT_FFD_SETTINGS } from './ffd'
+import { DEFAULT_VOLUME_PRESERVE_SETTINGS } from './volumePreserve'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
   DEFAULT_FAKE_PHYSICS_MESH_SETTINGS,
@@ -471,6 +473,9 @@ interface SceneState {
    *  redefining what "undeformed" means after intentionally reshaping the cage itself (as
    *  opposed to posing it for others to follow). */
   resetFfdCageRest: (cageObjectId: string) => void
+  /** Merge a partial patch into this object's Volume Preserve settings — adds the modifier (with
+   *  defaults merged with `patch`) if it isn't already in the stack. */
+  updateVolumePreserve: (id: string, patch: Partial<VolumePreserveSettings>) => void
   /** Blender-style "Apply Scale": bakes `transform.scaleX`/`scaleY` into every local-mesh-space
    *  field (`mesh.vertices`, `tail`, `uvBaseVertices`, `cageRestVertices`, each shape key's
    *  `positions`/`arcPivot`) about the pivot (`transform.head`), then resets scale to 1/1. World
@@ -666,6 +671,19 @@ function withFollowPathSettings(o: SceneObject, updater: (settings: FollowPathSe
   const modifiers = existing
     ? o.modifiers!.map((m) => (m.type === 'followPath' ? { ...m, settings } : m))
     : [...(o.modifiers ?? []), { type: 'followPath' as const, settings }]
+  return { ...o, modifiers }
+}
+
+/** Same idea as `withFakeFlagSettings`, for the `volumePreserve` modifier. */
+function withVolumePreserveSettings(
+  o: SceneObject,
+  updater: (settings: VolumePreserveSettings) => VolumePreserveSettings,
+): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'volumePreserve')
+  const settings = updater(existing?.settings ?? DEFAULT_VOLUME_PRESERVE_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'volumePreserve' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'volumePreserve' as const, settings }]
   return { ...o, modifiers }
 }
 
@@ -2428,7 +2446,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                     ? { type: 'followPath', settings: { ...DEFAULT_FOLLOW_PATH_SETTINGS } }
                     : type === 'pathDeformRail'
                       ? { type: 'pathDeformRail', settings: { ...DEFAULT_PATH_DEFORM_RAIL_SETTINGS } }
-                      : { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
+                      : type === 'ffd'
+                        ? { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
+                        : { type: 'volumePreserve', settings: { ...DEFAULT_VOLUME_PRESERVE_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -2547,6 +2567,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: s.objects.map((o) =>
         o.id === cageObjectId ? { ...o, cageRestVertices: o.mesh.vertices.map((v) => ({ ...v })) } : o,
       ),
+    }))
+  },
+
+  updateVolumePreserve: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withVolumePreserveSettings(o, (vs) => ({ ...vs, ...patch })) : o)),
     }))
   },
 

@@ -16,6 +16,7 @@ import type {
   Modifier,
   PathDeformRailSettings,
   SceneObject,
+  VolumePreserveSettings,
 } from '../scene/types'
 import { REFERENCE_IMAGE_ID } from '../scene/types'
 import UvEditor from './UvEditor'
@@ -795,6 +796,72 @@ function FakePhysicsMeshStiffnessCurve({
   )
 }
 
+/** One modifier's settings UI for Volume Preserve — see `VolumePreserveSettings`'s doc.
+ *  Object-mode-only by convention (see `ModifiersSection`'s `availableTypes` filter); there's
+ *  nothing Edit-Mode-specific in the box itself, it's just never offered to add there. */
+function VolumePreserveModifierBox({
+  obj,
+  settings,
+  removeModifier,
+  updateVolumePreserve,
+}: {
+  obj: SceneObject
+  settings: VolumePreserveSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  updateVolumePreserve: (id: string, patch: Partial<VolumePreserveSettings>) => void
+}) {
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => updateVolumePreserve(obj.id, { enabled: !settings.enabled })}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Volume Preserve</span>
+        <button
+          className="icon-btn"
+          title="Remove this modifier"
+          onClick={() => removeModifier(obj.id, 'volumePreserve')}
+        >
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row">
+            <span className="insert-slot-label">Driving axis</span>
+            <button
+              className={'icon-btn' + (settings.drivingAxis === 'x' ? ' active' : '')}
+              title="Scale X is the one you keyframe/drag directly; Scale Y is recomputed from it every frame"
+              onClick={() => updateVolumePreserve(obj.id, { drivingAxis: 'x' })}
+            >
+              X
+            </button>
+            <button
+              className={'icon-btn' + (settings.drivingAxis === 'y' ? ' active' : '')}
+              title="Scale Y is the one you keyframe/drag directly; Scale X is recomputed from it every frame"
+              onClick={() => updateVolumePreserve(obj.id, { drivingAxis: 'y' })}
+            >
+              Y
+            </button>
+          </div>
+          <div className="prop-row">
+            <NumberField
+              label="Strength"
+              value={settings.strength}
+              step={0.05}
+              onChange={(v) => updateVolumePreserve(obj.id, { strength: v })}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 /** One modifier's settings UI for Fake Physics (mesh) — same chrome-vs-content split as
  *  `FakePhysicsModifierBox`, generalized from a chain of objects to 5 fixed vertex groups within
  *  this one mesh. Unlike the object-chain version, there's no "only the ROOT gets a Bake button"
@@ -1005,6 +1072,7 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   followPath: 'Follow Path',
   pathDeformRail: 'Path Deform',
   ffd: 'FFD (Cage)',
+  volumePreserve: 'Volume Preserve',
 }
 
 /** One modifier's settings UI for Follow Path — see `FollowPathSettings`'s doc. Offered on any
@@ -1451,6 +1519,7 @@ function ModifiersSection(props: {
   insertFollowPathProgressKeyframe: (objectId: string, time: number) => void
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
+  updateVolumePreserve: (id: string, patch: Partial<VolumePreserveSettings>) => void
 }) {
   const { obj, objects, mode, addModifier } = props
   const modifiers = obj.modifiers ?? []
@@ -1467,6 +1536,9 @@ function ModifiersSection(props: {
     if (t === 'fakePhysics') return mode !== 'edit'
     // Only ever offered on a `kind: 'lattice'` cage — see `PathDeformRailSettings`'s doc.
     if (t === 'pathDeformRail') return obj.kind === 'lattice'
+    // Object-mode-only by design (see `VolumePreserveSettings`'s doc) — a vertex-mode scale has no
+    // single driving axis the way Object mode's Scale X/Y does.
+    if (t === 'volumePreserve') return mode !== 'edit'
     return true
   })
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -1508,6 +1580,9 @@ function ModifiersSection(props: {
         }
         if (m.type === 'ffd') {
           return <FfdModifierBox key={m.type} {...props} settings={m.settings} />
+        }
+        if (m.type === 'volumePreserve') {
+          return <VolumePreserveModifierBox key={m.type} {...props} settings={m.settings} />
         }
         return (
           <FakePhysicsModifierBox
@@ -1628,6 +1703,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const updateFfd = useSceneStore((s) => s.updateFfd)
   const resizeLattice = useSceneStore((s) => s.resizeLattice)
   const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
+  const updateVolumePreserve = useSceneStore((s) => s.updateVolumePreserve)
   const beginChange = useSceneStore((s) => s.beginChange)
   const hasVertexSelection = useSceneStore(
     (s) => selectedVertexIndices(s, s.objects.find((o) => o.id === s.selectedObjectId)?.mesh ?? { vertices: [], faces: [] }).length > 0,
@@ -2005,6 +2081,7 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             insertFollowPathProgressKeyframe={insertFollowPathProgressKeyframe}
             updateFfd={updateFfd}
             resetFfdCageRest={resetFfdCageRest}
+            updateVolumePreserve={updateVolumePreserve}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (

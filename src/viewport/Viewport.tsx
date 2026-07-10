@@ -22,6 +22,7 @@ import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
 import { applyFakeFlagSway, fakeFlagAnchorExtent, fakeFlagIndicatorSamples, getFakeFlag } from '../scene/fakeFlag'
 import { applyFollowPath } from '../scene/followPath'
+import { applyVolumePreserve } from '../scene/volumePreserve'
 import { composeDisplayObjects } from '../scene/composeDisplay'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import {
@@ -1508,8 +1509,11 @@ export default function Viewport() {
     // `displayVertices` does for shape keys. `objects` still means "editing/gizmo code below should
     // use the raw pose"; only this drawing pass swaps in the swayed version. Follow Path's current
     // `progress` gets the same treatment, applied after Fake Flag so a swaying parent's motion is
-    // already folded in before any Follow Path child's world-to-local conversion reads it.
-    const objects = applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration))
+    // already folded in before any Follow Path child's world-to-local conversion reads it. Volume
+    // Preserve goes last — it only touches this object's own local scaleX/scaleY, so order relative
+    // to the other two doesn't matter, but the gizmo/BBox drawn from `objects` below needs to see
+    // the compensated scale too, or the selection outline wouldn't match the rendered mesh.
+    const objects = applyVolumePreserve(applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration)))
 
     // The actual displayed pose (shape keys → Fake Flag vertex-mode → Fake Physics mesh → Path
     // Deform → FFD) for the mesh-fill rendering below — shares `composeDisplayObjects` with

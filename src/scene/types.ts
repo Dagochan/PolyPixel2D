@@ -341,6 +341,22 @@ export type Modifier =
   | { type: 'followPath'; settings: FollowPathSettings }
   | { type: 'pathDeformRail'; settings: PathDeformRailSettings }
   | { type: 'ffd'; settings: FfdSettings }
+  | { type: 'volumePreserve'; settings: VolumePreserveSettings }
+
+/** Object-mode-only squash & stretch helper (Spine2D-style "volume preserve"): keeps one scale
+ *  axis (`drivingAxis`) as the one the user keyframes/drags directly, and continuously recomputes
+ *  the *other* axis from it every frame — `otherScale = drivingMagnitude ^ -strength`, so
+ *  `strength: 1` is exact area preservation (`scaleX * scaleY` constant), `strength: 0` is no
+ *  compensation at all, and `strength: 0.5` is the softer `1/sqrt(driving)` some riggers prefer.
+ *  Deliberately not offered in Edit Mode — a vertex-mode scale has no single "axis" the way an
+ *  object's Scale X/Y does, so there's no well-defined driving value to compensate against. See
+ *  `volumePreserve.ts`. */
+export interface VolumePreserveSettings {
+  enabled: boolean
+  drivingAxis: 'x' | 'y'
+  /** 0 (no compensation) .. 1 (exact area preservation). */
+  strength: number
+}
 
 /** A reservation, within an object's own island Z-order stack, for some *other* object to be
  *  rendered at this position instead — sandwiched between whichever islands end up adjacent to
