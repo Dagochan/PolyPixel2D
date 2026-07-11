@@ -1639,6 +1639,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setGridVisible = useSceneStore((s) => s.setGridVisible)
   const wireframeVisible = useSceneStore((s) => s.wireframeVisible)
   const setWireframeVisible = useSceneStore((s) => s.setWireframeVisible)
+  const objectModeWireframeOpacity = useSceneStore((s) => s.objectModeWireframeOpacity)
+  const setObjectModeWireframeOpacity = useSceneStore((s) => s.setObjectModeWireframeOpacity)
   const pixelPreviewEnabled = useSceneStore((s) => s.pixelPreviewEnabled)
   const setPixelPreviewEnabled = useSceneStore((s) => s.setPixelPreviewEnabled)
   const pixelFrame = useSceneStore((s) => s.pixelFrame)
@@ -1865,6 +1867,22 @@ export default function Properties({ style }: { style?: CSSProperties }) {
                   step={0.05}
                   value={meshOpacity}
                   onChange={(e) => setMeshOpacity(+e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="prop-row">
+              <label
+                className="seg-input"
+                title="Wireframe opacity in Object mode only — Edit mode always draws it at full opacity for precise selection"
+              >
+                Wireframe opacity
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={objectModeWireframeOpacity}
+                  onChange={(e) => setObjectModeWireframeOpacity(+e.target.value)}
                 />
               </label>
             </div>
