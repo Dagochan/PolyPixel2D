@@ -272,6 +272,26 @@ export function DissolveIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function FanCutIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <path d="M4,6L20,6L20,20L4,20Z" />
+      <path d="M12,13L4,6M12,13L9.33,6M12,13L14.67,6M12,13L20,6M12,13L4,20M12,13L20,20" />
+    </svg>
+  )
+}
+
+export function SmoothPathIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <path d="M4,5L4,19M20,5L20,19" strokeDasharray="2.5,2.5" />
+      <path d="M4,5C10,5 8,19 20,19" />
+      <circle cx="4" cy="5" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="19" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
 export function ReferenceImageIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">

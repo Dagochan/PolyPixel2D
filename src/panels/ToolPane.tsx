@@ -1,4 +1,6 @@
 import { useSceneStore } from '../scene/store'
+import { findCommonBoundaryFace, edgesAmongVertices } from '../scene/fanCut'
+import { findOpenVertexPath } from '../scene/smoothPath'
 import {
   ObjectModeIcon,
   EditModeIcon,
@@ -9,6 +11,8 @@ import {
   LoopCutIcon,
   RingCutIcon,
   KnifeIcon,
+  FanCutIcon,
+  SmoothPathIcon,
   ExtrudeIcon,
   DissolveIcon,
 } from './icons'
@@ -35,6 +39,34 @@ export default function ToolPane() {
   // would desync it from `latticeCols`/`latticeRows`/`cageRestVertices`, silently no-opping the
   // modifier at best. Only plain vertex-drag (which doesn't change count/order) stays available.
   const isLattice = selectedObj?.kind === 'lattice'
+
+  // Fan Cut targets one or more outer-silhouette edges of the same face: any number of selected
+  // edges (Edge mode — e.g. two edges meeting at one selected corner), or the edges that already
+  // connect the selected vertices (Vertex mode — e.g. select a shared corner plus both far ends
+  // to name the same 2-edge corner, no explicit order needed) — see the tool's doc in
+  // Viewport.tsx.
+  let fanCutEdges: [number, number][] | null = null
+  if (editElementType === 'edge' && selectedEdgesCount >= 1) {
+    fanCutEdges = Array.from(selectedEdges).map((key) => {
+      const [a, b] = key.split('_').map(Number)
+      return [a, b] as [number, number]
+    })
+  } else if (editElementType === 'vertex' && selectedVerticesCount >= 2 && selectedObj) {
+    const derived = edgesAmongVertices(selectedObj.mesh, Array.from(selectedVertices))
+    fanCutEdges = derived.length > 0 ? derived : null
+  }
+  const fanCutValid =
+    !!selectedObj && !isLattice && !!fanCutEdges && findCommonBoundaryFace(selectedObj.mesh, fanCutEdges) !== null
+
+  // Smooth Path targets a single open vertex chain (any number of selected vertices in Vertex
+  // mode, at least 3, connected via existing edges with exactly 2 endpoints) — see the tool's
+  // doc in Viewport.tsx / `findOpenVertexPath`.
+  const smoothPathValid =
+    !!selectedObj &&
+    !isLattice &&
+    editElementType === 'vertex' &&
+    selectedVerticesCount >= 3 &&
+    findOpenVertexPath(selectedObj.mesh, Array.from(selectedVertices)) !== null
 
   return (
     <div className="tool-pane">
@@ -125,6 +157,30 @@ export default function ToolPane() {
               onClick={() => setActiveTool(activeTool === 'knife' ? 'select' : 'knife')}
             >
               <KnifeIcon />
+            </button>
+            <button
+              className={activeTool === 'fancut' ? 'active' : ''}
+              disabled={!fanCutValid}
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Fan Cut: pokes the face on the selected outer-silhouette edge(s) — e.g. 2 edges meeting at one corner — (or the edges already connecting the selected vertices), fanning it to a new center vertex — scroll to set how many pieces each edge splits into, click to confirm, Esc/right-click to cancel'
+              }
+              onClick={() => setActiveTool(activeTool === 'fancut' ? 'select' : 'fancut')}
+            >
+              <FanCutIcon />
+            </button>
+            <button
+              className={activeTool === 'smoothpath' ? 'active' : ''}
+              disabled={!smoothPathValid}
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Smooth Path: relaxes the zigzag out of the selected open vertex chain (3+ vertices, one simple path) into a smooth curve — the 2 endpoints never move — scroll to set the relaxation strength (0 = untouched), click to confirm, Esc/right-click to cancel'
+              }
+              onClick={() => setActiveTool(activeTool === 'smoothpath' ? 'select' : 'smoothpath')}
+            >
+              <SmoothPathIcon />
             </button>
             <button
               disabled={

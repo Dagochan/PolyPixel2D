@@ -7,6 +7,8 @@ import Toolbar from './panels/Toolbar'
 import ToolPane from './panels/ToolPane'
 import Timeline from './panels/Timeline'
 import { useSceneStore } from './scene/store'
+import { findCommonBoundaryFace, edgesAmongVertices } from './scene/fanCut'
+import { findOpenVertexPath } from './scene/smoothPath'
 
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
@@ -103,6 +105,49 @@ export default function App() {
         if (store.objects.find((o) => o.id === store.selectedObjectId)?.kind === 'lattice') return
         e.preventDefault()
         store.setActiveTool(store.activeTool === 'knife' ? 'select' : 'knife')
+        return
+      }
+
+      // J for Fan Cut — needs one or more outer-silhouette edges of the same face named by the
+      // current selection (any selected edges in Edge mode, e.g. 2 meeting at one corner, or the
+      // edges already connecting the selected vertices in Vertex mode); see ToolPane's
+      // `fanCutEdges`/`fanCutValid` doc for the same resolution logic.
+      if (!meta && e.key.toLowerCase() === 'j') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+        if (!obj || obj.kind === 'lattice') return
+        let edges: [number, number][] | null = null
+        if (store.editElementType === 'edge' && store.selectedEdges.size >= 1) {
+          edges = Array.from(store.selectedEdges).map((key) => {
+            const [a, b] = key.split('_').map(Number)
+            return [a, b] as [number, number]
+          })
+        } else if (store.editElementType === 'vertex' && store.selectedVertices.size >= 2) {
+          const derived = edgesAmongVertices(obj.mesh, Array.from(store.selectedVertices))
+          edges = derived.length > 0 ? derived : null
+        }
+        if (store.activeTool !== 'fancut' && (!edges || findCommonBoundaryFace(obj.mesh, edges) === null)) return
+        e.preventDefault()
+        store.setActiveTool(store.activeTool === 'fancut' ? 'select' : 'fancut')
+        return
+      }
+
+      // T for Smooth Path — needs a single open vertex chain (3+ selected vertices in Vertex
+      // mode, connected via existing edges into one simple path); see ToolPane's
+      // `smoothPathValid`/`findOpenVertexPath` doc for the same resolution logic.
+      if (!meta && e.key.toLowerCase() === 't') {
+        const store = useSceneStore.getState()
+        if (store.mode !== 'edit' || !store.selectedObjectId) return
+        const obj = store.objects.find((o) => o.id === store.selectedObjectId)
+        if (!obj || obj.kind === 'lattice') return
+        const valid =
+          store.editElementType === 'vertex' &&
+          store.selectedVertices.size >= 3 &&
+          findOpenVertexPath(obj.mesh, Array.from(store.selectedVertices)) !== null
+        if (store.activeTool !== 'smoothpath' && !valid) return
+        e.preventDefault()
+        store.setActiveTool(store.activeTool === 'smoothpath' ? 'select' : 'smoothpath')
         return
       }
 

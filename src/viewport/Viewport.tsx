@@ -17,6 +17,8 @@ import { REFERENCE_IMAGE_ID } from '../scene/types'
 import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
+import { findCommonBoundaryFace, edgesAmongVertices, applyFanCut } from '../scene/fanCut'
+import { findOpenVertexPath, computeSmoothedPositions } from '../scene/smoothPath'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
@@ -301,6 +303,19 @@ export default function Viewport() {
   const ringCutSnapMidRef = useRef(false)
   const knifePathRef = useRef<KnifeCutPoint[]>([])
   const knifeHoverRef = useRef<KnifeCutPoint | null>(null)
+  // Fan Cut's target is fully determined by the selection at the moment the tool is activated
+  // (no hover-to-find needed, unlike loop/ring cut) — computed once into this ref by rebuildScene
+  // and cleared on confirm/cancel. Segment count (how many pieces the edge splits into) adjusts
+  // live via plain wheel while the tool is active, same interaction as loop/ring cut's count.
+  const fanCutTargetRef = useRef<{ objectId: string; faceIndex: number; edges: [number, number][] } | null>(null)
+  const fanCutSegmentsRef = useRef(1)
+  // Smooth Path: same "target fixed at activation, no hover" idea as Fan Cut above. Wheel adjusts
+  // the Laplacian relaxation round count live — 0 is untouched, a handful just knocks the zigzag
+  // down while keeping the chain's overall arc, many dozens approaches (but never quite reaches)
+  // a straight line. Starts at a modest default rather than 0, since reaching for the tool at all
+  // means "smooth it a bit" is the expected first result, not a no-op.
+  const smoothPathTargetRef = useRef<{ objectId: string; path: number[] } | null>(null)
+  const smoothPathIterationsRef = useRef(6)
   // control points for the in-progress Hair Path primitive, in world space (see createHairPathMesh)
   const hairPathRef = useRef<Vec2[]>([])
   // root width for the in-progress Hair Path — Shift+wheel adjusts this live while drawing
@@ -998,6 +1013,19 @@ export default function Viewport() {
         loopCutCountRef.current = Math.max(1, Math.min(20, loopCutCountRef.current + delta))
         return
       }
+      // Fan Cut: scroll sets how many pieces the target edge splits into, same idea as loop/ring
+      // cut's count — its target doesn't depend on hover, so just check the tool is active
+      if (useSceneStore.getState().activeTool === 'fancut' && fanCutTargetRef.current) {
+        const delta = e.deltaY < 0 ? 1 : -1
+        fanCutSegmentsRef.current = Math.max(1, Math.min(20, fanCutSegmentsRef.current + delta))
+        return
+      }
+      // Smooth Path: scroll sets the relaxation round count, same idea as loop/ring cut's count
+      if (useSceneStore.getState().activeTool === 'smoothpath' && smoothPathTargetRef.current) {
+        const delta = e.deltaY < 0 ? 1 : -1
+        smoothPathIterationsRef.current = Math.max(0, Math.min(60, smoothPathIterationsRef.current + delta))
+        return
+      }
       // same idea for ring-cut, hovering a spoke of a triangle fan
       if (ringCutHoverRef.current) {
         const delta = e.deltaY < 0 ? 1 : -1
@@ -1038,6 +1066,18 @@ export default function Viewport() {
       if (useSceneStore.getState().activeTool === 'ringcut') {
         useSceneStore.getState().setActiveTool('select')
         ringCutHoverRef.current = null
+      }
+      if (useSceneStore.getState().activeTool === 'fancut') {
+        // no in-progress sub-state to discard first (unlike knife) — nothing was mutated yet
+        // (the mesh op only runs on confirm), so cancel is always a full exit
+        useSceneStore.getState().setActiveTool('select')
+        fanCutTargetRef.current = null
+        fanCutSegmentsRef.current = 1
+      }
+      if (useSceneStore.getState().activeTool === 'smoothpath') {
+        useSceneStore.getState().setActiveTool('select')
+        smoothPathTargetRef.current = null
+        smoothPathIterationsRef.current = 6
       }
       if (useSceneStore.getState().activeTool === 'knife') {
         // first cancel discards the in-progress cutting line only (stays in knife mode); if
@@ -1480,6 +1520,7 @@ export default function Viewport() {
       meshOpacity,
       gridVisible,
       wireframeVisible,
+      objectModeWireframeOpacity,
       clips,
       activeClipId,
       playheadTime,
@@ -1755,7 +1796,10 @@ export default function Viewport() {
         edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
         const edgeMat = new THREE.LineBasicMaterial({
           color: obj.kind === 'lattice' ? 0xffaa33 : isSelected ? 0xffffff : 0x000000,
-          opacity: 0.6,
+          // Edit mode always draws the wireframe at full opacity — precise vertex/edge/face
+          // selection depends on seeing it clearly. Object mode's is just a visual guide, so the
+          // "Wireframe opacity" slider is allowed to dim it there.
+          opacity: mode === 'object' ? 0.6 * objectModeWireframeOpacity : 0.6,
           transparent: true,
         })
         const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)
@@ -1989,6 +2033,50 @@ export default function Viewport() {
       if (obj) addKnifePreview(scene, obj)
     }
 
+    // Fan Cut preview: its target (which boundary edge/face) is fixed by the selection at the
+    // moment the tool activates, not by hover — resolve it once and cache it in the ref, then
+    // just redraw the fan every frame at whatever segment count the wheel currently has set
+    if (mode === 'edit' && activeTool === 'fancut') {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) {
+        if (!fanCutTargetRef.current) {
+          let edges: [number, number][] | null = null
+          if (editElementType === 'edge' && selectedEdges.size >= 1) {
+            edges = Array.from(selectedEdges).map((key) => {
+              const [a, b] = key.split('_').map(Number)
+              return [a, b] as [number, number]
+            })
+          } else if (editElementType === 'vertex' && selectedVertices.size >= 2) {
+            const derived = edgesAmongVertices(obj.mesh, Array.from(selectedVertices))
+            edges = derived.length > 0 ? derived : null
+          }
+          if (edges) {
+            const faceIndex = findCommonBoundaryFace(obj.mesh, edges)
+            if (faceIndex !== null) fanCutTargetRef.current = { objectId: obj.id, faceIndex, edges }
+          }
+        }
+        const target = fanCutTargetRef.current
+        if (target && target.objectId === obj.id) {
+          addFanCutPreview(scene, obj, target.faceIndex, target.edges, fanCutSegmentsRef.current)
+        }
+      }
+    }
+
+    // Smooth Path preview: same "resolve once at activation, redraw every frame" idea as Fan Cut
+    if (mode === 'edit' && activeTool === 'smoothpath') {
+      const obj = objects.find((o) => o.id === selectedObjectId)
+      if (obj) {
+        if (!smoothPathTargetRef.current && editElementType === 'vertex' && selectedVertices.size >= 3) {
+          const path = findOpenVertexPath(obj.mesh, Array.from(selectedVertices))
+          if (path) smoothPathTargetRef.current = { objectId: obj.id, path }
+        }
+        const target = smoothPathTargetRef.current
+        if (target && target.objectId === obj.id) {
+          addSmoothPathPreview(scene, obj, target.path, smoothPathIterationsRef.current)
+        }
+      }
+    }
+
     // ghost outline for a primitive about to be placed as an island
     if (mode === 'edit' && (activeTool === 'place-rect' || activeTool === 'place-circle')) {
       const obj = objects.find((o) => o.id === selectedObjectId)
@@ -2209,6 +2297,69 @@ export default function Viewport() {
       dot.position.set(p.x, p.y, 0.71)
       scene.add(dot)
     })
+  }
+
+  /** Fan Cut preview: the poked face's spokes (center to every corner, including each target
+   *  edge's pending subdivision points) plus a dot on the center and each new edge point — drawn
+   *  from a scratch `applyFanCut` result so it never touches the real mesh until confirmed. */
+  function addFanCutPreview(
+    scene: THREE.Scene,
+    obj: SceneObject,
+    faceIndex: number,
+    edges: [number, number][],
+    segments: number,
+  ) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const result = applyFanCut(obj.mesh, faceIndex, edges, segments)
+    const center = applyTransform(result.vertices[result.centerIndex], worldTransform)
+
+    const positions: number[] = []
+    for (const vi of result.ring) {
+      const p = applyTransform(result.vertices[vi], worldTransform)
+      positions.push(center.x, center.y, 0.7, p.x, p.y, 0.7)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    scene.add(
+      new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true })),
+    )
+
+    const pxToWorld = 1 / viewRef.current.zoom
+    const dotPoints = [center, ...result.newEdgeVertexIndices.map((vi) => applyTransform(result.vertices[vi], worldTransform))]
+    for (const p of dotPoints) {
+      const dotGeom = new THREE.CircleGeometry(4 * pxToWorld, 12)
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
+      dot.position.set(p.x, p.y, 0.71)
+      scene.add(dot)
+    }
+  }
+
+  /** Smooth Path preview: a dashed line through the chain's would-be smoothed positions (at the
+   *  current wheel-set iteration count), plus a dot on each interior point that would move —
+   *  computed from a scratch `computeSmoothedPositions` result so it never touches the real mesh
+   *  until confirmed. The 2 endpoints are omitted from the dots since they never move. */
+  function addSmoothPathPreview(scene: THREE.Scene, obj: SceneObject, path: number[], iterations: number) {
+    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
+    const positions = computeSmoothedPositions(obj.mesh, path, iterations)
+    const worldPoints = positions.map((p) => applyTransform(p, worldTransform))
+
+    const linePositions: number[] = []
+    for (let i = 0; i < worldPoints.length - 1; i++) {
+      linePositions.push(worldPoints[i].x, worldPoints[i].y, 0.7, worldPoints[i + 1].x, worldPoints[i + 1].y, 0.7)
+    }
+    const geom = new THREE.BufferGeometry()
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3))
+    scene.add(
+      new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true })),
+    )
+
+    const pxToWorld = 1 / viewRef.current.zoom
+    for (const p of worldPoints.slice(1, -1)) {
+      const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 12)
+      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
+      dot.position.set(p.x, p.y, 0.71)
+      scene.add(dot)
+    }
   }
 
   function addLoopCutPreview(scene: THREE.Scene, obj: SceneObject, path: LoopPath, t: number) {
@@ -3538,6 +3689,28 @@ export default function Viewport() {
     }
     if (objectModalRef.current) {
       confirmObjectModal()
+      return
+    }
+
+    // a left-click anywhere while Fan Cut is active confirms it with whatever segment count the
+    // wheel left it at — its target is fixed by the selection at activation time, not by where
+    // this click lands (unlike place-rect/hairpath/etc., which use the click position)
+    if (useSceneStore.getState().activeTool === 'fancut' && fanCutTargetRef.current) {
+      const { objectId, edges } = fanCutTargetRef.current
+      useSceneStore.getState().applyFanCut(objectId, edges, fanCutSegmentsRef.current)
+      useSceneStore.getState().setActiveTool('select')
+      fanCutTargetRef.current = null
+      fanCutSegmentsRef.current = 1
+      return
+    }
+
+    // same idea for Smooth Path — confirms with whatever iteration count the wheel left it at
+    if (useSceneStore.getState().activeTool === 'smoothpath' && smoothPathTargetRef.current) {
+      const { objectId, path } = smoothPathTargetRef.current
+      useSceneStore.getState().applySmoothPath(objectId, path, smoothPathIterationsRef.current)
+      useSceneStore.getState().setActiveTool('select')
+      smoothPathTargetRef.current = null
+      smoothPathIterationsRef.current = 6
       return
     }
 

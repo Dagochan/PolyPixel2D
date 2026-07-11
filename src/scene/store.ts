@@ -46,6 +46,8 @@ import {
 import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitives'
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
+import { findCommonBoundaryFace, applyFanCut as applyFanCutToMesh } from './fanCut'
+import { findOpenVertexPath, computeSmoothedPositions } from './smoothPath'
 import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
@@ -57,7 +59,17 @@ import { findIslands, type Island } from './uv'
 import { remapObjectVertexData } from './remapVertexData'
 import { getWorldTransform, getParentWorldTransform, worldPositionToLocalOffset, worldBounds } from './transformUtils'
 
-export type ActiveTool = 'select' | 'loopcut' | 'ringcut' | 'knife' | 'place-rect' | 'place-circle' | 'place-hairpath' | 'place-path'
+export type ActiveTool =
+  | 'select'
+  | 'loopcut'
+  | 'ringcut'
+  | 'knife'
+  | 'fancut'
+  | 'smoothpath'
+  | 'place-rect'
+  | 'place-circle'
+  | 'place-hairpath'
+  | 'place-path'
 
 export type { ReferenceImage }
 
@@ -159,6 +171,10 @@ interface SceneState {
    *  actual silhouette without the edge lines cluttering the read. Edit Mode's other selection
    *  overlays (vertex/edge/face handles) are untouched by this — only the plain edge wireframe. */
   wireframeVisible: boolean
+  /** Wireframe line opacity (0..1) while in Object mode only — Edit mode always draws it at full
+   *  opacity since precise vertex/edge/face selection depends on seeing it clearly; Object mode's
+   *  wireframe is just a visual guide, so it's nice to be able to dim it down against a busy scene. */
+  objectModeWireframeOpacity: number
   /** Whether the pixel preview panel (low-res, nearest-neighbor render simulating the final
    *  dot-art output) is shown. */
   pixelPreviewEnabled: boolean
@@ -265,6 +281,7 @@ interface SceneState {
   setGridSnapEnabled: (enabled: boolean) => void
   setGridVisible: (visible: boolean) => void
   setWireframeVisible: (visible: boolean) => void
+  setObjectModeWireframeOpacity: (opacity: number) => void
   setPixelPreviewEnabled: (enabled: boolean) => void
   setPixelPreviewResolution: (n: number) => void
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
@@ -380,6 +397,16 @@ interface SceneState {
   applyRingCut: (objectId: string, center: number, hoverRim: number, ts: number[]) => void
   /** Cut a polyline of vertex/edge-snapped points across one or more connected faces. */
   applyKnifeCut: (objectId: string, path: KnifeCutPoint[]) => void
+  /** "Fan Cut": pokes the face owning every edge in `edges` (e.g. two edges meeting at one
+   *  selected corner) — adding a center vertex fanned to every corner — and subdivides each of
+   *  those edges into `segments` pieces, every new point also fanned to the center. No-op unless
+   *  every edge is an outer-silhouette edge (used by exactly one face) of the *same* face. */
+  applyFanCut: (objectId: string, edges: [number, number][], segments: number) => void
+  /** "Smooth Path": given the vertices of a single open chain (see `findOpenVertexPath`'s doc),
+   *  Laplacian-relaxes them `iterations` rounds and eases each one onto a Catmull-Rom curve fit
+   *  through the relaxed result — the two endpoints never move. Pure repositioning, no topology
+   *  change. No-op if `vertices` isn't a single simple open chain. */
+  applySmoothPath: (objectId: string, vertices: number[], iterations: number) => void
   /** Extrude the current edge/face selection on the selected object. No-op (returns false) otherwise. */
   extrudeSelection: () => boolean
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
@@ -925,6 +952,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   gridSnapEnabled: false,
   gridVisible: true,
   wireframeVisible: true,
+  objectModeWireframeOpacity: 1,
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
@@ -1322,6 +1350,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
   setGridVisible: (visible) => set({ gridVisible: visible }),
   setWireframeVisible: (visible) => set({ wireframeVisible: visible }),
+  setObjectModeWireframeOpacity: (opacity) => set({ objectModeWireframeOpacity: Math.max(0, Math.min(1, opacity)) }),
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
   setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(1024, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
@@ -1928,6 +1957,44 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
+    }))
+  },
+
+  applyFanCut: (objectId, edges, segments) => {
+    if (get().editingShapeKeyId) return
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const faceIndex = findCommonBoundaryFace(obj.mesh, edges)
+    if (faceIndex === null) return
+    const result = applyFanCutToMesh(obj.mesh, faceIndex, edges, segments)
+    const mesh = { vertices: result.vertices, faces: result.faces, faceColors: obj.mesh.faceColors }
+    const uvBaseVertices = seedUvBaseVertices(mesh, obj.uvBaseVertices)
+
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh, uvBaseVertices } : o)),
+      selectedVertices: new Set([result.centerIndex]),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  applySmoothPath: (objectId, vertices, iterations) => {
+    if (get().editingShapeKeyId) return
+    const obj = get().objects.find((o) => o.id === objectId)
+    if (!obj) return
+    const path = findOpenVertexPath(obj.mesh, vertices)
+    if (!path) return
+    const positions = computeSmoothedPositions(obj.mesh, path, iterations)
+    const newVertices = obj.mesh.vertices.slice()
+    path.forEach((vi, i) => {
+      newVertices[vi] = positions[i]
+    })
+    const mesh = { ...obj.mesh, vertices: newVertices }
+
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
     }))
   },
 
