@@ -611,6 +611,98 @@ function seedUvBaseVertices(mesh: Mesh, existing: Record<number, Vec2> | undefin
   return next
 }
 
+/** Whether two segments (a1,a2) and (b1,b2) cross, ignoring endpoints they share (adjacent
+ *  polygon edges always share one). Standard orientation-based test. */
+function segmentsCross(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): boolean {
+  const cross = (o: Vec2, p: Vec2, q: Vec2) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x)
+  const d1 = cross(b1, b2, a1)
+  const d2 = cross(b1, b2, a2)
+  const d3 = cross(a1, a2, b1)
+  const d4 = cross(a1, a2, b2)
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+}
+
+/** Whether the polygon's non-adjacent edges self-intersect (a "bowtie"). */
+function isSelfIntersectingPolygon(points: Vec2[]): boolean {
+  const n = points.length
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (j === i + 1 || (i === 0 && j === n - 1)) continue // adjacent edges share a vertex, not a crossing
+      if (segmentsCross(points[i], points[(i + 1) % n], points[j], points[(j + 1) % n])) return true
+    }
+  }
+  return false
+}
+
+/** If the selected vertices are exactly a single hole's boundary loop — each one connected by an
+ *  existing mesh edge to exactly two other selected vertices — walks that loop and returns the
+ *  vertex indices (into `selected`) in boundary order. This is exact (unlike angle-sorting) for
+ *  any hole shape, including concave/winding ones, since it follows real topology instead of
+ *  guessing from coordinates. Returns null if the selection isn't a single simple loop (e.g. it
+ *  branches, or the vertices aren't all connected into one hole boundary). */
+function walkBoundaryLoop(faces: number[][], selected: number[]): number[] | null {
+  const selectedSet = new Set(selected)
+  // count how many faces use each undirected edge — a boundary edge (mesh silhouette or hole
+  // outline) is used by exactly one face; an edge shared by two faces is interior to solid
+  // geometry (e.g. the top edge of a still-present island poking into the hole) and must be
+  // excluded, or a selection that also grabs an island's far corners would wrongly link them
+  // straight across via that interior edge instead of walking around the hole.
+  const edgeCount = new Map<string, number>()
+  for (const face of faces) {
+    const n = face.length
+    for (let i = 0; i < n; i++) {
+      const a = face[i]
+      const b = face[(i + 1) % n]
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`
+      edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1)
+    }
+  }
+  const neighbors = new Map<number, Set<number>>()
+  for (const idx of selected) neighbors.set(idx, new Set())
+  for (const face of faces) {
+    const n = face.length
+    for (let i = 0; i < n; i++) {
+      const a = face[i]
+      const b = face[(i + 1) % n]
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`
+      if (selectedSet.has(a) && selectedSet.has(b) && edgeCount.get(key) === 1) {
+        neighbors.get(a)!.add(b)
+        neighbors.get(b)!.add(a)
+      }
+    }
+  }
+  if (selected.some((idx) => neighbors.get(idx)!.size !== 2)) return null
+
+  const start = selected[0]
+  const order = [start]
+  let prev = -1
+  let current = start
+  while (order.length < selected.length) {
+    const [n1, n2] = Array.from(neighbors.get(current)!)
+    const next = n1 === prev ? n2 : n1
+    if (next === start) break // looped back early — not all selected vertices are on this cycle
+    order.push(next)
+    prev = current
+    current = next
+  }
+  if (order.length !== selected.length) return null
+  // confirm it actually closes back to start (a genuine single cycle, not e.g. two disjoint loops)
+  if (!neighbors.get(current)!.has(start)) return null
+  return order
+}
+
+/** Reorders vertices by angle around their centroid — the winding a convex/star-shaped selection
+ *  (e.g. a box-selected rectangular hole) needs, since box-select's insertion order follows mesh
+ *  index order rather than the boundary's walk order. */
+function angleSortAroundCentroid(points: Vec2[]): number[] {
+  const cx = points.reduce((sum, p) => sum + p.x, 0) / points.length
+  const cy = points.reduce((sum, p) => sum + p.y, 0) / points.length
+  return points
+    .map((p, i) => ({ i, angle: Math.atan2(p.y - cy, p.x - cx) }))
+    .sort((a, b) => a.angle - b.angle)
+    .map((e) => e.i)
+}
+
 function cloneObjects(objects: SceneObject[]): SceneObject[] {
   return objects.map((o) => ({
     ...o,
@@ -2095,9 +2187,29 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     if (!obj) return
     if (s.editElementType !== 'vertex' || s.selectedVertices.size < 3) return
 
-    // JS Sets preserve insertion order — use the click order as the new face's winding,
-    // same as Blender's F: select the hole's boundary in order, then fill.
-    const orderedIndices = Array.from(s.selectedVertices)
+    // JS Sets preserve insertion order — use the click order as the new face's winding, same as
+    // Blender's F: select the hole's boundary in order, then fill. But a box/rect select adds
+    // vertices in mesh index order rather than boundary walk order, which can produce a self-
+    // intersecting ("bowtie") face. Two fallbacks, tried in order, if the click-order face
+    // self-intersects:
+    //  1. Walk the hole's actual boundary edges in the mesh — exact for any shape (including
+    //     concave/winding holes), since it uses real topology instead of guessing from
+    //     coordinates. Only applicable when the selection is exactly one hole's full loop.
+    //  2. Otherwise, sort by angle around the centroid — recovers the correct winding for any
+    //     convex/star-shaped selection (e.g. a box-selected rectangular hole), though it can't
+    //     resolve a concave loop that isn't also captured by fallback 1.
+    let orderedIndices = Array.from(s.selectedVertices)
+    const localPoints = orderedIndices.map((i) => obj.mesh.vertices[i])
+    if (isSelfIntersectingPolygon(localPoints)) {
+      const loopOrder = walkBoundaryLoop(obj.mesh.faces, orderedIndices)
+      if (loopOrder && !isSelfIntersectingPolygon(loopOrder.map((i) => obj.mesh.vertices[i]))) {
+        orderedIndices = loopOrder
+      } else {
+        const sortOrder = angleSortAroundCentroid(localPoints)
+        const sorted = sortOrder.map((i) => orderedIndices[i])
+        if (!isSelfIntersectingPolygon(sortOrder.map((i) => localPoints[i]))) orderedIndices = sorted
+      }
+    }
     const newFaceIndex = obj.mesh.faces.length
 
     get().beginChange()
