@@ -5,6 +5,7 @@ import { triangulateWithFaceIds } from '../scene/meshUtils'
 import { getWorldTransform, worldBounds } from '../scene/transformUtils'
 import { computeSplitUVIslands } from '../scene/uv'
 import { quantizeImageData } from '../scene/quantize'
+import { applyPixelOutline } from '../scene/outline'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { collectFakeBehindMaskIds, getFakeBehind, MAX_FAKE_BEHIND_MASKS } from '../scene/fakeBehind'
 import { boundsVertices } from '../scene/pathCurve'
@@ -34,6 +35,12 @@ export default function PixelPreview() {
   const setPaletteEnabled = useSceneStore((s) => s.setPixelPreviewPaletteEnabled)
   const paletteSize = useSceneStore((s) => s.pixelPreviewPaletteSize)
   const setPaletteSize = useSceneStore((s) => s.setPixelPreviewPaletteSize)
+  const outlineEnabled = useSceneStore((s) => s.pixelPreviewOutlineEnabled)
+  const setOutlineEnabled = useSceneStore((s) => s.setPixelPreviewOutlineEnabled)
+  const outlineColor = useSceneStore((s) => s.pixelPreviewOutlineColor)
+  const setOutlineColor = useSceneStore((s) => s.setPixelPreviewOutlineColor)
+  const outlineThickness = useSceneStore((s) => s.pixelPreviewOutlineThickness)
+  const setOutlineThickness = useSceneStore((s) => s.setPixelPreviewOutlineThickness)
   const [sheetRows, setSheetRows] = useState(4)
   const [sheetColumns, setSheetColumns] = useState(4)
   const [exporting, setExporting] = useState(false)
@@ -150,10 +157,21 @@ export default function PixelPreview() {
       displayCtx.clearRect(0, 0, canvasW, canvasH)
       displayCtx.drawImage(renderer.domElement, 0, 0)
 
-      const { pixelPreviewPaletteEnabled, pixelPreviewPaletteSize } = useSceneStore.getState()
-      if (pixelPreviewPaletteEnabled) {
+      const {
+        pixelPreviewPaletteEnabled,
+        pixelPreviewPaletteSize,
+        pixelPreviewOutlineEnabled,
+        pixelPreviewOutlineColor,
+        pixelPreviewOutlineThickness,
+      } = useSceneStore.getState()
+      if (pixelPreviewPaletteEnabled || pixelPreviewOutlineEnabled) {
         const imageData = displayCtx.getImageData(0, 0, canvasW, canvasH)
-        quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+        if (pixelPreviewPaletteEnabled) quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+        // outline runs *after* quantization so its color stays exact rather than being pulled
+        // into the quantized palette (see `applyPixelOutline`'s doc)
+        if (pixelPreviewOutlineEnabled) {
+          applyPixelOutline(imageData.data, canvasW, canvasH, pixelPreviewOutlineColor, pixelPreviewOutlineThickness)
+        }
         displayCtx.putImageData(imageData, 0, 0)
       }
 
@@ -210,7 +228,13 @@ export default function PixelPreview() {
       sheet.height = canvasH * rows
       const sctx = sheet.getContext('2d')!
 
-      const { pixelPreviewPaletteEnabled, pixelPreviewPaletteSize } = useSceneStore.getState()
+      const {
+        pixelPreviewPaletteEnabled,
+        pixelPreviewPaletteSize,
+        pixelPreviewOutlineEnabled,
+        pixelPreviewOutlineColor,
+        pixelPreviewOutlineThickness,
+      } = useSceneStore.getState()
       const tmp = document.createElement('canvas')
       tmp.width = canvasW
       tmp.height = canvasH
@@ -247,9 +271,12 @@ export default function PixelPreview() {
 
         tctx.clearRect(0, 0, canvasW, canvasH)
         tctx.drawImage(renderer.domElement, 0, 0)
-        if (pixelPreviewPaletteEnabled) {
+        if (pixelPreviewPaletteEnabled || pixelPreviewOutlineEnabled) {
           const imageData = tctx.getImageData(0, 0, canvasW, canvasH)
-          quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+          if (pixelPreviewPaletteEnabled) quantizeImageData(imageData.data, pixelPreviewPaletteSize)
+          if (pixelPreviewOutlineEnabled) {
+            applyPixelOutline(imageData.data, canvasW, canvasH, pixelPreviewOutlineColor, pixelPreviewOutlineThickness)
+          }
           tctx.putImageData(imageData, 0, 0)
         }
 
@@ -303,6 +330,29 @@ export default function PixelPreview() {
         <label>
           Colors
           <NumberInput min={2} max={64} value={paletteSize} disabled={!paletteEnabled} onCommit={(v) => setPaletteSize(Math.round(v))} />
+        </label>
+      </div>
+      <div className="pixel-preview-controls">
+        <label>
+          <input
+            type="checkbox"
+            checked={outlineEnabled}
+            onChange={(e) => setOutlineEnabled(e.target.checked)}
+          />
+          Outline
+        </label>
+        <label>
+          Color
+          <input
+            type="color"
+            value={outlineColor}
+            disabled={!outlineEnabled}
+            onChange={(e) => setOutlineColor(e.target.value)}
+          />
+        </label>
+        <label>
+          Thickness
+          <NumberInput min={1} max={16} value={outlineThickness} disabled={!outlineEnabled} onCommit={(v) => setOutlineThickness(Math.round(v))} />
         </label>
       </div>
       <div className="pixel-preview-canvas">

@@ -174,6 +174,13 @@ interface SceneState {
   pixelPreviewPaletteEnabled: boolean
   /** Max number of colors the auto-extracted palette may use. */
   pixelPreviewPaletteSize: number
+  /** Whether the pixel preview draws a flat-color outline around the rendered sprite's silhouette
+   *  (see `applyPixelOutline`) — applied *after* palette quantization, so the outline color stays
+   *  exact rather than getting pulled into the quantized palette. */
+  pixelPreviewOutlineEnabled: boolean
+  pixelPreviewOutlineColor: string
+  /** Outline thickness in output pixels (each pass grows the ring one pixel outward). */
+  pixelPreviewOutlineThickness: number
   /** Pixel Preview's fixed "main render camera" — see `PixelFrame`'s doc. `null` means Pixel
    *  Preview falls back to its old per-frame auto-fit-to-visible-objects framing. */
   pixelFrame: PixelFrame | null
@@ -263,6 +270,9 @@ interface SceneState {
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
   setPixelPreviewPaletteEnabled: (enabled: boolean) => void
   setPixelPreviewPaletteSize: (n: number) => void
+  setPixelPreviewOutlineEnabled: (enabled: boolean) => void
+  setPixelPreviewOutlineColor: (color: string) => void
+  setPixelPreviewOutlineThickness: (n: number) => void
   /** Creates a Pixel Frame (sized/centered on the current auto-fit bounding box of every visible
    *  object, same framing Pixel Preview used to compute every frame) if none exists, or removes
    *  the existing one — a single toggle for the "+ Pixel Frame" toolbar button. */
@@ -828,6 +838,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   pixelPreviewOffset: { x: 0, y: 0 },
   pixelPreviewPaletteEnabled: false,
   pixelPreviewPaletteSize: 16,
+  pixelPreviewOutlineEnabled: false,
+  pixelPreviewOutlineColor: '#1a1a1a',
+  pixelPreviewOutlineThickness: 1,
   pixelFrame: null,
   clips: [],
   activeClipId: null,
@@ -1222,6 +1235,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
   setPixelPreviewPaletteEnabled: (enabled) => set({ pixelPreviewPaletteEnabled: enabled }),
   setPixelPreviewPaletteSize: (n) => set({ pixelPreviewPaletteSize: Math.max(2, Math.min(64, Math.round(n))) }),
+  setPixelPreviewOutlineEnabled: (enabled) => set({ pixelPreviewOutlineEnabled: enabled }),
+  setPixelPreviewOutlineColor: (color) => set({ pixelPreviewOutlineColor: color }),
+  setPixelPreviewOutlineThickness: (n) => set({ pixelPreviewOutlineThickness: Math.max(1, Math.min(16, Math.round(n))) }),
 
   togglePixelFrame: () =>
     set((s) => {
