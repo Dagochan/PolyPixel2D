@@ -3041,7 +3041,27 @@ export default function Viewport() {
       scene.add(m)
     }
 
+    // move grip: a circle (vs. the corners' squares) so it reads as "drag to move", not "drag to resize"
+    const movePos = pixelFrameMoveHandlePos(frame)
+    const moveRadius = (HANDLE_SIZE * pxToWorld) / 2
+    const moveHandle = new THREE.Mesh(new THREE.CircleGeometry(moveRadius, 16), handleMat)
+    moveHandle.position.set(movePos.x, movePos.y, 0.6)
+    scene.add(moveHandle)
+    const moveStemPositions = [frame.x, frame.y + frame.height / 2, 0.5, movePos.x, movePos.y, 0.5]
+    const moveStemGeom = new THREE.BufferGeometry()
+    moveStemGeom.setAttribute('position', new THREE.Float32BufferAttribute(moveStemPositions, 3))
+    scene.add(new THREE.Line(moveStemGeom, new THREE.LineBasicMaterial({ color: PIXEL_FRAME_COLOR, depthTest: false, transparent: true })))
+
     addPixelFrameLabel(scene, frame)
+  }
+
+  const PIXEL_FRAME_MOVE_HANDLE_GAP_PX = 34 // clears the "PIXEL FRAME W:H" label sprite, which also sits just above the top edge
+
+  /** A dedicated move grip centered above the frame's top edge — a bigger, easier target than the
+   *  thin border line, so dragging the whole frame doesn't require a precise line hit. */
+  function pixelFrameMoveHandlePos(frame: PixelFrame): Vec2 {
+    const top = frame.y + frame.height / 2
+    return { x: frame.x, y: top + PIXEL_FRAME_MOVE_HANDLE_GAP_PX / viewRef.current.zoom }
   }
 
   /** The Pixel Frame's 4 corners in world space, keyed the same way the scale-gizmo's are. */
@@ -3607,6 +3627,11 @@ export default function Viewport() {
     // resize; only the border *line* moves the whole frame (not the interior), so it doesn't
     // steal clicks meant to select/move objects that happen to sit inside it.
     if (pixelFrame) {
+      const movePos = pixelFrameMoveHandlePos(pixelFrame)
+      if (pxDistSq(world.x, world.y, movePos.x, movePos.y) < HANDLE_SIZE ** 2) {
+        dragRef.current = { kind: 'move-pixel-frame', startWorld: world, startFrame: pixelFrame }
+        return
+      }
       const corners = pixelFrameCorners(pixelFrame)
       for (const key of ['tl', 'tr', 'bl', 'br'] as const) {
         const c = corners[key]
@@ -4090,10 +4115,34 @@ export default function Viewport() {
       }
       // the corner opposite the one being dragged stays put; the dragged corner follows the
       // cursor, so width/height/center all fall out of just those two fixed points
-      const newLeft = corner === 'tl' || corner === 'bl' ? worldX : left
-      const newRight = corner === 'tr' || corner === 'br' ? worldX : right
-      const newBottom = corner === 'bl' || corner === 'br' ? worldY : bottom
-      const newTop = corner === 'tl' || corner === 'tr' ? worldY : top
+      let newLeft = corner === 'tl' || corner === 'bl' ? worldX : left
+      let newRight = corner === 'tr' || corner === 'br' ? worldX : right
+      let newBottom = corner === 'bl' || corner === 'br' ? worldY : bottom
+      let newTop = corner === 'tl' || corner === 'tr' ? worldY : top
+
+      if (e.shiftKey) {
+        // Shift: preserve the frame's original aspect ratio, driven by whichever axis the cursor
+        // moved further from its start value — same convention as the object scale-gizmo's corner
+        // handles — while still keeping the opposite corner fixed.
+        const rawWidth = Math.abs(newRight - newLeft)
+        const rawHeight = Math.abs(newTop - newBottom)
+        const scaleFromWidth = startFrame.width !== 0 ? rawWidth / startFrame.width : 1
+        const scaleFromHeight = startFrame.height !== 0 ? rawHeight / startFrame.height : 1
+        const scale = Math.abs(scaleFromWidth - 1) >= Math.abs(scaleFromHeight - 1) ? scaleFromWidth : scaleFromHeight
+        const width = Math.max(1, startFrame.width * scale)
+        const height = Math.max(1, startFrame.height * scale)
+        const fixedX = corner === 'tl' || corner === 'bl' ? right : left
+        const fixedY = corner === 'bl' || corner === 'br' ? top : bottom
+        const dirX = corner === 'tr' || corner === 'br' ? 1 : -1
+        const dirY = corner === 'tl' || corner === 'tr' ? 1 : -1
+        const draggedX = fixedX + dirX * width
+        const draggedY = fixedY + dirY * height
+        newLeft = Math.min(fixedX, draggedX)
+        newRight = Math.max(fixedX, draggedX)
+        newBottom = Math.min(fixedY, draggedY)
+        newTop = Math.max(fixedY, draggedY)
+      }
+
       store.setPixelFrame({
         x: (newLeft + newRight) / 2,
         y: (newBottom + newTop) / 2,
