@@ -1040,8 +1040,14 @@ export default function Viewport() {
         ringCutHoverRef.current = null
       }
       if (useSceneStore.getState().activeTool === 'knife') {
-        // discard the in-progress path only — stay in knife mode (press K again to exit)
-        knifePathRef.current = []
+        // first cancel discards the in-progress cutting line only (stays in knife mode); if
+        // there's no line in progress, this same cancel exits the tool — matches Blender's
+        // two-tier Escape behavior and the app-wide "Escape/right-click always cancels" rule
+        if (knifePathRef.current.length > 0) {
+          knifePathRef.current = []
+        } else {
+          useSceneStore.getState().setActiveTool('select')
+        }
       }
       if (elementModalRef.current) {
         useSceneStore.getState().cancelChange()
