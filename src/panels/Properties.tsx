@@ -1675,6 +1675,11 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const setGridSubdivisions = useSceneStore((s) => s.setGridSubdivisions)
   const gridSnapEnabled = useSceneStore((s) => s.gridSnapEnabled)
   const setGridSnapEnabled = useSceneStore((s) => s.setGridSnapEnabled)
+  const correctFaceAttributes = useSceneStore((s) => s.correctFaceAttributes)
+  const setCorrectFaceAttributes = useSceneStore((s) => s.setCorrectFaceAttributes)
+  const editorColors = useSceneStore((s) => s.editorColors)
+  const setEditorColor = useSceneStore((s) => s.setEditorColor)
+  const resetEditorColors = useSceneStore((s) => s.resetEditorColors)
   const gridVisible = useSceneStore((s) => s.gridVisible)
   const setGridVisible = useSceneStore((s) => s.setGridVisible)
   const wireframeVisible = useSceneStore((s) => s.wireframeVisible)
@@ -1950,10 +1955,56 @@ export default function Properties({ style }: { style?: CSSProperties }) {
               </label>
             </div>
             <div className="prop-row">
+              <label
+                className="uv-hint uv-density-toggle"
+                title="While dragging vertices with G or GG (vertex slide), also re-derive their UVs so the texture image stays put instead of stretching to the new shape"
+              >
+                <input
+                  type="checkbox"
+                  checked={correctFaceAttributes}
+                  onChange={(e) => setCorrectFaceAttributes(e.target.checked)}
+                />
+                Correct Face Attributes
+              </label>
+            </div>
+            <div className="prop-row">
               <label className="uv-hint uv-density-toggle" title="Toggle every mesh's edge wireframe overlay in the viewport">
                 <input type="checkbox" checked={wireframeVisible} onChange={(e) => setWireframeVisible(e.target.checked)} />
                 Show wireframe
               </label>
+            </div>
+          </Section>
+          <Section title="Editor Color">
+            <div className="prop-row">
+              <label className="prop-field">
+                <span>Background</span>
+                <input
+                  type="color"
+                  value={editorColors.background}
+                  onChange={(e) => setEditorColor('background', e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="prop-row">
+              <label className="prop-field">
+                <span>Grid</span>
+                <input type="color" value={editorColors.grid} onChange={(e) => setEditorColor('grid', e.target.value)} />
+              </label>
+            </div>
+            <div className="prop-row">
+              <label className="prop-field">
+                <span>Wireframe</span>
+                <input
+                  type="color"
+                  value={editorColors.wireframe}
+                  onChange={(e) => setEditorColor('wireframe', e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="prop-row">
+              <button title="Restore Background/Grid/Wireframe to their default colors" onClick={() => resetEditorColors()}>
+                Reset
+              </button>
             </div>
           </Section>
           <Section title="Pixel Preview">

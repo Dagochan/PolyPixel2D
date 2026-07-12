@@ -36,6 +36,7 @@ import {
   type FakePhysicsMeshLiveState,
 } from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
+import { correctVertexUv, type UvNeighbor } from '../scene/correctUv'
 import { decodeGif, gifFrameAt, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
 import { boundsVertices, evaluatePathCurve, nearestSegmentInsertIndex } from '../scene/pathCurve'
 
@@ -196,6 +197,12 @@ type ElementModal =
       // pre-drag (zero-size) position, so it must be re-stamped to wherever they end up once
       // this modal confirms — otherwise the new geometry's UV stays collapsed to a sliver
       seedUvOnConfirm: boolean
+      // "Correct Face Attributes" (see `correctUv.ts`) snapshot, only populated when that toggle
+      // is on and the object has any `uvBaseVertices` at all — per moved index (parallel to
+      // `indices`): its mesh-adjacent neighbors' pre-drag {pos, uv} and its own pre-drag UV.
+      // `undefined` means the feature is inactive for this drag (leave `uvBaseVertices` alone).
+      uvNeighbors?: UvNeighbor[][]
+      uvSelf?: Vec2[]
     }
   | {
       // started by pressing G again while a 'move' modal is active (Blender's GG vertex slide):
@@ -219,6 +226,9 @@ type ElementModal =
       // world-space rail each vertex is currently riding, refreshed every update — used to draw
       // the dashed guide line, and null for a vertex with nothing to ride (no aligned edge yet)
       liveRails: Array<{ origWorld: Vec2; targetWorld: Vec2 } | null>
+      // carried over from the 'move' modal this was started from — see 'move'’s own doc
+      uvNeighbors?: UvNeighbor[][]
+      uvSelf?: Vec2[]
     }
 
 /** Object-mode's G/R/S keyboard modal — same Blender convention as `ElementModal`, but acting on
@@ -420,6 +430,41 @@ export default function Viewport() {
    *  `skipBeginChange` is for the post-extrude grab: extrude already opened its own undo
    *  step, so reusing it (rather than opening a second one) makes "E, drag, click" a single
    *  undo — and makes Escape right after E correctly cancel the whole extrude, not just the move. */
+  /** Builds the "Correct Face Attributes" snapshot (see `correctUv.ts`) for a G/GG drag about to
+   *  start — `undefined` when the object has no UV data to correct at all (leaving
+   *  `uvBaseVertices` untouched is the existing default either way; callers check the
+   *  `correctFaceAttributes` toggle themselves before even calling this, to skip the adjacency
+   *  work entirely while it's off). `origLocal` resolves a vertex index to its pre-drag local
+   *  position — a fresh drag can just read `obj.mesh.vertices` directly (nothing's moved yet),
+   *  while converting an in-progress 'move' into a 'vertex-slide' needs to fall back to the
+   *  already-captured start positions for any neighbor that's *also* being dragged (see
+   *  `startVertexSlide`'s own `origLocal`). */
+  function buildUvCorrectionData(
+    obj: SceneObject,
+    indices: number[],
+    neighborsOf: Map<number, number[]>,
+    origLocal: (idx: number) => Vec2,
+  ): { uvNeighbors: UvNeighbor[][]; uvSelf: Vec2[] } | undefined {
+    if (!obj.uvBaseVertices) return undefined
+    const uvOf = (idx: number): Vec2 => obj.uvBaseVertices?.[idx] ?? origLocal(idx)
+    const uvNeighbors = indices.map((idx) =>
+      (neighborsOf.get(idx) ?? []).map((n): UvNeighbor => ({ pos: origLocal(n), uv: uvOf(n) })),
+    )
+    const uvSelf = indices.map((idx) => uvOf(idx))
+    return { uvNeighbors, uvSelf }
+  }
+
+  function buildNeighborsOf(mesh: Mesh): Map<number, number[]> {
+    const neighborsOf = new Map<number, number[]>()
+    for (const [a, b] of getEdges(mesh)) {
+      if (!neighborsOf.has(a)) neighborsOf.set(a, [])
+      if (!neighborsOf.has(b)) neighborsOf.set(b, [])
+      neighborsOf.get(a)!.push(b)
+      neighborsOf.get(b)!.push(a)
+    }
+    return neighborsOf
+  }
+
   function startElementModal(kind: 'rotate' | 'scale' | 'move', skipBeginChange = false) {
     const store = useSceneStore.getState()
     if (store.mode !== 'edit' || !store.selectedObjectId) return
@@ -463,6 +508,9 @@ export default function Viewport() {
         axisLock: null,
       }
     } else {
+      const uvData = store.correctFaceAttributes
+        ? buildUvCorrectionData(obj, indices, buildNeighborsOf(obj.mesh), (n) => obj.mesh.vertices[n])
+        : undefined
       elementModalRef.current = {
         kind: 'move',
         objectId: obj.id,
@@ -471,6 +519,8 @@ export default function Viewport() {
         startWorld: currentPointerWorld(),
         axisLock: null,
         seedUvOnConfirm: skipBeginChange,
+        uvNeighbors: uvData?.uvNeighbors,
+        uvSelf: uvData?.uvSelf,
       }
     }
   }
@@ -500,15 +550,9 @@ export default function Viewport() {
       return at >= 0 ? modal.startPositions[at] : obj.mesh.vertices[idx]
     }
 
-    const neighborsOf = new Map<number, number[]>()
-    for (const [a, b] of getEdges(obj.mesh)) {
-      if (!neighborsOf.has(a)) neighborsOf.set(a, [])
-      if (!neighborsOf.has(b)) neighborsOf.set(b, [])
-      neighborsOf.get(a)!.push(b)
-      neighborsOf.get(b)!.push(a)
-    }
-
+    const neighborsOf = buildNeighborsOf(obj.mesh)
     const neighbors = modal.indices.map((idx) => (neighborsOf.get(idx) ?? []).map((n) => origLocal(n)))
+    const uvData = store.correctFaceAttributes ? buildUvCorrectionData(obj, modal.indices, neighborsOf, origLocal) : undefined
 
     elementModalRef.current = {
       kind: 'vertex-slide',
@@ -520,6 +564,8 @@ export default function Viewport() {
       chosenNeighbor: modal.indices.map(() => null),
       lockedNeighbor: modal.indices.map(() => null),
       liveRails: modal.indices.map(() => null),
+      uvNeighbors: uvData?.uvNeighbors,
+      uvSelf: uvData?.uvSelf,
     }
   }
 
@@ -565,6 +611,29 @@ export default function Viewport() {
   }
 
   /** Recompute and write the live vertex positions for the active R/S modal, given the cursor. */
+  /** The write side of "Correct Face Attributes" (see `correctUv.ts`'s doc) — called right after
+   *  `setVertexPositions` in both the 'move' and 'vertex-slide' branches below, given each moved
+   *  index's pre-drag local position (`startLocal`, parallel to `modal.indices`) alongside the
+   *  modal's own `uvNeighbors`/`uvSelf` snapshot. No-ops (and touches nothing) when that snapshot
+   *  is absent, i.e. the toggle was off or the object had no UV data when the drag started. */
+  function applyUvCorrection(
+    store: ReturnType<typeof useSceneStore.getState>,
+    objectId: string,
+    indices: number[],
+    uvNeighbors: UvNeighbor[][] | undefined,
+    uvSelf: Vec2[] | undefined,
+    startLocal: Vec2[],
+    newLocal: Vec2[],
+  ) {
+    if (!uvNeighbors || !uvSelf) return
+    const overrides = new Map<number, Vec2>()
+    indices.forEach((idx, i) => {
+      const corrected = correctVertexUv(uvNeighbors[i], startLocal[i], uvSelf[i], newLocal[i])
+      if (corrected) overrides.set(idx, corrected)
+    })
+    if (overrides.size > 0) store.patchUvBaseVertices(objectId, overrides)
+  }
+
   function updateElementModal(ctrlKey: boolean, altKey: boolean) {
     const modal = elementModalRef.current
     if (!modal) return
@@ -602,6 +671,7 @@ export default function Viewport() {
       const localDy = (dx * sin + dy * cos) / worldTransform.scaleY
       const positions = modal.startPositions.map((p) => ({ x: p.x + localDx, y: p.y + localDy }))
       store.setVertexPositions(modal.objectId, modal.indices, positions)
+      applyUvCorrection(store, modal.objectId, modal.indices, modal.uvNeighbors, modal.uvSelf, modal.startPositions, positions)
       return
     }
 
@@ -736,6 +806,7 @@ export default function Viewport() {
         return inverseTransform(worldPos, worldTransform)
       })
       store.setVertexPositions(modal.objectId, modal.indices, positions)
+      applyUvCorrection(store, modal.objectId, modal.indices, modal.uvNeighbors, modal.uvSelf, modal.origPositions, positions)
       return
     }
 
@@ -1503,6 +1574,7 @@ export default function Viewport() {
       gridVisible,
       wireframeVisible,
       objectModeWireframeOpacity,
+      editorColors,
       clips,
       activeClipId,
       playheadTime,
@@ -1510,6 +1582,13 @@ export default function Viewport() {
       previewFakePhysicsMesh,
       pixelFrame,
     } = useSceneStore.getState()
+
+    // the renderer canvas itself is transparent (`alpha: true`, so a reference image or future
+    // render-target trick can show through) — the visible backdrop is just the container div's
+    // own CSS background, set imperatively here (like everything else in this rAF-driven scene
+    // rebuild) rather than through a React prop, so it stays in sync without adding a re-render
+    // subscription to a component that's otherwise driven entirely by refs.
+    if (containerRef.current) containerRef.current.style.background = editorColors.background
 
     if (referenceImage && referenceImage.visible) addReferenceImage(scene, referenceImage)
     if (gridVisible) addGrid(scene)
@@ -1777,7 +1856,7 @@ export default function Viewport() {
         const edgeGeom = new THREE.BufferGeometry()
         edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
         const edgeMat = new THREE.LineBasicMaterial({
-          color: obj.kind === 'lattice' ? 0xff8800 : isSelected ? 0xffffff : 0x000000,
+          color: obj.kind === 'lattice' ? 0xff8800 : isSelected ? 0xffffff : parseInt(editorColors.wireframe.slice(1), 16),
           // Edit mode always draws the wireframe at full opacity — precise vertex/edge/face
           // selection depends on seeing it clearly. Object mode's is just a visual guide, so the
           // "Wireframe opacity" slider is allowed to dim it there — except a Lattice cage, whose
@@ -2541,7 +2620,8 @@ export default function Viewport() {
     // also doubles as the increment grid-snap will snap to, so it stays user-configurable rather
     // than a fixed fraction. Skipped once the lines would land closer than a few px apart (e.g.
     // zoomed out, or a high subdivision count), where they'd just be visual noise.
-    const { gridSubdivisions } = useSceneStore.getState()
+    const { gridSubdivisions, editorColors } = useSceneStore.getState()
+    const gridColorNum = parseInt(editorColors.grid.slice(1), 16)
     const subSpacing = spacing / gridSubdivisions
     const subPositions: number[] = []
     if (subSpacing * view.zoom >= 6) {
@@ -2569,7 +2649,7 @@ export default function Viewport() {
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(subPositions, 3))
       const mat = new THREE.LineDashedMaterial({
-        color: 0x545454,
+        color: gridColorNum,
         dashSize: 2 * pxToWorld,
         gapSize: 2 * pxToWorld,
         transparent: true,
@@ -2582,7 +2662,7 @@ export default function Viewport() {
     if (minorPositions.length > 0) {
       const geom = new THREE.BufferGeometry()
       geom.setAttribute('position', new THREE.Float32BufferAttribute(minorPositions, 3))
-      const mat = new THREE.LineBasicMaterial({ color: 0x545454 })
+      const mat = new THREE.LineBasicMaterial({ color: gridColorNum })
       scene.add(new THREE.LineSegments(geom, mat))
     }
     if (xAxisPositions) {

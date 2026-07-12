@@ -92,6 +92,12 @@ function bumpNextIdPast(objects: SceneObject[]) {
 
 const DEFAULT_MATERIAL_COLOR = '#91AA9B'
 
+/** Hardcoded defaults for `editorColors`, matching `Viewport.tsx`'s previous literal hex values
+ *  (background: the `.viewport` CSS rule; grid: both major and sub-grid lines share one hex;
+ *  wireframe: the unselected-object color) — kept here as the single source of truth so
+ *  `resetEditorColors` can't drift from whatever the initial state below sets. */
+export const DEFAULT_EDITOR_COLORS = { background: '#3b3b3b', grid: '#545454', wireframe: '#000000' }
+
 /** Selection state that selects every vertex/edge/face belonging to the given islands (by
  *  `findIslands` index) — shared by `selectLinked` and `selectIsland`. */
 function islandSelectionState(
@@ -161,6 +167,13 @@ interface SceneState {
   /** Persistent "Grid Snap" toggle (Blender-style) — while on, moves snap to the grid by default;
    *  holding Ctrl temporarily inverts it (off while held), and vice versa while this is off. */
   gridSnapEnabled: boolean
+  /** Blender's "Correct Face Attributes" — while on, the G grab and GG vertex-slide modals
+   *  (`Viewport.tsx`) also re-derive each moved vertex's `uvBaseVertices` entry (see
+   *  `correctVertexUv` in `correctUv.ts`) so the texture image appears to stay in place instead
+   *  of stretching to the new geometry. Off by default (matches this app's normal "UV stays
+   *  frozen, mesh deforms" behavior, per `uvBaseVertices`'s own doc) — scoped to just these two
+   *  ops per the user's request, not every transform (R/S/Extrude leave UVs alone either way). */
+  correctFaceAttributes: boolean
   /** Whether the background grid (major + sub-grid lines) is drawn in the viewport. Purely
    *  visual — independent of `gridSnapEnabled`, which keeps working even while the grid is hidden. */
   gridVisible: boolean
@@ -173,6 +186,13 @@ interface SceneState {
    *  opacity since precise vertex/edge/face selection depends on seeing it clearly; Object mode's
    *  wireframe is just a visual guide, so it's nice to be able to dim it down against a busy scene. */
   objectModeWireframeOpacity: number
+  /** User-customizable viewport chrome colors ("Editor Color" in Properties' Viewport section) —
+   *  hex strings (`"#rrggbb"`, same convention as a material's `Color` swatch) rather than THREE's
+   *  numeric hex, since these feed straight into `<input type="color">` and CSS. `wireframe` is
+   *  only the *unselected/default* mesh wireframe (`Viewport.tsx`'s per-object color branch) —
+   *  the selected-object highlight, axis lines, and a Lattice cage's own orange stay fixed, same
+   *  as Blender only exposing the base "Wire" theme color and not every highlight state. */
+  editorColors: { background: string; grid: string; wireframe: string }
   /** Whether the pixel preview panel (low-res, nearest-neighbor render simulating the final
    *  dot-art output) is shown. */
   pixelPreviewEnabled: boolean
@@ -277,9 +297,20 @@ interface SceneState {
   setMeshOpacity: (opacity: number) => void
   setGridSubdivisions: (n: number) => void
   setGridSnapEnabled: (enabled: boolean) => void
+  setCorrectFaceAttributes: (enabled: boolean) => void
+  /** Merges the given per-vertex-index overrides into an object's `uvBaseVertices` — the write
+   *  side of `correctFaceAttributes`, called by the G/GG modals in `Viewport.tsx` right alongside
+   *  `setVertexPositions` (a separate action rather than folding into that one, since ordinary
+   *  moves never touch UVs at all — see `uvBaseVertices`'s doc — and most callers of
+   *  `setVertexPositions` shouldn't need to think about this). */
+  patchUvBaseVertices: (objectId: string, overrides: Map<number, Vec2>) => void
   setGridVisible: (visible: boolean) => void
   setWireframeVisible: (visible: boolean) => void
   setObjectModeWireframeOpacity: (opacity: number) => void
+  setEditorColor: (key: keyof SceneState['editorColors'], value: string) => void
+  /** Restores all three `editorColors` to `DEFAULT_EDITOR_COLORS` — the "Reset" button next to
+   *  the Editor Color swatches. */
+  resetEditorColors: () => void
   setPixelPreviewEnabled: (enabled: boolean) => void
   setPixelPreviewResolution: (n: number) => void
   setPixelPreviewOffset: (offset: { x: number; y: number }) => void
@@ -950,9 +981,11 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   meshOpacity: 1,
   gridSubdivisions: 10,
   gridSnapEnabled: false,
+  correctFaceAttributes: false,
   gridVisible: true,
   wireframeVisible: true,
   objectModeWireframeOpacity: 0.4,
+  editorColors: { ...DEFAULT_EDITOR_COLORS },
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
@@ -1348,9 +1381,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   setMeshOpacity: (opacity) => set({ meshOpacity: Math.max(0, Math.min(1, opacity)) }),
   setGridSubdivisions: (n) => set({ gridSubdivisions: Math.max(1, Math.min(100, Math.round(n))) }),
   setGridSnapEnabled: (enabled) => set({ gridSnapEnabled: enabled }),
+  setCorrectFaceAttributes: (enabled) => set({ correctFaceAttributes: enabled }),
+  patchUvBaseVertices: (objectId, overrides) =>
+    set((s) => ({
+      objects: s.objects.map((o) => {
+        if (o.id !== objectId || overrides.size === 0) return o
+        const next = { ...(o.uvBaseVertices ?? {}) }
+        overrides.forEach((v, idx) => (next[idx] = v))
+        return { ...o, uvBaseVertices: next }
+      }),
+    })),
   setGridVisible: (visible) => set({ gridVisible: visible }),
   setWireframeVisible: (visible) => set({ wireframeVisible: visible }),
   setObjectModeWireframeOpacity: (opacity) => set({ objectModeWireframeOpacity: Math.max(0, Math.min(1, opacity)) }),
+  setEditorColor: (key, value) => set((s) => ({ editorColors: { ...s.editorColors, [key]: value } })),
+  resetEditorColors: () => set({ editorColors: { ...DEFAULT_EDITOR_COLORS } }),
   setPixelPreviewEnabled: (enabled) => set({ pixelPreviewEnabled: enabled }),
   setPixelPreviewResolution: (n) => set({ pixelPreviewResolution: Math.max(16, Math.min(1024, Math.round(n / 8) * 8)) }),
   setPixelPreviewOffset: (offset) => set({ pixelPreviewOffset: offset }),
