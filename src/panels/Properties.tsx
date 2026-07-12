@@ -6,7 +6,9 @@ import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
 import { FAKE_PHYSICS_MESH_SECTION_COLORS } from '../scene/fakePhysicsMesh'
 import { decodeGif, gifFrameAt, gifFrameStartMs, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
+import { objectHasAnimation } from '../scene/animation'
 import type {
+  AnimationClip,
   AppMode,
   FakeBehindSettings,
   FakeFlagSettings,
@@ -1311,6 +1313,8 @@ function FfdModifierBox({
   removeModifier,
   updateFfd,
   resetFfdCageRest,
+  applyFfd,
+  clips,
 }: {
   obj: SceneObject
   objects: SceneObject[]
@@ -1318,6 +1322,8 @@ function FfdModifierBox({
   removeModifier: (id: string, type: Modifier['type']) => void
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
+  applyFfd: (id: string) => void
+  clips: AnimationClip[]
 }) {
   const cageObjects = objects.filter((o) => o.kind === 'lattice')
   const cage = objects.find((o) => o.id === settings.cageObjectId)
@@ -1375,6 +1381,23 @@ function FfdModifierBox({
                 onClick={() => resetFfdCageRest(cage.id)}
               >
                 Reset cage rest shape
+              </button>
+              <button
+                title="Bake this cage's current deformation into the mesh itself, then unassign the cage"
+                onClick={() => {
+                  if (
+                    objectHasAnimation(clips, cage.id) &&
+                    !window.confirm(
+                      `"${cage.name}" has keyframes animating it. Applying FFD now freezes "${obj.name}" to the ` +
+                        'cage\'s current pose — it will no longer follow that animation afterward. Continue?',
+                    )
+                  ) {
+                    return
+                  }
+                  applyFfd(obj.id)
+                }}
+              >
+                Apply FFD
               </button>
             </div>
           )}
@@ -1527,6 +1550,8 @@ function ModifiersSection(props: {
   insertFollowPathProgressKeyframe: (objectId: string, time: number) => void
   updateFfd: (id: string, patch: Partial<FfdSettings>) => void
   resetFfdCageRest: (cageObjectId: string) => void
+  applyFfd: (id: string) => void
+  clips: AnimationClip[]
   updateVolumePreserve: (id: string, patch: Partial<VolumePreserveSettings>) => void
 }) {
   const { obj, objects, mode, addModifier } = props
@@ -1714,6 +1739,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const updateFfd = useSceneStore((s) => s.updateFfd)
   const resizeLattice = useSceneStore((s) => s.resizeLattice)
   const resetFfdCageRest = useSceneStore((s) => s.resetFfdCageRest)
+  const applyFfd = useSceneStore((s) => s.applyFfd)
+  const clips = useSceneStore((s) => s.clips)
   const updateVolumePreserve = useSceneStore((s) => s.updateVolumePreserve)
   const beginChange = useSceneStore((s) => s.beginChange)
   const hasVertexSelection = useSceneStore(
@@ -2123,6 +2150,8 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             insertFollowPathProgressKeyframe={insertFollowPathProgressKeyframe}
             updateFfd={updateFfd}
             resetFfdCageRest={resetFfdCageRest}
+            applyFfd={applyFfd}
+            clips={clips}
             updateVolumePreserve={updateVolumePreserve}
           />
 

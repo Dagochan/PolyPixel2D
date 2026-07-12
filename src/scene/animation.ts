@@ -28,6 +28,25 @@ function lerpTransform(a: Transform, b: Transform, t: number): Transform {
   }
 }
 
+/** Whether `objectId` has any hand-authored or baked keyframes in any clip — used to warn before
+ *  an operation (like Apply FFD) that would freeze an object's current pose, since that pose would
+ *  otherwise silently stop tracking whatever's animating it. Checks every track kind, including the
+ *  machine-generated Fake Physics bakes (a cage swaying via baked Fake Physics is just as "animated"
+ *  as one with hand-keyed Transform tracks). */
+export function objectHasAnimation(clips: AnimationClip[], objectId: string): boolean {
+  const has = (tracks: { objectId: string; keyframes: unknown[] }[] | undefined) =>
+    tracks?.some((t) => t.objectId === objectId && t.keyframes.length > 0) ?? false
+  return clips.some(
+    (c) =>
+      has(c.tracks) ||
+      has(c.shapeKeyTracks) ||
+      has(c.fakePhysicsTracks) ||
+      has(c.fakePhysicsMeshTracks as unknown as { objectId: string; keyframes: unknown[] }[] | undefined) ||
+      has(c.pathOffsetTracks) ||
+      has(c.followPathProgressTracks),
+  )
+}
+
 /** Maps a raw query time (seconds, can be negative or past `duration`) into a clip's [0, duration]
  *  playback range per its loop mode. 'none' just clamps to the boundary. */
 export function resolvePlaybackTime(time: number, duration: number, loopMode: LoopMode): number {

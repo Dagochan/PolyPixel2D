@@ -1777,11 +1777,13 @@ export default function Viewport() {
         const edgeGeom = new THREE.BufferGeometry()
         edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3))
         const edgeMat = new THREE.LineBasicMaterial({
-          color: obj.kind === 'lattice' ? 0xffaa33 : isSelected ? 0xffffff : 0x000000,
+          color: obj.kind === 'lattice' ? 0xff8800 : isSelected ? 0xffffff : 0x000000,
           // Edit mode always draws the wireframe at full opacity — precise vertex/edge/face
           // selection depends on seeing it clearly. Object mode's is just a visual guide, so the
-          // "Wireframe opacity" slider is allowed to dim it there.
-          opacity: mode === 'object' ? 0.6 * objectModeWireframeOpacity : 0.6,
+          // "Wireframe opacity" slider is allowed to dim it there — except a Lattice cage, whose
+          // grid *is* its whole visible representation (same reasoning as the forced-on check
+          // above), so it stays at full opacity regardless of that slider.
+          opacity: mode === 'object' && obj.kind !== 'lattice' ? 0.6 * objectModeWireframeOpacity : 0.6,
           transparent: true,
         })
         const edgeLines = new THREE.LineSegments(edgeGeom, edgeMat)

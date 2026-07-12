@@ -47,11 +47,16 @@ function bilerp(p00: Vec2, p10: Vec2, p01: Vec2, p11: Vec2, tx: number, ty: numb
  *  caller's own precomputed map of every object's post-shape-key(+Fake Flag+Fake Physics) vertices
  *  (see `composeDisplayObjects`'s two-pass structure), so the cage's *current* grid can reflect a
  *  sculpted Shape Key on the Lattice itself instead of always reading its raw Basis. Falls back to
- *  `cage.mesh.vertices` when omitted (or the cage has no entry), same as before. */
+ *  `cage.mesh.vertices` when omitted (or the cage has no entry), same as before.
+ *
+ *  `points`, if supplied, are evaluated instead of `obj.mesh.vertices` — same objectLocal→cageLocal
+ *  lookup, just against arbitrary object-local points (e.g. `obj.tail`) rather than mesh vertices.
+ *  Used by Apply FFD to bake the tail/shape-key/uv points consistently with the mesh itself. */
 export function ffdVertexDeltas(
   obj: SceneObject,
   allObjects: SceneObject[],
   deformedVerticesById?: Map<string, Vec2[]>,
+  points?: Vec2[],
 ): Vec2[] | null {
   const settings = getFfd(obj)
   if (!settings?.enabled || !settings.cageObjectId) return null
@@ -85,7 +90,7 @@ export function ffdVertexDeltas(
     ? cageBaseVerts.map((v, i) => ({ x: v.x + cagePathDeformDeltas[i].x, y: v.y + cagePathDeformDeltas[i].y }))
     : cageBaseVerts
 
-  return obj.mesh.vertices.map((v) => {
+  return (points ?? obj.mesh.vertices).map((v) => {
     const world = applyTransform(v, objWorld)
     const cageLocal = inverseTransform(world, cageWorld)
     // Continuous grid coordinates, clamped to the cage's own extent — a vertex sticking outside

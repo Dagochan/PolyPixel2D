@@ -4,7 +4,7 @@
 > このファイルは「今、何が実装済みで、何が未実装か」を追うための進捗まとめ。随時更新する。
 > FlaFlo2D（前身アプリ、`git@github.com:Dagochan/2D_DCC_Tool` で開発継続中）のコードをベースに分岐し、不要機能を削った上で新規要素を追加している。
 
-最終更新: 2026-07-11（スプライトシート書き出しを追加）
+最終更新: 2026-07-12（Apply FFD、Lattice選択色の視認性改善を追加）
 
 > 補足: 2026-06-29頃から2026-07-10の間、機能追加のたびにここを更新する運用が止まり、代わりにClaude Codeの自動メモリ（セッション横断の永続記憶）にのみ記録される期間があった。そのため間が空いているが、実装自体は継続していた。今後は両方を使い分ける: **PROGRESS.mdはコードと一緒にgit管理される「実装済み機能の説明」**、**メモリは「アイデア・フィードバック・進行中の経緯」**という役割分担。
 
@@ -25,14 +25,14 @@
 - `src/scene/shapeKeys.ts` — シェイプキー（モーフターゲット）。`displayVertices`でBasis+各キーのブレンド値を合成。Linear（直線ブレンド）/Arc（ピボット中心の弧に沿ったブレンド、大きな回転でのボリューム消失を回避）の2種類の補間モード
 - `src/scene/fakeFlag.ts` — Fake Flag（sin波による旗・布のなびき）。回転モード（アンカー中心にオブジェクト全体が振り子のように揺れる）と頂点モード（頂点ごとにsin波で変位、布のような表現）の2種類
 - `src/scene/fakePhysics.ts` / `fakePhysicsMesh.ts` — Fake Physics（揺れ物、バネによる遅延・オーバーシュート表現）。オブジェクトチェーン版（`parentId`で連結した実オブジェクトが親の動きに段階的に遅れて追従）とメッシュセクション版（1オブジェクト内の固定5セクションがカスケード）の2種類。どちらもクリップへのベイク（`simulateFakePhysicsChain`/`simulateFakePhysicsMeshSections`、ループ継ぎ目の`applyConvergence`収束処理込み）と、Viewport限定のライブドラッグプレビュー（`stepFakePhysicsMeshLive`、マウスでオブジェクトを動かした実時間dtでバネを毎フレーム積分）の両方に対応。メッシュセクション版はオブジェクト自身ではなく**祖先チェーンを含めて解決したワールド座標の動き**を揺れの発生源にする（`getWorldTransform`を時刻ごとに再評価）——頭にペアレントした髪メッシュのように、そのオブジェクト自身にキーフレームが無くても親の動きに反応する（2026-07-10修正、以前は自分自身のローカルキーフレームしか見ておらず無反応だった）。ループクリップは`simulateSpringLooped`でループ分の駆動信号を複数周ぶん助走させ、周期的な定常応答に収束させてから最後の1周を切り出す（2026-07-10追加、継ぎ目の不自然な強制ブレンドを解消）
-- `src/scene/ffd.ts` — FFD（Free-Form Deformation）。専用の`kind: 'lattice'`オブジェクトをケージとして、バイリニア補間で参照先オブジェクトのメッシュを変形。ケージ自身のPath Deform (Rail)は畳み込んで反映するが、ケージのシェイプキー等（フレームごとの状態を要するもの）は`composeDisplayObjects`側から渡される`deformedVerticesById`マップ経由で反映（2026-07-10修正、後述）
+- `src/scene/ffd.ts` — FFD（Free-Form Deformation）。専用の`kind: 'lattice'`オブジェクトをケージとして、バイリニア補間で参照先オブジェクトのメッシュを変形。ケージ自身のPath Deform (Rail)は畳み込んで反映するが、ケージのシェイプキー等（フレームごとの状態を要するもの）は`composeDisplayObjects`側から渡される`deformedVerticesById`マップ経由で反映（2026-07-10修正、後述）。**Apply FFD**（2026-07-12）— Blender風の「現在の変形をベイクして元に戻す」操作。`store.ts`の`applyFfd`が現在のケージ変形を`mesh.vertices`・`tail`・`uvBaseVertices`・`cageRestVertices`・各シェイプキーの`positions`/`arcPivot`に焼き込み、FFDモディファイアの`cageObjectId`をnullにリセットする（Apply Scaleと同じベイクパターン）。ケージ側にアニメーション（キーフレーム・Fake Physicsベイク等）がある場合は`animation.ts`の`objectHasAnimation`で検知し、Properties.tsxの「Apply FFD」ボタン押下時に`window.confirm`で警告してから実行（アニメがあっても続行は可能、Blenderの他のApply系と同じ立て付け）
 - `src/scene/pathDeformRail.ts` — Path Deform (Rail)。Latticeケージ専用の2レール式パス変形、共通u→s写像で断面が常に垂直になるよう設計。旧・汎用メッシュ向けPath Deformは削除済み
 - `src/scene/followPath.ts` — Follow Path。Blenderの同名コンストレイント相当、オブジェクトの`Transform`をPathに沿わせる（メッシュ自体は変形しない）。progressはキーフレーム可能、向きの解決はHead/Tailを流用＋Flipトグルで反転
 - `src/scene/fakeBehind.ts` — FakeBehind。ステンシルバッファによる透明マスク（ロープが岩の後ろを通る、等の遮蔽表現）。Viewport・PixelPreview両対応
 - `src/scene/gifDecode.ts` — アニメーションGIFのリファレンス画像対応（`gifuct-js`使用）。タイムラインplayheadに自動追従してコマ送り、Start offset調整、Flip X
 - `src/scene/project.ts` — プロジェクトの保存/読み込み（JSON）。**保存拡張子は`.pptd`**（2026-07-10、前身アプリ由来の`.fltd`から改名。読み込み側は拡張子をチェックしないため旧`.fltd`ファイルもそのまま開ける）
 - `src/scene/animation.ts` — アニメーションクリップ（`AnimationClip`）。`Transform`のキーフレーム、イージング（linear/easeIn/easeOut/easeInOut）、ループモード、Fake Physicsの各種ベイクトラックを保持
-- `src/viewport/Viewport.tsx`（~4300行）— Three.jsでの描画と全ポインター/キーボード操作のハンドリング
+- `src/viewport/Viewport.tsx`（~4300行）— Three.jsでの描画と全ポインター/キーボード操作のハンドリング。Latticeのワイヤーフレームはケージそのものが唯一の見た目のため、Object-modeの「Wireframe opacity」スライダーの減光対象から常に除外し、通常メッシュより彩度の高いオレンジ（`0xff8800`）で描画（2026-07-12、スライダー導入で薄くなり過ぎて見づらいという指摘を受けて修正）
 - `src/viewport/PixelPreview.tsx` — ピクセルプレビューパネル。`composeDisplayObjects`を使い、メインビューポートと同じ変形結果を低解像度・ニアレストネイバーでレンダリング
 - `src/panels/` — Toolbar・ToolPane・Outliner・Properties・Timeline・UvEditor の各UIパネル
 - `src/App.tsx` — グローバルなキーボードショートカット

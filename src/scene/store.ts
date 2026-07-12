@@ -35,7 +35,7 @@ import { boundsVertices } from './pathCurve'
 import { DEFAULT_FAKE_FLAG_SETTINGS, getFakeFlag } from './fakeFlag'
 import { DEFAULT_PATH_DEFORM_RAIL_SETTINGS, getPathDeformRail } from './pathDeformRail'
 import { DEFAULT_FOLLOW_PATH_SETTINGS, getFollowPath } from './followPath'
-import { DEFAULT_FFD_SETTINGS } from './ffd'
+import { DEFAULT_FFD_SETTINGS, ffdVertexDeltas, getFfd } from './ffd'
 import { DEFAULT_VOLUME_PRESERVE_SETTINGS } from './volumePreserve'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
 import {
@@ -524,6 +524,13 @@ interface SceneState {
    *  appearance is unchanged; only future Edit Mode rotations/scales stop compounding with a
    *  stale non-uniform Object-mode scale. */
   applyScale: (id: string) => void
+  /** Bakes the object's current FFD (lattice) deformation into `mesh.vertices` (plus `tail`,
+   *  `uvBaseVertices`, `cageRestVertices`, each shape key's `positions`/`arcPivot`), then clears the
+   *  FFD modifier's `cageObjectId` so it no longer double-applies. World appearance is unchanged at
+   *  the moment of Apply — but since the deformation is a snapshot of the cage's *current* pose, any
+   *  animation driving the cage (or its own Path Deform/shape keys) stops affecting this object
+   *  afterward. No-op if the object has no active FFD modifier. */
+  applyFfd: (id: string) => void
   /** Live, wall-clock-driven Fake Flag preview, independent of the playhead/active clip — lets a
    *  user see the sway/flutter without laying down any keyframes first. Toggling this never
    *  touches undo history (it's a view setting, not a scene edit). */
@@ -2871,6 +2878,46 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
       }),
     }))
+  },
+
+  applyFfd: (id) => {
+    get().beginChange()
+    set((s) => {
+      const obj = s.objects.find((o) => o.id === id)
+      if (!obj) return s
+      const meshDeltas = ffdVertexDeltas(obj, s.objects)
+      if (!meshDeltas) return s
+      const bakeAt = (v: Vec2, i: number): Vec2 => ({ x: v.x + meshDeltas[i].x, y: v.y + meshDeltas[i].y })
+      const bakePoint = (v: Vec2): Vec2 => {
+        const d = ffdVertexDeltas(obj, s.objects, undefined, [v])
+        return d ? { x: v.x + d[0].x, y: v.y + d[0].y } : v
+      }
+      const ffd = getFfd(obj)
+      return {
+        objects: s.objects.map((o) => {
+          if (o.id !== id) return o
+          return {
+            ...o,
+            mesh: { ...o.mesh, vertices: o.mesh.vertices.map(bakeAt) },
+            tail: bakePoint(o.tail),
+            uvBaseVertices: o.uvBaseVertices
+              ? Object.fromEntries(Object.entries(o.uvBaseVertices).map(([i, v]) => [i, bakeAt(v, Number(i))]))
+              : o.uvBaseVertices,
+            cageRestVertices: o.cageRestVertices?.map(bakeAt),
+            shapeKeys: o.shapeKeys?.map((sk) => ({
+              ...sk,
+              positions: Object.fromEntries(
+                Object.entries(sk.positions).map(([i, v]) => [i, bakeAt(v, Number(i))]),
+              ),
+              arcPivot: sk.arcPivot ? bakePoint(sk.arcPivot) : sk.arcPivot,
+            })),
+            modifiers: o.modifiers?.map((m) =>
+              m.type === 'ffd' && m.settings === ffd ? { ...m, settings: { ...m.settings, cageObjectId: null } } : m,
+            ),
+          }
+        }),
+      }
+    })
   },
 
   toggleFakePhysicsEnabled: (id) => {
