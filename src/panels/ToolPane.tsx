@@ -1,6 +1,5 @@
 import { useSceneStore } from '../scene/store'
 import { findCommonBoundaryFace, edgesAmongVertices } from '../scene/fanCut'
-import { findOpenVertexPath } from '../scene/smoothPath'
 import {
   ObjectModeIcon,
   EditModeIcon,
@@ -12,7 +11,6 @@ import {
   RingCutIcon,
   KnifeIcon,
   FanCutIcon,
-  SmoothPathIcon,
   ExtrudeIcon,
   DissolveIcon,
 } from './icons'
@@ -57,16 +55,6 @@ export default function ToolPane() {
   }
   const fanCutValid =
     !!selectedObj && !isLattice && !!fanCutEdges && findCommonBoundaryFace(selectedObj.mesh, fanCutEdges) !== null
-
-  // Smooth Path targets a single open vertex chain (any number of selected vertices in Vertex
-  // mode, at least 3, connected via existing edges with exactly 2 endpoints) — see the tool's
-  // doc in Viewport.tsx / `findOpenVertexPath`.
-  const smoothPathValid =
-    !!selectedObj &&
-    !isLattice &&
-    editElementType === 'vertex' &&
-    selectedVerticesCount >= 3 &&
-    findOpenVertexPath(selectedObj.mesh, Array.from(selectedVertices)) !== null
 
   return (
     <div className="tool-pane">
@@ -169,18 +157,6 @@ export default function ToolPane() {
               onClick={() => setActiveTool(activeTool === 'fancut' ? 'select' : 'fancut')}
             >
               <FanCutIcon />
-            </button>
-            <button
-              className={activeTool === 'smoothpath' ? 'active' : ''}
-              disabled={!smoothPathValid}
-              title={
-                isLattice
-                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
-                  : 'Smooth Path: relaxes the zigzag out of the selected open vertex chain (3+ vertices, one simple path) into a smooth curve — the 2 endpoints never move — scroll to set the relaxation strength (0 = untouched), click to confirm, Esc/right-click to cancel'
-              }
-              onClick={() => setActiveTool(activeTool === 'smoothpath' ? 'select' : 'smoothpath')}
-            >
-              <SmoothPathIcon />
             </button>
             <button
               disabled={

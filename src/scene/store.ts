@@ -47,7 +47,6 @@ import { createCircleMesh, createHairPathMesh, createRectMesh } from './primitiv
 import { applyLoopCut as applyLoopCutToMesh } from './loopCut'
 import { findFan, applyRingCut as applyRingCutToMesh } from './ringCut'
 import { findCommonBoundaryFace, applyFanCut as applyFanCutToMesh } from './fanCut'
-import { findOpenVertexPath, computeSmoothedPositions } from './smoothPath'
 import { findFullLoop } from './loopPath'
 import { extrudeEdges } from './extrude'
 import { deleteVertices, deleteEdges, deleteFaces } from './deleteElements'
@@ -65,7 +64,6 @@ export type ActiveTool =
   | 'ringcut'
   | 'knife'
   | 'fancut'
-  | 'smoothpath'
   | 'place-rect'
   | 'place-circle'
   | 'place-hairpath'
@@ -402,11 +400,6 @@ interface SceneState {
    *  those edges into `segments` pieces, every new point also fanned to the center. No-op unless
    *  every edge is an outer-silhouette edge (used by exactly one face) of the *same* face. */
   applyFanCut: (objectId: string, edges: [number, number][], segments: number) => void
-  /** "Smooth Path": given the vertices of a single open chain (see `findOpenVertexPath`'s doc),
-   *  Laplacian-relaxes them `iterations` rounds and eases each one onto a Catmull-Rom curve fit
-   *  through the relaxed result — the two endpoints never move. Pure repositioning, no topology
-   *  change. No-op if `vertices` isn't a single simple open chain. */
-  applySmoothPath: (objectId: string, vertices: number[], iterations: number) => void
   /** Extrude the current edge/face selection on the selected object. No-op (returns false) otherwise. */
   extrudeSelection: () => boolean
   /** Delete the current vertex/edge/face selection on the selected object (no-op otherwise). */
@@ -1976,25 +1969,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       selectedVertices: new Set([result.centerIndex]),
       selectedEdges: new Set(),
       selectedFaces: new Set(),
-    }))
-  },
-
-  applySmoothPath: (objectId, vertices, iterations) => {
-    if (get().editingShapeKeyId) return
-    const obj = get().objects.find((o) => o.id === objectId)
-    if (!obj) return
-    const path = findOpenVertexPath(obj.mesh, vertices)
-    if (!path) return
-    const positions = computeSmoothedPositions(obj.mesh, path, iterations)
-    const newVertices = obj.mesh.vertices.slice()
-    path.forEach((vi, i) => {
-      newVertices[vi] = positions[i]
-    })
-    const mesh = { ...obj.mesh, vertices: newVertices }
-
-    get().beginChange()
-    set((s) => ({
-      objects: s.objects.map((o) => (o.id === objectId ? { ...o, mesh } : o)),
     }))
   },
 

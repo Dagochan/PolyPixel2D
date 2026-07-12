@@ -281,17 +281,6 @@ export function FanCutIcon({ size = 16 }: IconProps) {
   )
 }
 
-export function SmoothPathIcon({ size = 16 }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-      <path d="M4,5L4,19M20,5L20,19" strokeDasharray="2.5,2.5" />
-      <path d="M4,5C10,5 8,19 20,19" />
-      <circle cx="4" cy="5" r="1.4" fill="currentColor" stroke="none" />
-      <circle cx="20" cy="19" r="1.4" fill="currentColor" stroke="none" />
-    </svg>
-  )
-}
-
 export function ReferenceImageIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">

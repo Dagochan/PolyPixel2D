@@ -18,7 +18,6 @@ import { findFullLoop, findEdgeLoop, type LoopPath } from '../scene/loopPath'
 import { findFan, type FanPath } from '../scene/ringCut'
 import type { KnifeCutPoint } from '../scene/knifeCut'
 import { findCommonBoundaryFace, edgesAmongVertices, applyFanCut } from '../scene/fanCut'
-import { findOpenVertexPath, computeSmoothedPositions } from '../scene/smoothPath'
 import { computeSplitUVIslands, findIslands } from '../scene/uv'
 import { resolveInsertSlots } from '../scene/insertSlots'
 import { displayVertices } from '../scene/shapeKeys'
@@ -309,13 +308,6 @@ export default function Viewport() {
   // live via plain wheel while the tool is active, same interaction as loop/ring cut's count.
   const fanCutTargetRef = useRef<{ objectId: string; faceIndex: number; edges: [number, number][] } | null>(null)
   const fanCutSegmentsRef = useRef(1)
-  // Smooth Path: same "target fixed at activation, no hover" idea as Fan Cut above. Wheel adjusts
-  // the Laplacian relaxation round count live — 0 is untouched, a handful just knocks the zigzag
-  // down while keeping the chain's overall arc, many dozens approaches (but never quite reaches)
-  // a straight line. Starts at a modest default rather than 0, since reaching for the tool at all
-  // means "smooth it a bit" is the expected first result, not a no-op.
-  const smoothPathTargetRef = useRef<{ objectId: string; path: number[] } | null>(null)
-  const smoothPathIterationsRef = useRef(6)
   // control points for the in-progress Hair Path primitive, in world space (see createHairPathMesh)
   const hairPathRef = useRef<Vec2[]>([])
   // root width for the in-progress Hair Path — Shift+wheel adjusts this live while drawing
@@ -1020,12 +1012,6 @@ export default function Viewport() {
         fanCutSegmentsRef.current = Math.max(1, Math.min(20, fanCutSegmentsRef.current + delta))
         return
       }
-      // Smooth Path: scroll sets the relaxation round count, same idea as loop/ring cut's count
-      if (useSceneStore.getState().activeTool === 'smoothpath' && smoothPathTargetRef.current) {
-        const delta = e.deltaY < 0 ? 1 : -1
-        smoothPathIterationsRef.current = Math.max(0, Math.min(60, smoothPathIterationsRef.current + delta))
-        return
-      }
       // same idea for ring-cut, hovering a spoke of a triangle fan
       if (ringCutHoverRef.current) {
         const delta = e.deltaY < 0 ? 1 : -1
@@ -1073,11 +1059,6 @@ export default function Viewport() {
         useSceneStore.getState().setActiveTool('select')
         fanCutTargetRef.current = null
         fanCutSegmentsRef.current = 1
-      }
-      if (useSceneStore.getState().activeTool === 'smoothpath') {
-        useSceneStore.getState().setActiveTool('select')
-        smoothPathTargetRef.current = null
-        smoothPathIterationsRef.current = 6
       }
       if (useSceneStore.getState().activeTool === 'knife') {
         // first cancel discards the in-progress cutting line only (stays in knife mode); if
@@ -2062,21 +2043,6 @@ export default function Viewport() {
       }
     }
 
-    // Smooth Path preview: same "resolve once at activation, redraw every frame" idea as Fan Cut
-    if (mode === 'edit' && activeTool === 'smoothpath') {
-      const obj = objects.find((o) => o.id === selectedObjectId)
-      if (obj) {
-        if (!smoothPathTargetRef.current && editElementType === 'vertex' && selectedVertices.size >= 3) {
-          const path = findOpenVertexPath(obj.mesh, Array.from(selectedVertices))
-          if (path) smoothPathTargetRef.current = { objectId: obj.id, path }
-        }
-        const target = smoothPathTargetRef.current
-        if (target && target.objectId === obj.id) {
-          addSmoothPathPreview(scene, obj, target.path, smoothPathIterationsRef.current)
-        }
-      }
-    }
-
     // ghost outline for a primitive about to be placed as an island
     if (mode === 'edit' && (activeTool === 'place-rect' || activeTool === 'place-circle')) {
       const obj = objects.find((o) => o.id === selectedObjectId)
@@ -2328,34 +2294,6 @@ export default function Viewport() {
     const dotPoints = [center, ...result.newEdgeVertexIndices.map((vi) => applyTransform(result.vertices[vi], worldTransform))]
     for (const p of dotPoints) {
       const dotGeom = new THREE.CircleGeometry(4 * pxToWorld, 12)
-      const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
-      dot.position.set(p.x, p.y, 0.71)
-      scene.add(dot)
-    }
-  }
-
-  /** Smooth Path preview: a dashed line through the chain's would-be smoothed positions (at the
-   *  current wheel-set iteration count), plus a dot on each interior point that would move —
-   *  computed from a scratch `computeSmoothedPositions` result so it never touches the real mesh
-   *  until confirmed. The 2 endpoints are omitted from the dots since they never move. */
-  function addSmoothPathPreview(scene: THREE.Scene, obj: SceneObject, path: number[], iterations: number) {
-    const worldTransform = getWorldTransform(obj, useSceneStore.getState().objects)
-    const positions = computeSmoothedPositions(obj.mesh, path, iterations)
-    const worldPoints = positions.map((p) => applyTransform(p, worldTransform))
-
-    const linePositions: number[] = []
-    for (let i = 0; i < worldPoints.length - 1; i++) {
-      linePositions.push(worldPoints[i].x, worldPoints[i].y, 0.7, worldPoints[i + 1].x, worldPoints[i + 1].y, 0.7)
-    }
-    const geom = new THREE.BufferGeometry()
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3))
-    scene.add(
-      new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true })),
-    )
-
-    const pxToWorld = 1 / viewRef.current.zoom
-    for (const p of worldPoints.slice(1, -1)) {
-      const dotGeom = new THREE.CircleGeometry(3 * pxToWorld, 12)
       const dot = new THREE.Mesh(dotGeom, new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false, transparent: true }))
       dot.position.set(p.x, p.y, 0.71)
       scene.add(dot)
@@ -3704,15 +3642,6 @@ export default function Viewport() {
       return
     }
 
-    // same idea for Smooth Path — confirms with whatever iteration count the wheel left it at
-    if (useSceneStore.getState().activeTool === 'smoothpath' && smoothPathTargetRef.current) {
-      const { objectId, path } = smoothPathTargetRef.current
-      useSceneStore.getState().applySmoothPath(objectId, path, smoothPathIterationsRef.current)
-      useSceneStore.getState().setActiveTool('select')
-      smoothPathTargetRef.current = null
-      smoothPathIterationsRef.current = 6
-      return
-    }
 
     // a left-click while placing a primitive island confirms it at the previewed position
     {

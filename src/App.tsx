@@ -8,7 +8,6 @@ import ToolPane from './panels/ToolPane'
 import Timeline from './panels/Timeline'
 import { useSceneStore } from './scene/store'
 import { findCommonBoundaryFace, edgesAmongVertices } from './scene/fanCut'
-import { findOpenVertexPath } from './scene/smoothPath'
 
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
@@ -130,24 +129,6 @@ export default function App() {
         if (store.activeTool !== 'fancut' && (!edges || findCommonBoundaryFace(obj.mesh, edges) === null)) return
         e.preventDefault()
         store.setActiveTool(store.activeTool === 'fancut' ? 'select' : 'fancut')
-        return
-      }
-
-      // T for Smooth Path — needs a single open vertex chain (3+ selected vertices in Vertex
-      // mode, connected via existing edges into one simple path); see ToolPane's
-      // `smoothPathValid`/`findOpenVertexPath` doc for the same resolution logic.
-      if (!meta && e.key.toLowerCase() === 't') {
-        const store = useSceneStore.getState()
-        if (store.mode !== 'edit' || !store.selectedObjectId) return
-        const obj = store.objects.find((o) => o.id === store.selectedObjectId)
-        if (!obj || obj.kind === 'lattice') return
-        const valid =
-          store.editElementType === 'vertex' &&
-          store.selectedVertices.size >= 3 &&
-          findOpenVertexPath(obj.mesh, Array.from(store.selectedVertices)) !== null
-        if (store.activeTool !== 'smoothpath' && !valid) return
-        e.preventDefault()
-        store.setActiveTool(store.activeTool === 'smoothpath' ? 'select' : 'smoothpath')
         return
       }
 
