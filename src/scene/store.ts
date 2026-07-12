@@ -945,7 +945,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   gridSnapEnabled: false,
   gridVisible: true,
   wireframeVisible: true,
-  objectModeWireframeOpacity: 1,
+  objectModeWireframeOpacity: 0.4,
   pixelPreviewEnabled: false,
   pixelPreviewResolution: 64,
   pixelPreviewOffset: { x: 0, y: 0 },
