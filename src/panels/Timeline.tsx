@@ -312,6 +312,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     | { kind: 'fakePhysicsBaked'; objectId: string }
     // Same idea as `fakePhysicsBaked`, for the mesh (vertex-section) variant's `fakePhysicsMeshTracks`.
     | { kind: 'fakePhysicsMeshBaked'; objectId: string }
+    // Same idea as `fakePhysicsBaked`, for an Oscillator's baked `oscillatorTracks` (see
+    // `bakeOscillator`/the Oscilloscope window's "Add Keyframe").
+    | { kind: 'oscillatorBaked'; objectId: string }
     // Path Deform (Rail)'s `pathOffset` — hand-authored keyframes like a shape key's weight, but
     // keyed by `objectId` alone (see `PathOffsetTrack`'s doc), so there's only ever one per object.
     | { kind: 'pathOffset'; objectId: string; keyframes: NonNullable<typeof activeClip.pathOffsetTracks>[number]['keyframes'] }
@@ -335,6 +338,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   for (const t of activeClip.fakePhysicsMeshTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
+  for (const t of activeClip.oscillatorTracks ?? []) {
+    if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
+  }
   for (const t of activeClip.pathOffsetTracks ?? []) {
     if (!rowObjectIds.includes(t.objectId)) rowObjectIds.push(t.objectId)
   }
@@ -356,6 +362,9 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     }
     if ((activeClip.fakePhysicsMeshTracks ?? []).some((ft) => ft.objectId === objectId)) {
       rows.push({ kind: 'fakePhysicsMeshBaked', objectId })
+    }
+    if ((activeClip.oscillatorTracks ?? []).some((ot) => ot.objectId === objectId)) {
+      rows.push({ kind: 'oscillatorBaked', objectId })
     }
     const pot = (activeClip.pathOffsetTracks ?? []).find((pt) => pt.objectId === objectId)
     if (pot) rows.push({ kind: 'pathOffset', objectId, keyframes: pot.keyframes })
@@ -573,6 +582,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 </div>
               )
             }
+            if (row.kind === 'oscillatorBaked') {
+              return (
+                <div
+                  key={`osc-${row.objectId}`}
+                  className={'timeline-channel-name' + (hasTransformRow ? ' timeline-channel-subrow' : '') + (row.objectId === selectedObjectId ? ' selected' : '')}
+                  title="Oscillator — baked, dense keyframes from the Oscilloscope window's sine wave. Regenerate via 'Add Keyframe' there, not by hand."
+                  onClick={() => selectObject(row.objectId)}
+                >
+                  {hasTransformRow ? '↳ Oscillator (baked)' : `${obj?.name ?? '(deleted object)'} — Oscillator (baked)`}
+                </div>
+              )
+            }
             return (
               <div
                 key={`fpmb-${row.objectId}`}
@@ -688,18 +709,25 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                             ? `po-${row.objectId}`
                             : row.kind === 'followPathProgress'
                               ? `fpp-${row.objectId}`
-                              : `fpmb-${row.objectId}`
+                              : row.kind === 'oscillatorBaked'
+                                ? `osc-${row.objectId}`
+                                : `fpmb-${row.objectId}`
                 }
                 className={
                   'timeline-track-row' +
                   (row.kind === 'fakeFlag' ? ' fake-flag' : '') +
                   (row.kind === 'fakePhysicsBaked' || row.kind === 'fakePhysicsMeshBaked' ? ' fake-physics-baked' : '') +
+                  (row.kind === 'oscillatorBaked' ? ' oscillator-baked' : '') +
                   (row.objectId === selectedObjectId ? ' selected' : '')
                 }
               >
                 {row.kind === 'fakeFlag' ? (
                   <span className="timeline-fake-flag-label" title="Procedural — driven directly by time, nothing to key">
                     ≈ sin wave, no keyframes
+                  </span>
+                ) : row.kind === 'oscillatorBaked' ? (
+                  <span className="timeline-oscillator-label" title="Baked Oscillator sine wave — dense, machine-generated keyframes. Regenerate via the Oscilloscope window, not by hand.">
+                    ● baked oscillator
                   </span>
                 ) : row.kind === 'fakePhysicsBaked' ? (
                   <span className="timeline-fake-physics-label" title="Baked spring simulation — dense, machine-generated keyframes. Regenerate via Properties, not by hand.">

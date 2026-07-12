@@ -4,7 +4,7 @@
 > このファイルは「今、何が実装済みで、何が未実装か」を追うための進捗まとめ。随時更新する。
 > FlaFlo2D（前身アプリ、`git@github.com:Dagochan/2D_DCC_Tool` で開発継続中）のコードをベースに分岐し、不要機能を削った上で新規要素を追加している。
 
-最終更新: 2026-07-12（Apply FFD、Lattice選択色の視認性改善、Correct Face Attributes、Editor Colorを追加）
+最終更新: 2026-07-12（Apply FFD、Lattice選択色の視認性改善、Correct Face Attributes、Editor Color、Oscillator/Oscilloscopeを追加）
 
 > 補足: 2026-06-29頃から2026-07-10の間、機能追加のたびにここを更新する運用が止まり、代わりにClaude Codeの自動メモリ（セッション横断の永続記憶）にのみ記録される期間があった。そのため間が空いているが、実装自体は継続していた。今後は両方を使い分ける: **PROGRESS.mdはコードと一緒にgit管理される「実装済み機能の説明」**、**メモリは「アイデア・フィードバック・進行中の経緯」**という役割分担。
 
@@ -108,6 +108,12 @@
 ### Fake Physics（揺れ物）
 - [x] オブジェクトチェーン版 — `parentId`で連結した実オブジェクトが、親の動きに段階的に遅れて追従（バネの減衰・オーバーシュート）。Bake（チェーンのROOTのみボタン表示）、ループクリップの継ぎ目収束ブレンド
 - [x] メッシュセクション版 — 1オブジェクト内の固定5セクション（頂点グループ）がカスケード。Viewport限定のライブドラッグプレビュー（マウスでオブジェクトを動かした実時間dtでバネを毎フレーム積分）＋クリップへのベイクの両対応
+
+### Oscillator（サイン波アイドルモーション）／Oscilloscope UI
+- [x] （2026-07-12）オブジェクトのTransform（Position X/Y・Rotation・Scale X/Y のいずれか1軸）をサイン波＋決定論的シード付き擬似ノイズ（`randomness`で0=純サイン波〜1=ノイズ寄りにブレンド、`Math.random()`は不使用でスクラブ・書き出し時も再現性あり）で揺らす新モディファイア。Fake Flag/Fake Physicsとは独立した仕組み（`composeDisplayObjects`のメッシュ変形パイプラインには乗らない、Transform専用）。ロジックは`src/scene/oscillator.ts`（純粋関数、Vitestあり）
+- [x] 専用の**Oscilloscope**モーダルウィンドウ（UVエディタと同じモーダル基盤を流用、`src/panels/Oscilloscope.tsx`）— 黒背景に緑色の常時スクロールする波形（開いた瞬間から流れている、壁時計時間ベースでPreview状態と独立）。Wavelength/Amplitude/Randomness/Seedを調整可能、Input欄で対象軸を選択
+- [x] **Preview**ボタン — Fake Flagの回転スウェイと同じ「時間だけの純関数」方式（積分状態不要）でメインビューポートに試し揺れを反映。ただしFake Flagと違いデフォルトでは常時適用されず、Previewボタンを押すかベイク済みの場合のみ動く
+- [x] **Add Keyframe**ボタン — Fake Physicsと同じ「クリップ全体に密なキーフレームをベイク」方式（`AnimationClip.oscillatorTracks`、`sampleClipAtTime`で`tracks`より優先）。オブジェクト自身の既存キーフレームがあればそれを土台にオフセットを乗せる
 
 ### FakeBehind（遮蔽表現）
 - [x] ステンシルバッファによる透明マスク（ロープが岩の後ろを通る、等）。パスアニメーションとは別機能。メインビューポート・Pixel Preview両対応

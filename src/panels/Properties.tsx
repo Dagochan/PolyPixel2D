@@ -18,12 +18,14 @@ import type {
   FollowPathSettings,
   InsertSlot,
   Modifier,
+  OscillatorSettings,
   PathDeformRailSettings,
   SceneObject,
   VolumePreserveSettings,
 } from '../scene/types'
 import { REFERENCE_IMAGE_ID } from '../scene/types'
 import UvEditor from './UvEditor'
+import Oscilloscope from './Oscilloscope'
 import NumberInput from './NumberInput'
 import { VisibleTrueIcon, VisibleFalseIcon, IslandSelectIcon, LockedIcon, UnlockedIcon, AddKeyframeIcon, TrashIcon, PlayIcon, StopIcon } from './icons'
 
@@ -865,6 +867,84 @@ function VolumePreserveModifierBox({
   )
 }
 
+const OSCILLATOR_AXIS_LABELS: Record<OscillatorSettings['targetAxis'], string> = {
+  x: 'Position X',
+  y: 'Position Y',
+  rotation: 'Rotation',
+  scaleX: 'Scale X',
+  scaleY: 'Scale Y',
+}
+
+/** One modifier's settings UI for Oscillator — see `OscillatorSettings`'s doc. Wavelength/
+ *  amplitude/randomness/seed are all edited inside the Oscilloscope window itself (opened via
+ *  "Open Oscilloscope" here) rather than duplicated in this box, so there's exactly one place to
+ *  tune them; this box only holds what's needed to *find* that window again (which axis it's
+ *  wired to, at a glance) and the baked-state housekeeping every other bakeable modifier has. */
+function OscillatorModifierBox({
+  obj,
+  settings,
+  removeModifier,
+  updateOscillator,
+  clearOscillatorBake,
+  isBaked,
+  onOpenOscilloscope,
+}: {
+  obj: SceneObject
+  settings: OscillatorSettings
+  removeModifier: (id: string, type: Modifier['type']) => void
+  updateOscillator: (id: string, patch: Partial<OscillatorSettings>) => void
+  clearOscillatorBake: (id: string) => void
+  isBaked: boolean
+  onOpenOscilloscope: (id: string) => void
+}) {
+  return (
+    <div className="modifier-box">
+      <div className="prop-row modifier-box-header">
+        <button
+          className={'icon-btn' + (settings.enabled ? ' active' : '')}
+          title={settings.enabled ? 'Disable (keeps its settings)' : 'Enable'}
+          onClick={() => updateOscillator(obj.id, { enabled: !settings.enabled })}
+        >
+          {settings.enabled ? <VisibleTrueIcon size={16} /> : <VisibleFalseIcon size={16} />}
+        </button>
+        <span className="modifier-box-title">Oscillator</span>
+        <button className="icon-btn" title="Remove this modifier" onClick={() => removeModifier(obj.id, 'oscillator')}>
+          <TrashIcon size={14} />
+        </button>
+      </div>
+      {settings.enabled && (
+        <>
+          <div className="prop-row">
+            <select
+              value={settings.targetAxis}
+              onChange={(e) => updateOscillator(obj.id, { targetAxis: e.target.value as OscillatorSettings['targetAxis'] })}
+            >
+              {(Object.keys(OSCILLATOR_AXIS_LABELS) as OscillatorSettings['targetAxis'][]).map((axis) => (
+                <option key={axis} value={axis}>
+                  {OSCILLATOR_AXIS_LABELS[axis]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="prop-row prop-static">
+            <span>{isBaked ? 'Baked into the active clip' : 'Not baked yet'}</span>
+          </div>
+          <div className="prop-row">
+            <button title="Open the Oscilloscope window to tune and preview this Oscillator" onClick={() => onOpenOscilloscope(obj.id)}>
+              Open Oscilloscope
+            </button>
+            {isBaked && (
+              <button title="Remove this object's baked Oscillator keyframes" onClick={() => clearOscillatorBake(obj.id)}>
+                Clear bake
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 /** One modifier's settings UI for Fake Physics (mesh) — same chrome-vs-content split as
  *  `FakePhysicsModifierBox`, generalized from a chain of objects to 5 fixed vertex groups within
  *  this one mesh. Unlike the object-chain version, there's no "only the ROOT gets a Bake button"
@@ -1083,6 +1163,7 @@ const MODIFIER_LABELS: Record<Modifier['type'], string> = {
   pathDeformRail: 'Path Deform',
   ffd: 'FFD (Cage)',
   volumePreserve: 'Volume Preserve',
+  oscillator: 'Oscillator',
 }
 
 /** One modifier's settings UI for Follow Path — see `FollowPathSettings`'s doc. Offered on any
@@ -1553,6 +1634,10 @@ function ModifiersSection(props: {
   applyFfd: (id: string) => void
   clips: AnimationClip[]
   updateVolumePreserve: (id: string, patch: Partial<VolumePreserveSettings>) => void
+  updateOscillator: (id: string, patch: Partial<OscillatorSettings>) => void
+  clearOscillatorBake: (id: string) => void
+  oscillatorBakedObjectIds: Set<string>
+  onOpenOscilloscope: (id: string) => void
 }) {
   const { obj, objects, mode, addModifier } = props
   const modifiers = obj.modifiers ?? []
@@ -1616,6 +1701,16 @@ function ModifiersSection(props: {
         }
         if (m.type === 'volumePreserve') {
           return <VolumePreserveModifierBox key={m.type} {...props} settings={m.settings} />
+        }
+        if (m.type === 'oscillator') {
+          return (
+            <OscillatorModifierBox
+              key={m.type}
+              {...props}
+              settings={m.settings}
+              isBaked={props.oscillatorBakedObjectIds.has(obj.id)}
+            />
+          )
         }
         return (
           <FakePhysicsModifierBox
@@ -1755,6 +1850,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
   const activeClip = useSceneStore((s) => s.clips.find((c) => c.id === s.activeClipId))
   const fakePhysicsBakedObjectIds = new Set((activeClip?.fakePhysicsTracks ?? []).map((t) => t.objectId))
   const fakePhysicsMeshBakedObjectIds = new Set((activeClip?.fakePhysicsMeshTracks ?? []).map((t) => t.objectId))
+  const oscillatorBakedObjectIds = new Set((activeClip?.oscillatorTracks ?? []).map((t) => t.objectId))
+  const updateOscillator = useSceneStore((s) => s.updateOscillator)
+  const clearOscillatorBake = useSceneStore((s) => s.clearOscillatorBake)
+  const [oscilloscopeObjectId, setOscilloscopeObjectId] = useState<string | null>(null)
   const playheadTime = useSceneStore((s) => s.playheadTime)
   const mode = useSceneStore((s) => s.mode)
   const [uvResolution, setUvResolution] = useState(1024)
@@ -2204,6 +2303,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             applyFfd={applyFfd}
             clips={clips}
             updateVolumePreserve={updateVolumePreserve}
+            updateOscillator={updateOscillator}
+            clearOscillatorBake={clearOscillatorBake}
+            oscillatorBakedObjectIds={oscillatorBakedObjectIds}
+            onOpenOscilloscope={setOscilloscopeObjectId}
           />
 
           {mode === 'edit' && obj.kind !== 'empty' && (
@@ -2444,6 +2547,10 @@ export default function Properties({ style }: { style?: CSSProperties }) {
             <div className="uv-hint">Drag to move, pull the top-right corner to scale, the bottom-left lock icon excludes it from density matching</div>
           </div>
         </div>
+      )}
+
+      {oscilloscopeObjectId && (
+        <Oscilloscope objectId={oscilloscopeObjectId} onClose={() => setOscilloscopeObjectId(null)} />
       )}
     </div>
     </CollapseContext.Provider>

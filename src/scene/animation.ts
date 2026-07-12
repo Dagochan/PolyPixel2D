@@ -43,7 +43,8 @@ export function objectHasAnimation(clips: AnimationClip[], objectId: string): bo
       has(c.fakePhysicsTracks) ||
       has(c.fakePhysicsMeshTracks as unknown as { objectId: string; keyframes: unknown[] }[] | undefined) ||
       has(c.pathOffsetTracks) ||
-      has(c.followPathProgressTracks),
+      has(c.followPathProgressTracks) ||
+      has(c.oscillatorTracks),
   )
 }
 
@@ -229,6 +230,13 @@ export function sampleClipAtTime(
   // Fake Physics tracks are machine-baked from (among other things) the object's own `tracks`
   // entry, so they're the authoritative motion once they exist — override, not blend.
   for (const track of clip.fakePhysicsTracks ?? []) {
+    const sampled = sampleTrack(track, resolved, cycle)
+    if (sampled) transforms.set(track.objectId, sampled)
+  }
+  // Oscillator tracks are baked the same "overrides tracks" way, for the same reason (see
+  // `AnimationClip.oscillatorTracks`'s doc) — applied after fakePhysicsTracks so the rare case of
+  // both existing on one object still resolves deterministically (last-baked-layer wins).
+  for (const track of clip.oscillatorTracks ?? []) {
     const sampled = sampleTrack(track, resolved, cycle)
     if (sampled) transforms.set(track.objectId, sampled)
   }

@@ -17,6 +17,7 @@ import type {
   Mesh,
   Modifier,
   ObjectAnimationTrack,
+  OscillatorSettings,
   PathDeformRailSettings,
   PathOffsetTrack,
   PixelFrame,
@@ -38,6 +39,7 @@ import { DEFAULT_FOLLOW_PATH_SETTINGS, getFollowPath } from './followPath'
 import { DEFAULT_FFD_SETTINGS, ffdVertexDeltas, getFfd } from './ffd'
 import { DEFAULT_VOLUME_PRESERVE_SETTINGS } from './volumePreserve'
 import { DEFAULT_FAKE_PHYSICS_SETTINGS, getFakePhysics, simulateFakePhysicsChain } from './fakePhysics'
+import { DEFAULT_OSCILLATOR_SETTINGS, buildOscillatorTrack } from './oscillator'
 import {
   DEFAULT_FAKE_PHYSICS_MESH_SETTINGS,
   getFakePhysicsMesh,
@@ -142,6 +144,13 @@ interface SceneState {
    *  frame, so dragging the object around makes its lagging sections visibly jiggle/follow —
    *  nothing to key, no bake needed, just for quick iteration on Stiffness/Pivot before baking. */
   previewFakePhysicsMesh: boolean
+  /** Live Oscillator preview toggle (the Oscilloscope window's own "Preview" button) — like
+   *  `previewFakeFlag`, a pure function of wall-clock time (see `applyOscillators`'s doc), since an
+   *  Oscillator has no simulation state to integrate. Off by default: unlike Fake Flag, an enabled
+   *  Oscillator does nothing to the viewport until either this is on or it's actually been baked
+   *  (`bakeOscillator`) into real keyframes — so toggling a fresh Oscillator's settings around
+   *  doesn't move anything until the user explicitly asks to see it. */
+  previewOscillator: boolean
   history: HistorySnapshot[]
   future: HistorySnapshot[]
   activeTool: ActiveTool
@@ -614,6 +623,17 @@ interface SceneState {
   /** Live, direct-manipulation Fake Physics (mesh) preview — see the `previewFakePhysicsMesh`
    *  field doc. Toggling this never touches undo history (it's a view setting, not a scene edit). */
   togglePreviewFakePhysicsMesh: () => void
+  /** Samples this object's Oscillator across the active clip's duration and writes the result into
+   *  that clip's `oscillatorTracks` — the Oscilloscope window's "Add Keyframe" action. A no-op if
+   *  there's no active clip, no enabled Oscillator, or the clip has zero duration/frame rate. */
+  updateOscillator: (id: string, patch: Partial<OscillatorSettings>) => void
+  bakeOscillator: (id: string) => void
+  /** Removes this object's baked Oscillator track (if any), reverting to whatever its own
+   *  hand-keyed `tracks` entry (or static Transform) alone would produce. */
+  clearOscillatorBake: (id: string) => void
+  /** Live Oscillator preview — see the `previewOscillator` field doc. Toggling this never touches
+   *  undo history (it's a view setting, not a scene edit). */
+  togglePreviewOscillator: () => void
   /** Bakes every Fake Physics chain (object-chain — every ROOT-candidate object, i.e. one without
    *  its own enabled `fakePhysics` modifier, walked for enabled-modifier descendants) and every
    *  Fake Physics (mesh) modifier in the scene against the active clip, in one undo step. Always
@@ -869,6 +889,16 @@ function withFfdSettings(o: SceneObject, updater: (settings: FfdSettings) => Ffd
   return { ...o, modifiers }
 }
 
+/** Same idea as `withFakeFlagSettings`, for the `oscillator` modifier. */
+function withOscillatorSettings(o: SceneObject, updater: (settings: OscillatorSettings) => OscillatorSettings): SceneObject {
+  const existing = o.modifiers?.find((m) => m.type === 'oscillator')
+  const settings = updater(existing?.settings ?? DEFAULT_OSCILLATOR_SETTINGS)
+  const modifiers = existing
+    ? o.modifiers!.map((m) => (m.type === 'oscillator' ? { ...m, settings } : m))
+    : [...(o.modifiers ?? []), { type: 'oscillator' as const, settings }]
+  return { ...o, modifiers }
+}
+
 /** Same idea as `withFakeFlagSettings`, for the `fakeBehind` modifier. */
 function withFakeBehindSettings(o: SceneObject, updater: (settings: FakeBehindSettings) => FakeBehindSettings): SceneObject {
   const existing = o.modifiers?.find((m) => m.type === 'fakeBehind')
@@ -970,6 +1000,7 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   editingShapeKeyId: null,
   previewFakeFlag: false,
   previewFakePhysicsMesh: false,
+  previewOscillator: false,
   history: [],
   future: [],
   activeTool: 'select',
@@ -2766,7 +2797,9 @@ export const useSceneStore = create<SceneState>((set, get) => ({
                       ? { type: 'pathDeformRail', settings: { ...DEFAULT_PATH_DEFORM_RAIL_SETTINGS } }
                       : type === 'ffd'
                         ? { type: 'ffd', settings: { ...DEFAULT_FFD_SETTINGS } }
-                        : { type: 'volumePreserve', settings: { ...DEFAULT_VOLUME_PRESERVE_SETTINGS } }
+                        : type === 'volumePreserve'
+                          ? { type: 'volumePreserve', settings: { ...DEFAULT_VOLUME_PRESERVE_SETTINGS } }
+                          : { type: 'oscillator', settings: { ...DEFAULT_OSCILLATOR_SETTINGS } }
         return { ...o, modifiers: [...(o.modifiers ?? []), modifier] }
       }),
     }))
@@ -2781,18 +2814,20 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       // removing the modifier that owns a bake also clears that bake — otherwise re-adding it
       // later would silently resurrect stale keyframes with no modifier settings to explain them
       clips:
-        type === 'fakePhysics' || type === 'fakePhysicsMesh'
+        type === 'fakePhysics' || type === 'fakePhysicsMesh' || type === 'oscillator'
           ? s.clips.map((c) => {
               if (c.id !== s.activeClipId) return c
-              return type === 'fakePhysics'
-                ? { ...c, fakePhysicsTracks: (c.fakePhysicsTracks ?? []).filter((t) => t.objectId !== id) }
-                : { ...c, fakePhysicsMeshTracks: (c.fakePhysicsMeshTracks ?? []).filter((t) => t.objectId !== id) }
+              if (type === 'fakePhysics') return { ...c, fakePhysicsTracks: (c.fakePhysicsTracks ?? []).filter((t) => t.objectId !== id) }
+              if (type === 'fakePhysicsMesh')
+                return { ...c, fakePhysicsMeshTracks: (c.fakePhysicsMeshTracks ?? []).filter((t) => t.objectId !== id) }
+              return { ...c, oscillatorTracks: (c.oscillatorTracks ?? []).filter((t) => t.objectId !== id) }
             })
           : s.clips,
       // dropping a mid-preview Fake Flag/Fake Physics (mesh) shouldn't leave Preview silently
       // armed — re-adding it later would otherwise immediately jump into motion with no warning
       previewFakeFlag: type === 'fakeFlag' ? false : s.previewFakeFlag,
       previewFakePhysicsMesh: type === 'fakePhysicsMesh' ? false : s.previewFakePhysicsMesh,
+      previewOscillator: type === 'oscillator' ? false : s.previewOscillator,
     }))
   },
 
@@ -3138,6 +3173,42 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   },
 
   togglePreviewFakePhysicsMesh: () => set((s) => ({ previewFakePhysicsMesh: !s.previewFakePhysicsMesh })),
+
+  updateOscillator: (id, patch) => {
+    get().beginChange()
+    set((s) => ({
+      objects: s.objects.map((o) => (o.id === id ? withOscillatorSettings(o, (fs) => ({ ...fs, ...patch })) : o)),
+    }))
+  },
+
+  bakeOscillator: (id) => {
+    const s = get()
+    const clip = s.clips.find((c) => c.id === s.activeClipId)
+    if (!clip || clip.duration <= 0 || clip.frameRate <= 0) return
+    const frameCount = Math.max(1, Math.round(clip.duration * clip.frameRate))
+    const cycle = clip.loopMode === 'loop' ? { duration: clip.duration } : undefined
+    const newTrack = buildOscillatorTrack(s.objects, clip, id, frameCount, cycle, () => genId('osckey'))
+    if (!newTrack) return
+    get().beginChange()
+    set((st) => ({
+      clips: st.clips.map((c) =>
+        c.id !== st.activeClipId
+          ? c
+          : { ...c, oscillatorTracks: [...(c.oscillatorTracks ?? []).filter((t) => t.objectId !== id), newTrack] },
+      ),
+    }))
+  },
+
+  clearOscillatorBake: (id) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId ? c : { ...c, oscillatorTracks: (c.oscillatorTracks ?? []).filter((t) => t.objectId !== id) },
+      ),
+    }))
+  },
+
+  togglePreviewOscillator: () => set((s) => ({ previewOscillator: !s.previewOscillator })),
 
   bakeAllFakePhysics: () => {
     const s = get()

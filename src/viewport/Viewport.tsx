@@ -37,6 +37,7 @@ import {
 } from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
 import { correctVertexUv, type UvNeighbor } from '../scene/correctUv'
+import { applyOscillators } from '../scene/oscillator'
 import { decodeGif, gifFrameAt, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
 import { boundsVertices, evaluatePathCurve, nearestSegmentInsertIndex } from '../scene/pathCurve'
 
@@ -1580,6 +1581,7 @@ export default function Viewport() {
       playheadTime,
       previewFakeFlag,
       previewFakePhysicsMesh,
+      previewOscillator,
       pixelFrame,
     } = useSceneStore.getState()
 
@@ -1621,7 +1623,12 @@ export default function Viewport() {
     // Preserve goes last — it only touches this object's own local scaleX/scaleY, so order relative
     // to the other two doesn't matter, but the gizmo/BBox drawn from `objects` below needs to see
     // the compensated scale too, or the selection outline wouldn't match the rendered mesh.
-    const objects = applyVolumePreserve(applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration)))
+    // Oscillator's live preview is likewise a pure function of time (see `applyOscillators`'s doc)
+    // — but unlike Fake Flag, it's gated behind an explicit "Preview" toggle rather than always
+    // active, so an enabled-but-not-yet-baked Oscillator doesn't silently animate the viewport.
+    const oscillatorTime = previewOscillator ? performance.now() / 1000 : playheadTime
+    const swayedObjects = applyVolumePreserve(applyFollowPath(applyFakeFlagSway(rawObjects, fakeFlagTime, fakeFlagLoopDuration)))
+    const objects = previewOscillator ? applyOscillators(swayedObjects, oscillatorTime) : swayedObjects
 
     // The actual displayed pose (shape keys → Fake Flag vertex-mode → Fake Physics mesh → Path
     // Deform → FFD) for the mesh-fill rendering below — shares `composeDisplayObjects` with

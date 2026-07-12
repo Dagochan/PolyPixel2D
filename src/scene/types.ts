@@ -328,6 +328,34 @@ export interface FfdSettings {
   cageObjectId: string | null
 }
 
+/** Which of an object's own `Transform` fields an Oscillator modifier drives. */
+export type OscillatorAxis = 'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY'
+
+/** "Oscilloscope"-branded procedural idle-motion driver (see project idea): a pure sine wave,
+ *  optionally blended with a few incommensurate-frequency sine harmonics standing in for
+ *  deterministic "noise" (`randomness`, 0 = pure sine, 1 = pure noise-ish — never `Math.random()`,
+ *  so scrubbing/exporting stays reproducible), added onto one `targetAxis` of this object's own
+ *  `transform`. Unlike Fake Physics, a pure function of time (like Fake Flag's rotation sway) — no
+ *  simulation/momentum, so it needs no per-frame integration state for its live preview. Not
+ *  evaluated live during normal playback though (see `previewOscillator`'s doc): "Add Keyframe"
+ *  (the Oscilloscope window's own bake action) samples it across the active clip's duration into
+ *  `AnimationClip.oscillatorTracks`, which — like `fakePhysicsTracks` — overrides this object's own
+ *  hand-keyed `tracks` entry at eval time once baked. */
+export interface OscillatorSettings {
+  enabled: boolean
+  targetAxis: OscillatorAxis
+  /** Seconds per full sine cycle. */
+  wavelength: number
+  /** Peak deviation from the base value, in the target axis's own units (world units for
+   *  x/y, radians for rotation, a plain scale multiplier delta for scaleX/scaleY). */
+  amplitude: number
+  /** 0..1 blend from pure sine (0) to the seeded pseudo-noise harmonics (1). */
+  randomness: number
+  /** Seeds the pseudo-noise harmonics — different objects with the same wavelength/amplitude
+   *  still desync from each other by picking a different seed. */
+  seed: number
+}
+
 /** One entry in an object's modifier stack — a Blender-style "add only what you use" list, so an
  *  ordinary object's Properties panel isn't permanently paying rent for every opt-in effect this
  *  app ever grows (Fake Flag/Fake Physics today, FakeBehind later). At most one modifier per
@@ -342,6 +370,7 @@ export type Modifier =
   | { type: 'pathDeformRail'; settings: PathDeformRailSettings }
   | { type: 'ffd'; settings: FfdSettings }
   | { type: 'volumePreserve'; settings: VolumePreserveSettings }
+  | { type: 'oscillator'; settings: OscillatorSettings }
 
 /** Object-mode-only squash & stretch helper (Spine2D-style "volume preserve"): keeps one scale
  *  axis (`drivingAxis`) as the one the user keyframes/drags directly, and continuously recomputes
@@ -603,6 +632,10 @@ export interface AnimationClip {
   /** Follow Path `progress` tracks — absent/undefined on older saved projects, treated as empty.
    *  Same "hand-authored, sparse keyframes" nature as `pathOffsetTracks`, not baked. */
   followPathProgressTracks?: FollowPathProgressTrack[]
+  /** Dense, machine-generated Oscillator keyframes (see `OscillatorSettings`) — same "baked,
+   *  overrides `tracks`" convention as `fakePhysicsTracks` (see `sampleClipAtTime`), for the same
+   *  reason: the bake already folded the object's own base motion in as its starting point. */
+  oscillatorTracks?: ObjectAnimationTrack[]
 }
 
 /** One lagging section's baked offset track for one object, within `AnimationClip.fakePhysicsMeshTracks`. */
