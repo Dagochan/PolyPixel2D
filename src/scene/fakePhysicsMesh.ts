@@ -22,6 +22,18 @@ export function getFakePhysicsMesh(obj: SceneObject): FakePhysicsMeshSettings | 
 const SECTIONS = [1, 2, 3, 4, 5] as const
 export type FakePhysicsMeshSection = (typeof SECTIONS)[number]
 
+/** Root-to-tip rainbow (red -> orange -> yellow -> green -> cyan), spread across the full hue
+ *  range so adjacent sections stay visually distinct — shared by the Properties panel's Section
+ *  buttons and the viewport's per-vertex section-membership dots, so both stay in sync. Index 0
+ *  is Section 1 (ROOT), index 4 is Section 5 (TIP) — same indexing as `sectionVertices`. */
+export const FAKE_PHYSICS_MESH_SECTION_COLORS: readonly [string, string, string, string, string] = [
+  '#ff0000',
+  '#ffaa00',
+  '#ffff00',
+  '#00ff00',
+  '#00ffff',
+]
+
 /** Every object's transform at `time` seconds within `clip` — each object's own track (if any) is
  *  sampled at that time, falling back to its live/static `transform` otherwise. Feeding this into
  *  `getWorldTransform` is what lets `simulateFakePhysicsMeshSections` resolve an object's *ambient*

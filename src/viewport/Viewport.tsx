@@ -32,6 +32,7 @@ import {
   fakePhysicsMeshVertexDeltasLive,
   getFakePhysicsMesh,
   stepFakePhysicsMeshLive,
+  FAKE_PHYSICS_MESH_SECTION_COLORS,
   type FakePhysicsMeshLiveState,
 } from '../scene/fakePhysicsMesh'
 import { createHairPathMesh } from '../scene/primitives'
@@ -1793,18 +1794,41 @@ export default function Viewport() {
       // edit-mode overlays
       if (mode === 'edit' && isSelected) {
         if (editElementType === 'vertex') {
+          // an unselected vertex belonging to a Fake Physics (Mesh) section is tinted with that
+          // section's color (see FAKE_PHYSICS_MESH_SECTION_COLORS) so which vertices are assigned
+          // where reads at a glance, without needing to select them one section at a time
+          const physicsMeshSettings = getFakePhysicsMesh(obj)
+          const sectionColorByVertex = new Map<number, string>()
+          if (physicsMeshSettings) {
+            physicsMeshSettings.sectionVertices.forEach((verts, sectionIdx) => {
+              for (const vi of verts) sectionColorByVertex.set(vi, FAKE_PHYSICS_MESH_SECTION_COLORS[sectionIdx])
+            })
+          }
           obj.mesh.vertices.forEach((v, i) => {
             if (hiddenVertices.has(i) || lockedVertices.has(i)) return
             const p = applyTransform(v, worldTransform)
             const selected = selectedVertices.has(i)
             // unselected dots are deliberately smaller than selected ones, to stay legible at
-            // high vertex counts
-            const color: THREE.ColorRepresentation = selected ? 0xffcc00 : 0xffffff
-            const dotGeom = new THREE.CircleGeometry((selected ? 4 : 1.5) / viewRef.current.zoom, 12)
+            // high vertex counts — a section-colored one splits the difference, big enough that
+            // its color actually reads at a glance
+            const sectionColor = sectionColorByVertex.get(i)
+            const color: THREE.ColorRepresentation = selected ? 0xffcc00 : (sectionColor ?? 0xffffff)
+            const dotSizePx = selected ? 4 : sectionColor ? 2.5 : 1.5
+            const dotGeom = new THREE.CircleGeometry(dotSizePx / viewRef.current.zoom, 12)
             // `transparent: true` (even at opacity 1) puts this in Three's transparent render
             // queue, which draws after the opaque one — without it, a low "メッシュ不透明度" fill
             // (itself transparent, to trace over a reference image) would paint over the dot,
             // since opaque objects all render before transparent ones regardless of scene order
+            // a section-colored dot gets a dark outline ring underneath — without it, a section
+            // color that happens to be close to the mesh's own texture/material color underneath
+            // would nearly vanish, defeating the entire point of coloring it in
+            if (sectionColor && !selected) {
+              const ringGeom = new THREE.CircleGeometry((dotSizePx + 1) / viewRef.current.zoom, 12)
+              const ringMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a, depthTest: false, transparent: true })
+              const ring = new THREE.Mesh(ringGeom, ringMat)
+              ring.position.set(p.x, p.y, 0.015)
+              group.add(ring)
+            }
             const dotMat = new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true })
             const dot = new THREE.Mesh(dotGeom, dotMat)
             dot.position.set(p.x, p.y, 0.02)

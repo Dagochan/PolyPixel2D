@@ -4,6 +4,7 @@ import { usePartPresetsStore } from '../scene/partPresetsStore'
 import { computeSplitUVs, findIslands } from '../scene/uv'
 import { bakeReferenceToTexture } from '../scene/bakeReference'
 import { getEdges } from '../scene/meshUtils'
+import { FAKE_PHYSICS_MESH_SECTION_COLORS } from '../scene/fakePhysicsMesh'
 import { decodeGif, gifFrameAt, gifFrameStartMs, isGifDataUrl, type DecodedGif } from '../scene/gifDecode'
 import type {
   AppMode,
@@ -660,6 +661,13 @@ function FakePhysicsModifierBox({
 
 const FAKE_PHYSICS_MESH_SECTION_NUMBERS = [1, 2, 3, 4, 5] as const
 const FAKE_PHYSICS_MESH_SECTION_SUFFIX: Record<number, string> = { 1: 'ROOT', 5: 'TIP' }
+const FAKE_PHYSICS_MESH_SECTION_COLOR: Record<number, string> = {
+  1: FAKE_PHYSICS_MESH_SECTION_COLORS[0],
+  2: FAKE_PHYSICS_MESH_SECTION_COLORS[1],
+  3: FAKE_PHYSICS_MESH_SECTION_COLORS[2],
+  4: FAKE_PHYSICS_MESH_SECTION_COLORS[3],
+  5: FAKE_PHYSICS_MESH_SECTION_COLORS[4],
+}
 
 const STIFFNESS_GRAPH_TOP = 8
 const STIFFNESS_GRAPH_BOTTOM = 82
@@ -1008,7 +1016,14 @@ function FakePhysicsMeshModifierBox({
                       {FAKE_PHYSICS_MESH_SECTION_SUFFIX[section] ?? ''}
                     </span>
                     <button
-                      style={{ flex: 1, textAlign: 'center' }}
+                      style={{
+                        flex: 1,
+                        textAlign: 'center',
+                        backgroundColor: FAKE_PHYSICS_MESH_SECTION_COLOR[section],
+                        color: '#1a1a1a',
+                        fontWeight: 600,
+                        opacity: !inEditMode || !hasVertexSelection ? 0.5 : 1,
+                      }}
                       disabled={!inEditMode || !hasVertexSelection}
                       title={
                         !inEditMode
