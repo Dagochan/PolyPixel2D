@@ -15,6 +15,22 @@ export interface LoopPath {
   closed: boolean
 }
 
+/** Shoelace signed area of a face in its *own* stored vertex order — positive means that face's
+ *  own listed order is CCW, negative means it's actually wound CW. Used by `walkOneDirection` to
+ *  stay correct even when one quad in the strip has flipped winding relative to its neighbors
+ *  (e.g. a wall quad from `extrudeEdges` whose `getDirectedEdge` fallback couldn't recover a
+ *  direction, or any other stray CW face) — a single such quad used to twist the cut into an X
+ *  (2026-07-12 fix) because the old code assumed every quad shared one global winding. */
+function faceSignedArea(mesh: Mesh, face: number[]): number {
+  let area = 0
+  for (let i = 0; i < face.length; i++) {
+    const p = mesh.vertices[face[i]]
+    const q = mesh.vertices[face[(i + 1) % face.length]]
+    area += p.x * q.y - q.x * p.y
+  }
+  return area
+}
+
 function buildEdgeFaceMap(mesh: Mesh): Map<string, number[]> {
   const map = new Map<string, number[]>()
   mesh.faces.forEach((face, fi) => {
@@ -73,20 +89,27 @@ function walkOneDirection(
     }
     if (entryIdx === -1) break
 
-    // record the entry edge in the FACE's own natural direction, not whatever direction
-    // the caller happened to pass in — otherwise the very first cut (whose direction came
-    // straight from the click, not from the swap rule below) ends up with an inverted t
-    // relative to the rest of the strip, twisting the loop right at the start.
-    if (cuts.length === 0) cuts.push([f[entryIdx], f[(entryIdx + 1) % 4]])
+    // record the entry edge in the same "aligned" sense the exit-edge swap below produces, not
+    // whatever direction the caller happened to pass in — otherwise the very first cut (whose
+    // direction came straight from the click) ends up with an inverted t relative to the rest of
+    // the strip, twisting the loop right at the start. That sense is the face's own natural order
+    // for a CCW face, but the *reverse* of it for a CW one (see `faceSignedArea`'s doc) — matching
+    // whichever the exit-edge logic below picks for this same face.
+    if (cuts.length === 0) {
+      const isCcwEntry = faceSignedArea(mesh, f) > 0
+      cuts.push(isCcwEntry ? [f[entryIdx], f[(entryIdx + 1) % 4]] : [f[(entryIdx + 1) % 4], f[entryIdx]])
+    }
 
     visited.add(face)
     quads.push(face)
     const exitIdx = (entryIdx + 2) % 4
     // swapped relative to the face's natural order at exitIdx: this is what keeps the t
     // parameter consistent across the strip (same side = same t), since a quad's opposite
-    // edges run in opposite winding directions.
-    const exitA = f[(exitIdx + 1) % 4]
-    const exitB = f[exitIdx]
+    // edges run in opposite winding directions — but only for a CCW-wound face; a stray
+    // CW one (see `faceSignedArea`'s doc) needs the *un*-swapped order to keep the same sense.
+    const isCcw = faceSignedArea(mesh, f) > 0
+    const exitA = isCcw ? f[(exitIdx + 1) % 4] : f[exitIdx]
+    const exitB = isCcw ? f[exitIdx] : f[(exitIdx + 1) % 4]
     cuts.push([exitA, exitB])
 
     const candidates = edgeFaceMap.get(edgeKey(exitA, exitB)) ?? []
