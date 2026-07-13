@@ -455,6 +455,17 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     setSelectedKeyId(keyframeId)
   }
 
+  // clicking empty space (no keyframe under the pointer) anywhere in the ruler/grid or track area
+  // deselects every keyframe — same "click empty space to deselect" convention as the viewport.
+  const clearKeySelection = () => {
+    setSelectedKeyId(null)
+    setSelectedKeyObjectId(null)
+    setSelectedKeyShapeKeyId(null)
+    setSelectedKeyIsPathOffset(false)
+    setSelectedKeyIsFollowPathProgress(false)
+    setSelectedKeyIds(new Set())
+  }
+
   return (
     <div
       className="panel timeline"
@@ -730,14 +741,14 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           >
             <PlayheadIcon size={16} />
           </div>
-          <div className="timeline-ruler" style={{ width: contentWidth }}>
+          <div className="timeline-ruler" style={{ width: contentWidth }} onPointerDown={() => clearKeySelection()}>
             {ticks.map((t) => (
               <div key={t} className="timeline-tick" style={{ left: RULER_OFFSET_PX + t * pxPerSecond }}>
                 <span>{t.toFixed(tickInterval < 1 ? 2 : 0)}s</span>
               </div>
             ))}
           </div>
-          <div className="timeline-frame-ruler" style={{ width: contentWidth }}>
+          <div className="timeline-frame-ruler" style={{ width: contentWidth }} onPointerDown={() => clearKeySelection()}>
             {frameTicks.map((f) => (
               <div key={f} className="timeline-tick" style={{ left: RULER_OFFSET_PX + (f / frameRate) * pxPerSecond }}>
                 <span>{f}</span>
@@ -770,6 +781,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 }
                 return
               }
+              clearKeySelection()
               draggingPlayheadRef.current = true
               seekFromClientX(e.clientX)
               // best-effort: keeps the drag tracking the pointer even if it leaves the rows area
@@ -1032,12 +1044,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     else if (isPathOffset) removePathOffsetKeyframe(selectedKeyObjectId, key.id)
                     else if (isFollowPathProgress) removeFollowPathProgressKeyframe(selectedKeyObjectId, key.id)
                     else removeKeyframe(selectedKeyObjectId, key.id)
-                    setSelectedKeyId(null)
-                    setSelectedKeyObjectId(null)
-                    setSelectedKeyShapeKeyId(null)
-                    setSelectedKeyIsPathOffset(false)
-                    setSelectedKeyIsFollowPathProgress(false)
-                    setSelectedKeyIds(new Set())
+                    clearKeySelection()
                   }}
                 >
                   <TrashIcon size={14} /> Delete keyframe
