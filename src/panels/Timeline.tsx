@@ -242,6 +242,17 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     [...selectedObjectKeyframeTimes()].reverse().find((t) => t < playheadTime - KEYFRAME_JUMP_EPS)
   const nextKeyframeTime = (): number | undefined =>
     selectedObjectKeyframeTimes().find((t) => t > playheadTime + KEYFRAME_JUMP_EPS)
+  // the Transform keyframe (if any) sitting exactly at the playhead, for the toolbar's Duplicate
+  // Keyframe button — same track scope as the Add Keyframe button right next to it (`insertKeyframe`
+  // only ever writes a Transform keyframe), so parking the playhead on an existing one and hitting
+  // this button is the toolbar-level shortcut for what the per-keyframe inspector's own Duplicate
+  // button already does.
+  const transformKeyframeAtPlayhead = () =>
+    selectedObjectId
+      ? activeClip.tracks
+          .find((t) => t.objectId === selectedObjectId)
+          ?.keyframes.find((k) => Math.abs(k.time - playheadTime) < KEYFRAME_JUMP_EPS)
+      : undefined
 
   const zoomBy = (factor: number) =>
     setPxPerSecond((px) => Math.min(MAX_PX_PER_SECOND, Math.max(MIN_PX_PER_SECOND, px * factor)))
@@ -507,6 +518,29 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
               onClick={() => selectedObjectId && insertKeyframe(selectedObjectId, snapToFrame(playheadTime))}
             >
               <AddKeyframeIcon size={14} />
+            </button>
+            <button
+              className="timeline-insert-keyframe-btn"
+              disabled={!selectedObjectId || !transformKeyframeAtPlayhead()}
+              title={
+                selectedObjectId
+                  ? 'Duplicate the Transform keyframe at the playhead — click a frame on the timeline to place the copy'
+                  : 'Select an object first'
+              }
+              onClick={() => {
+                const key = transformKeyframeAtPlayhead()
+                if (!selectedObjectId || !key) return
+                setPendingDuplicate({
+                  sourceKeyframeId: key.id,
+                  objectId: selectedObjectId,
+                  shapeKeyId: null,
+                  isPathOffset: false,
+                  isFollowPathProgress: false,
+                })
+                setDuplicateHoverTime(key.time)
+              }}
+            >
+              <DuplicateKeyframeIcon size={14} />
             </button>
           </div>
           {rows.map((row) => {

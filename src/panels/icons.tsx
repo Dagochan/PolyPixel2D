@@ -387,10 +387,24 @@ export function AddKeyframeIcon({ size = 16 }: IconProps) {
 
 export function DuplicateKeyframeIcon({ size = 16 }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
-      {/* two overlapping keyframe diamonds, offset toward the direction a placed copy would go */}
-      <path d="M9,3 L14,8 L9,13 L4,8 Z" opacity="0.45" />
-      <path d="M15,11 L20,16 L15,21 L10,16 Z" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" style={{ fillRule: 'evenodd', clipRule: 'evenodd' }}>
+      {/* hollow diamond outline (the source keyframe) behind a solid one (the placed copy) */}
+      <g transform="matrix(1,0,0,0.972222,-0,3.500001)">
+        <path d="M16,6L21,12L16,18L11,12L16,6ZM16,7.739L12.656,12L16,16.261L19.344,12L16,7.739Z" />
+      </g>
+      <g transform="matrix(1,0,0,0.972222,-7.950795,-2.792726)">
+        <path d="M16,6L11,12L16,18L21,12L16,6Z" />
+      </g>
+      <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      <g transform="matrix(0,1,-1,0,24,0)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(-1,0,0,-1,24,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
+      <g transform="matrix(0,-1,1,0,0,24)">
+        <path d="M5,1L1,1L1,5L2,5L2,2L5,2L5,1Z" />
+      </g>
     </svg>
   )
 }
