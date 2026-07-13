@@ -52,7 +52,9 @@ export function objectHasAnimation(clips: AnimationClip[], objectId: string): bo
  *  playback range per its loop mode. 'none' just clamps to the boundary. */
 export function resolvePlaybackTime(time: number, duration: number, loopMode: LoopMode): number {
   if (duration <= 0) return 0
-  if (loopMode === 'none') return Math.min(Math.max(time, 0), duration)
+  // 'replay' samples identically to 'none' — see `LoopMode`'s doc for how it differs during Play
+  // (Timeline.tsx resets the raw playback clock instead of stopping, rather than anything here).
+  if (loopMode === 'none' || loopMode === 'replay') return Math.min(Math.max(time, 0), duration)
   if (loopMode === 'loop') {
     const m = time % duration
     return m < 0 ? m + duration : m

@@ -144,6 +144,12 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
           setIsPlaying(false)
           return
         }
+        // 'replay' samples like 'none' (see `LoopMode`'s doc) but keeps playing instead of
+        // stopping — just restart the raw clock from 0 once it passes the end, a plain "play it
+        // again" rather than 'loop'/'pingpong's seamless wrap math.
+        if (clip && clip.loopMode === 'replay' && rawTimeRef.current >= clip.duration) {
+          rawTimeRef.current -= clip.duration
+        }
       }
       rafRef.current = requestAnimationFrame(tick)
     }
@@ -424,6 +430,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             onChange={(e) => setClipLoopMode(activeClip.id, e.target.value as LoopMode)}
           >
             <option value="none">None</option>
+            <option value="replay">None - Replay</option>
             <option value="loop">Loop</option>
             <option value="pingpong">Ping-pong</option>
           </select>

@@ -593,8 +593,12 @@ export interface FollowPathProgressTrack {
 }
 
 /** Out-of-range playback behavior once the playhead passes `duration` (or goes below 0 while
- *  scrubbing). 'none' clamps and holds the boundary pose. */
-export type LoopMode = 'none' | 'loop' | 'pingpong'
+ *  scrubbing). 'none' clamps and holds the boundary pose. 'replay' samples exactly like 'none'
+ *  (no seamless-loop wrap math, no Fake Physics loop-cycle convergence warm-up) but during Play
+ *  simply jumps the playhead back to 0 and keeps going once it hits `duration`, instead of
+ *  stopping — a plain "play it again from the top" rather than a mathematically seamless loop
+ *  (so a pose that doesn't match at both ends will visibly pop at the restart, unlike 'loop'). */
+export type LoopMode = 'none' | 'loop' | 'pingpong' | 'replay'
 
 /** A named, independently-playable animation (e.g. "Idle", "Walk"). A project can hold several;
  *  only one is "active" (edited/scrubbed) at a time, per the agreed no-per-clip-projects design. */

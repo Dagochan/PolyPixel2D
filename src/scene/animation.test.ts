@@ -10,6 +10,14 @@ describe('resolvePlaybackTime', () => {
     expect(resolvePlaybackTime(3, 2, 'none')).toBe(2)
   })
 
+  it('clamps to [0, duration] for loopMode "replay", same as "none"', () => {
+    expect(resolvePlaybackTime(-1, 2, 'replay')).toBe(0)
+    expect(resolvePlaybackTime(0, 2, 'replay')).toBe(0)
+    expect(resolvePlaybackTime(1, 2, 'replay')).toBe(1)
+    expect(resolvePlaybackTime(2, 2, 'replay')).toBe(2)
+    expect(resolvePlaybackTime(3, 2, 'replay')).toBe(2)
+  })
+
   it('wraps modulo duration for loopMode "loop", including exactly at the boundary', () => {
     expect(resolvePlaybackTime(0, 2, 'loop')).toBe(0)
     expect(resolvePlaybackTime(1, 2, 'loop')).toBe(1)

@@ -246,11 +246,12 @@ export default function PixelPreview() {
         // pingpong's cycle is twice the duration (out and back) — `setPlayhead`'s own
         // `resolvePlaybackTime` folds a time past `duration` back down via the reflection, so
         // passing it a raw time up to 2*duration is enough, no separate reflection math needed here.
-        // 'none' has no cycle to avoid repeating, so it samples *inclusive* of both ends
-        // (i/(frameCount-1)) to actually capture the authored final pose instead of stopping short.
+        // 'none'/'replay' have no cycle to avoid repeating, so they sample *inclusive* of both
+        // ends (i/(frameCount-1)) to actually capture the authored final pose instead of stopping
+        // short.
         let t: number
         if (duration <= 0) t = 0
-        else if (loopMode === 'none') t = frameCount > 1 ? (i / (frameCount - 1)) * duration : 0
+        else if (loopMode === 'none' || loopMode === 'replay') t = frameCount > 1 ? (i / (frameCount - 1)) * duration : 0
         else t = (i / frameCount) * (loopMode === 'pingpong' ? duration * 2 : duration)
         // resample every keyframed Transform/shape-key weight/pathOffset/followPath progress onto
         // `objects` for this frame's time — the same mechanism the Timeline scrubber uses (see
