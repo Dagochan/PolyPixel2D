@@ -1219,6 +1219,16 @@ input[type='range']:disabled {
   pointer-events: none;
 }
 
+/* Shift+drag rubber-band keyframe box-select — positioned `fixed` since it's built straight from
+   viewport (client) coordinates, no local-to-track conversion needed. */
+.timeline-box-select {
+  position: fixed;
+  background: #4ea1ff22;
+  border: 1px solid #4ea1ff;
+  pointer-events: none;
+  z-index: 20;
+}
+
 .timeline-keyframe-inspector {
   display: flex;
   align-items: center;

@@ -486,6 +486,13 @@ interface SceneState {
   removeKeyframe: (objectId: string, keyframeId: string) => void
   setKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
+  /** Live-writes new times for a batch of keyframes in one pass, across whichever tracks they
+   *  belong to (Transform/shape key/Path Offset/Follow Path progress — keyframe ids are globally
+   *  unique via `genId`, so no `objectId`/track-kind disambiguation is needed to find each one).
+   *  Powers the Timeline's multi-keyframe group drag: the caller does its own single
+   *  `beginChange()` at drag start, matching `setFakePhysicsMeshSectionStiffnessLive`'s pattern —
+   *  this itself pushes no undo checkpoint, so it's safe to call every pointermove. */
+  setKeyframesTimeLive: (moves: { keyframeId: string; time: number }[]) => void
   /** Copies `sourceKeyframeId`'s transform/easing into a new keyframe at `time` — unlike
    *  `insertKeyframe`, this doesn't touch the object's *current* live transform at all, it clones
    *  whatever was keyed at the source. Replaces any existing key already at `time`. */
@@ -2474,6 +2481,37 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         }
       }),
     })),
+
+  setKeyframesTimeLive: (moves) =>
+    set((s) => {
+      if (moves.length === 0) return {}
+      const timeById = new Map(moves.map((m) => [m.keyframeId, m.time]))
+      const applyToKeyframes = <K extends { id: string; time: number }>(keyframes: K[]): K[] => {
+        let changed = false
+        const next = keyframes.map((k) => {
+          const t = timeById.get(k.id)
+          if (t === undefined) return k
+          changed = true
+          return { ...k, time: t }
+        })
+        return changed ? next.sort((a, b) => a.time - b.time) : keyframes
+      }
+      return {
+        clips: s.clips.map((c) => {
+          if (c.id !== s.activeClipId) return c
+          return {
+            ...c,
+            tracks: c.tracks.map((t) => ({ ...t, keyframes: applyToKeyframes(t.keyframes) })),
+            shapeKeyTracks: (c.shapeKeyTracks ?? []).map((t) => ({ ...t, keyframes: applyToKeyframes(t.keyframes) })),
+            pathOffsetTracks: (c.pathOffsetTracks ?? []).map((t) => ({ ...t, keyframes: applyToKeyframes(t.keyframes) })),
+            followPathProgressTracks: (c.followPathProgressTracks ?? []).map((t) => ({
+              ...t,
+              keyframes: applyToKeyframes(t.keyframes),
+            })),
+          }
+        }),
+      }
+    }),
 
   duplicateKeyframe: (objectId, sourceKeyframeId, time) => {
     get().beginChange()

@@ -49,6 +49,8 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const insertKeyframe = useSceneStore((s) => s.insertKeyframe)
   const removeKeyframe = useSceneStore((s) => s.removeKeyframe)
   const setKeyframeTime = useSceneStore((s) => s.setKeyframeTime)
+  const setKeyframesTimeLive = useSceneStore((s) => s.setKeyframesTimeLive)
+  const beginChange = useSceneStore((s) => s.beginChange)
   const setKeyframeEasing = useSceneStore((s) => s.setKeyframeEasing)
   const duplicateKeyframe = useSceneStore((s) => s.duplicateKeyframe)
   const removeShapeKeyKeyframe = useSceneStore((s) => s.removeShapeKeyKeyframe)
@@ -99,12 +101,28 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     isFollowPathProgress: boolean
   } | null>(null)
   const [duplicateHoverTime, setDuplicateHoverTime] = useState<number | null>(null)
+  // Every currently-selected keyframe's id (globally unique across tracks — see `genId`), kept in
+  // sync with `selectedKeyId`'s single-key metadata whenever the selection ends up exactly one key
+  // (that's what feeds the keyframe inspector below). A plain click replaces this with just the
+  // clicked key; Shift+click toggles one key in/out; Shift+drag on empty track space box-selects
+  // (adds to) it — same conventions as a typical dope sheet.
+  const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(new Set())
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [channelListWidth, setChannelListWidth] = useState(CHANNEL_LIST_DEFAULT_WIDTH)
   const trackRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const resizingChannelListRef = useRef(false)
   const draggingKeyRef = useRef<string | null>(null)
+  // set alongside `draggingKeyRef` whenever the dragged key is part of a >1-key selection — the
+  // dragged key's own delta (new time minus this snapshot's time for it) is applied identically to
+  // every other selected key's own snapshotted start time, so the whole group moves together
+  // preserving their relative spacing instead of collapsing onto the dragged key.
+  const groupDragRef = useRef<{ anchorStartTime: number; startTimes: Map<string, number> } | null>(null)
+  // rubber-band keyframe box-select, in viewport (client) coordinates — compared directly against
+  // each row/keyframe's own `getBoundingClientRect()`, so no local-to-track coordinate conversion
+  // is needed at all.
+  const [boxSelect, setBoxSelect] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null)
   const draggingPlayheadRef = useRef(false)
   const rafRef = useRef<number | null>(null)
   const lastTickRef = useRef<number | null>(null)
@@ -161,19 +179,20 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, activeClipId])
 
-  // Escape cancels an in-progress duplicate placement — same modal-drag-cancel convention as the
-  // viewport's grab/move tools.
+  // Escape cancels an in-progress duplicate placement or box-select — same modal-drag-cancel
+  // convention as the viewport's grab/move tools.
   useEffect(() => {
-    if (!pendingDuplicate) return
+    if (!pendingDuplicate && !boxSelect) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setPendingDuplicate(null)
         setDuplicateHoverTime(null)
+        setBoxSelect(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [pendingDuplicate])
+  }, [pendingDuplicate, boxSelect])
 
   if (clips.length === 0 || !activeClip) {
     return (
@@ -400,17 +419,54 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
     return false
   }
 
+  const rowKey = (row: Row): string =>
+    row.kind === 'transform'
+      ? `t-${row.objectId}`
+      : row.kind === 'shapeKey'
+        ? `sk-${row.objectId}-${row.shapeKeyId}`
+        : row.kind === 'fakeFlag'
+          ? `ff-${row.objectId}`
+          : row.kind === 'fakePhysicsBaked'
+            ? `fpb-${row.objectId}`
+            : row.kind === 'pathOffset'
+              ? `po-${row.objectId}`
+              : row.kind === 'followPathProgress'
+                ? `fpp-${row.objectId}`
+                : row.kind === 'oscillatorBaked'
+                  ? `osc-${row.objectId}`
+                  : `fpmb-${row.objectId}`
+
+  // rows that actually hold real hand-authored keyframes (as opposed to `fakeFlag`/baked-physics
+  // rows, which have none) — used by box-select and the group-drag start-time snapshot.
+  type KeyedRow = Extract<Row, { kind: 'transform' | 'shapeKey' | 'pathOffset' | 'followPathProgress' }>
+  const keyedRows = rows.filter(
+    (row): row is KeyedRow =>
+      row.kind === 'transform' || row.kind === 'shapeKey' || row.kind === 'pathOffset' || row.kind === 'followPathProgress',
+  )
+
+  // syncs the single-key inspector's metadata to `keyframeId` on `row` — used by a plain click and
+  // by box-select whenever it lands on exactly one key.
+  const selectKeyframe = (row: KeyedRow, keyframeId: string) => {
+    selectObject(row.objectId)
+    setSelectedKeyObjectId(row.objectId)
+    setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
+    setSelectedKeyIsPathOffset(row.kind === 'pathOffset')
+    setSelectedKeyIsFollowPathProgress(row.kind === 'followPathProgress')
+    setSelectedKeyId(keyframeId)
+  }
+
   return (
     <div
       className="panel timeline"
       style={style}
       onContextMenu={(e) => {
         // Blender-style: right-click cancels the in-progress operation, same convention as the
-        // viewport's drag-cancel — here that's an in-progress duplicate placement.
-        if (!pendingDuplicate) return
+        // viewport's drag-cancel — here that's an in-progress duplicate placement or box-select.
+        if (!pendingDuplicate && !boxSelect) return
         e.preventDefault()
         setPendingDuplicate(null)
         setDuplicateHoverTime(null)
+        setBoxSelect(null)
       }}
     >
       <div className="timeline-header">
@@ -703,6 +759,17 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 return
               }
               if ((e.target as HTMLElement).closest('.timeline-keyframe')) return
+              // Shift+drag on empty track space starts a rubber-band keyframe box-select instead
+              // of the usual click-drag-to-scrub (a plain drag here still scrubs, unchanged).
+              if (e.shiftKey) {
+                setBoxSelect({ startX: e.clientX, startY: e.clientY, curX: e.clientX, curY: e.clientY })
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId)
+                } catch {
+                  /* ignore */
+                }
+                return
+              }
               draggingPlayheadRef.current = true
               seekFromClientX(e.clientX)
               // best-effort: keeps the drag tracking the pointer even if it leaves the rows area
@@ -720,6 +787,10 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                 if (rect) setDuplicateHoverTime(snapToFrame(xToTime(e.clientX - rect.left)))
                 return
               }
+              if (boxSelect) {
+                setBoxSelect((b) => (b ? { ...b, curX: e.clientX, curY: e.clientY } : b))
+                return
+              }
               if (!draggingPlayheadRef.current) return
               seekFromClientX(e.clientX)
             }}
@@ -730,6 +801,36 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
               } catch {
                 /* ignore */
               }
+              if (!boxSelect) return
+              const box = boxSelect
+              setBoxSelect(null)
+              const x0 = Math.min(box.startX, box.curX)
+              const x1 = Math.max(box.startX, box.curX)
+              const y0 = Math.min(box.startY, box.curY)
+              const y1 = Math.max(box.startY, box.curY)
+              // a near-zero-size box is just a Shift+click that didn't drag — nothing to select
+              if (x1 - x0 < 3 && y1 - y0 < 3) return
+              const picked = new Set(selectedKeyIds)
+              for (const row of keyedRows) {
+                const rowEl = rowRefs.current.get(rowKey(row))
+                if (!rowEl) continue
+                const r = rowEl.getBoundingClientRect()
+                if (r.bottom < y0 || r.top > y1) continue
+                for (const kf of row.keyframes) {
+                  const kx = r.left + RULER_OFFSET_PX + kf.time * pxPerSecond
+                  if (kx >= x0 && kx <= x1) picked.add(kf.id)
+                }
+              }
+              setSelectedKeyIds(picked)
+              if (picked.size === 1) {
+                const onlyId = [...picked][0]
+                for (const row of keyedRows) {
+                  if (row.keyframes.some((k) => k.id === onlyId)) {
+                    selectKeyframe(row, onlyId)
+                    break
+                  }
+                }
+              }
             }}
           >
             {frameGridlines.map((f) => (
@@ -737,23 +838,11 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
             ))}
             {rows.map((row) => (
               <div
-                key={
-                  row.kind === 'transform'
-                    ? `t-${row.objectId}`
-                    : row.kind === 'shapeKey'
-                      ? `sk-${row.objectId}-${row.shapeKeyId}`
-                      : row.kind === 'fakeFlag'
-                        ? `ff-${row.objectId}`
-                        : row.kind === 'fakePhysicsBaked'
-                          ? `fpb-${row.objectId}`
-                          : row.kind === 'pathOffset'
-                            ? `po-${row.objectId}`
-                            : row.kind === 'followPathProgress'
-                              ? `fpp-${row.objectId}`
-                              : row.kind === 'oscillatorBaked'
-                                ? `osc-${row.objectId}`
-                                : `fpmb-${row.objectId}`
-                }
+                key={rowKey(row)}
+                ref={(el) => {
+                  if (el) rowRefs.current.set(rowKey(row), el)
+                  else rowRefs.current.delete(rowKey(row))
+                }}
                 className={
                   'timeline-track-row' +
                   (row.kind === 'fakeFlag' ? ' fake-flag' : '') +
@@ -782,7 +871,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   row.keyframes.map((k) => (
                     <div
                       key={k.id}
-                      className={'timeline-keyframe' + (selectedKeyId === k.id ? ' selected' : '')}
+                      className={'timeline-keyframe' + (selectedKeyIds.has(k.id) ? ' selected' : '')}
                       style={{ left: RULER_OFFSET_PX + k.time * pxPerSecond }}
                       title={
                         row.kind === 'transform'
@@ -801,13 +890,32 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                           if (rect) commitDuplicate(snapToFrame(xToTime(e.clientX - rect.left)))
                           return
                         }
-                        selectObject(row.objectId)
-                        setSelectedKeyObjectId(row.objectId)
-                        setSelectedKeyShapeKeyId(row.kind === 'shapeKey' ? row.shapeKeyId : null)
-                        setSelectedKeyIsPathOffset(row.kind === 'pathOffset')
-                        setSelectedKeyIsFollowPathProgress(row.kind === 'followPathProgress')
-                        setSelectedKeyId(k.id)
+                        // Shift+click toggles this key in/out of the multi-selection — no drag,
+                        // matching a typical dope sheet (drag-to-move is a plain click instead).
+                        if (e.shiftKey) {
+                          setSelectedKeyIds((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(k.id)) next.delete(k.id)
+                            else next.add(k.id)
+                            return next
+                          })
+                          return
+                        }
+                        // a plain click on a key that's already part of a >1-key selection keeps
+                        // the whole selection (and drags it as a group); otherwise it replaces the
+                        // selection with just this key.
+                        const nextSelection = selectedKeyIds.has(k.id) && selectedKeyIds.size > 1 ? selectedKeyIds : new Set([k.id])
+                        selectKeyframe(row, k.id)
+                        setSelectedKeyIds(nextSelection)
+                        const startTimes = new Map<string, number>()
+                        for (const kr of keyedRows) {
+                          for (const kf of kr.keyframes) {
+                            if (nextSelection.has(kf.id)) startTimes.set(kf.id, kf.time)
+                          }
+                        }
+                        groupDragRef.current = { anchorStartTime: k.time, startTimes }
                         draggingKeyRef.current = k.id
+                        beginChange()
                         e.currentTarget.setPointerCapture(e.pointerId)
                       }}
                       onPointerMove={(e) => {
@@ -815,13 +923,23 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                         const rect = trackRef.current?.getBoundingClientRect()
                         if (!rect) return
                         const time = snapToFrame(xToTime(e.clientX - rect.left))
-                        if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
+                        const drag = groupDragRef.current
+                        if (drag && drag.startTimes.size > 1) {
+                          const delta = time - drag.anchorStartTime
+                          setKeyframesTimeLive(
+                            Array.from(drag.startTimes.entries()).map(([id, startTime]) => ({
+                              keyframeId: id,
+                              time: clampTime(startTime + delta),
+                            })),
+                          )
+                        } else if (row.kind === 'transform') setKeyframeTime(row.objectId, k.id, time)
                         else if (row.kind === 'pathOffset') setPathOffsetKeyframeTime(row.objectId, k.id, time)
                         else if (row.kind === 'followPathProgress') setFollowPathProgressKeyframeTime(row.objectId, k.id, time)
                         else setShapeKeyKeyframeTime(row.objectId, row.shapeKeyId, k.id, time)
                       }}
                       onPointerUp={() => {
                         draggingKeyRef.current = null
+                        groupDragRef.current = null
                       }}
                     />
                   ))
@@ -835,6 +953,17 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
               </div>
             ))}
             {rows.length === 0 && <div className="timeline-track-row empty" />}
+            {boxSelect && (
+              <div
+                className="timeline-box-select"
+                style={{
+                  left: Math.min(boxSelect.startX, boxSelect.curX),
+                  top: Math.min(boxSelect.startY, boxSelect.curY),
+                  width: Math.abs(boxSelect.curX - boxSelect.startX),
+                  height: Math.abs(boxSelect.curY - boxSelect.startY),
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -908,6 +1037,7 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                     setSelectedKeyShapeKeyId(null)
                     setSelectedKeyIsPathOffset(false)
                     setSelectedKeyIsFollowPathProgress(false)
+                    setSelectedKeyIds(new Set())
                   }}
                 >
                   <TrashIcon size={14} /> Delete keyframe
