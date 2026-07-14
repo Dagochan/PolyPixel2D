@@ -272,6 +272,17 @@ export function DissolveIcon({ size = 16 }: IconProps) {
   )
 }
 
+export function SeparateIcon({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      {/* two boxes pulling apart across a dashed split line — "separate selection into a new object" */}
+      <path d="M4,7L10,7L10,17L4,17Z" />
+      <path d="M14,7L20,7L20,17L14,17Z" />
+      <path d="M12,4L12,8M12,16L12,20" strokeDasharray="2.5 2.5" />
+    </svg>
+  )
+}
+
 export function FanCutIcon({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">

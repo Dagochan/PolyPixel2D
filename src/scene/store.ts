@@ -447,6 +447,16 @@ interface SceneState {
   /** Dissolve the current vertex/edge selection: merges the faces around each selected element
    *  into one instead of deleting them outright. No-op in face mode or with nothing selected. */
   dissolveSelection: () => void
+  /** Blender's P > Selection: moves every face touched by the current selection (in face mode,
+   *  the selected faces directly; in vertex/edge mode, any face all of whose own vertices/edges
+   *  are selected) out into a brand-new object, leaving the rest behind on the original. The new
+   *  object copies the source's `transform`/`tail`/`parentId`/`connected`/material exactly (same
+   *  world-space appearance and rig position), and its shape keys/UV base vertices/modifier vertex
+   *  refs are remapped onto the new mesh's own indices the same way a delete op would (see
+   *  `remapObjectVertexData`). No-op if nothing is selected, the selection covers the whole mesh
+   *  (nothing would be left behind), or the object isn't a plain mesh (`kind !== 'mesh'`, i.e. not
+   *  a lattice/path/empty — those have no meaningful "separate"). */
+  separateSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
   /** Invert the selection within the active editElementType — selected become unselected and
@@ -2194,6 +2204,76 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       objects: st.objects.map((o) =>
         o.id === objectId ? { ...o, mesh, ...remapObjectVertexData(o, oldToNew) } : o,
       ),
+      selectedVertices: new Set(),
+      selectedEdges: new Set(),
+      selectedFaces: new Set(),
+    }))
+  },
+
+  separateSelection: () => {
+    const s = get()
+    if (s.editingShapeKeyId) return
+    const objectId = s.selectedObjectId
+    if (!objectId) return
+    const obj = s.objects.find((o) => o.id === objectId)
+    // `kind` defaults to absent (not the literal 'mesh') for an ordinary mesh — see its doc
+    if (!obj || (obj.kind && obj.kind !== 'mesh')) return
+
+    let faceIndices: number[]
+    if (s.editElementType === 'face') {
+      faceIndices = Array.from(s.selectedFaces)
+    } else if (s.editElementType === 'vertex') {
+      const selected = s.selectedVertices
+      faceIndices = obj.mesh.faces.reduce<number[]>((acc, face, fi) => {
+        if (face.every((v) => selected.has(v))) acc.push(fi)
+        return acc
+      }, [])
+    } else {
+      const selected = s.selectedEdges
+      faceIndices = obj.mesh.faces.reduce<number[]>((acc, face, fi) => {
+        const fullySelected = face.every((v, i) => selected.has(edgeKey(v, face[(i + 1) % face.length])))
+        if (fullySelected) acc.push(fi)
+        return acc
+      }, [])
+    }
+    if (faceIndices.length === 0 || faceIndices.length === obj.mesh.faces.length) return
+
+    const selectedSet = new Set(faceIndices)
+    const complement = obj.mesh.faces.map((_, fi) => fi).filter((fi) => !selectedSet.has(fi))
+    const { mesh: separatedMesh, oldToNew: separatedOldToNew } = pruneOrphanVerticesTracked(deleteFaces(obj.mesh, complement))
+    const { mesh: remainingMesh, oldToNew: remainingOldToNew } = pruneOrphanVerticesTracked(deleteFaces(obj.mesh, faceIndices))
+    if (remainingMesh.faces.length === 0) return // would empty the source object — not a meaningful "separate"
+
+    get().beginChange()
+    const newObj: SceneObject = {
+      ...obj,
+      id: genId('obj'),
+      name: `${obj.name} Split`,
+      mesh: separatedMesh,
+      transform: { ...obj.transform, head: { ...obj.transform.head } },
+      zOrder: obj.zOrder + 0.5,
+      // island-indexed display state (see each field's own doc) and the slot-linking fields don't
+      // carry a meaningful mapping onto a freshly-split mesh — `slotName` in particular must never
+      // be duplicated onto two objects at once (see its doc), so these all reset to defaults
+      // instead of copying stale/colliding values from the source object.
+      uvIslandTransforms: undefined,
+      islandZOrders: undefined,
+      islandNames: undefined,
+      islandVisible: undefined,
+      islandLocked: undefined,
+      showIslandNames: false,
+      slotName: undefined,
+      insertSlots: undefined,
+      ...remapObjectVertexData(obj, separatedOldToNew),
+    }
+    set((st) => ({
+      objects: [
+        ...st.objects.map((o) =>
+          o.id === objectId ? { ...o, mesh: remainingMesh, ...remapObjectVertexData(o, remainingOldToNew) } : o,
+        ),
+        newObj,
+      ],
+      selectedObjectId: newObj.id,
       selectedVertices: new Set(),
       selectedEdges: new Set(),
       selectedFaces: new Set(),

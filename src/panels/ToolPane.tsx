@@ -13,6 +13,7 @@ import {
   FanCutIcon,
   ExtrudeIcon,
   DissolveIcon,
+  SeparateIcon,
 } from './icons'
 
 /** Narrow, icon-only vertical tool palette along the left edge of the viewport (Blender-style
@@ -28,10 +29,13 @@ export default function ToolPane() {
   const selectedObj = useSceneStore((s) => s.objects.find((o) => o.id === s.selectedObjectId))
   const selectedEdges = useSceneStore((s) => s.selectedEdges)
   const selectedVertices = useSceneStore((s) => s.selectedVertices)
+  const selectedFaces = useSceneStore((s) => s.selectedFaces)
   const selectedEdgesCount = selectedEdges.size
   const selectedVerticesCount = selectedVertices.size
+  const selectedFacesCount = selectedFaces.size
   const extrudeSelection = useSceneStore((s) => s.extrudeSelection)
   const dissolveSelection = useSceneStore((s) => s.dissolveSelection)
+  const separateSelection = useSceneStore((s) => s.separateSelection)
   // A Lattice's vertex count/order is load-bearing for FFD (row-major idx = j*cols+i, see
   // `FfdSettings`'s doc) — any topology-changing tool (loop/ring cut, knife, extrude, dissolve)
   // would desync it from `latticeCols`/`latticeRows`/`cageRestVertices`, silently no-opping the
@@ -189,6 +193,22 @@ export default function ToolPane() {
               onClick={() => dissolveSelection()}
             >
               <DissolveIcon />
+            </button>
+            <button
+              disabled={
+                isLattice ||
+                (editElementType === 'vertex' && selectedVerticesCount === 0) ||
+                (editElementType === 'edge' && selectedEdgesCount === 0) ||
+                (editElementType === 'face' && selectedFacesCount === 0)
+              }
+              title={
+                isLattice
+                  ? "A Lattice's vertex count/order is load-bearing for FFD (see FFD modifier) — topology-changing tools are disabled on it"
+                  : 'Separate: moves the faces touched by the current selection out into a brand-new object (Face mode: the selected faces directly; Vertex/Edge mode: any face all of whose own vertices/edges are selected)'
+              }
+              onClick={() => separateSelection()}
+            >
+              <SeparateIcon />
             </button>
           </div>
         </>
