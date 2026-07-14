@@ -48,20 +48,24 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
   const setClipFrameRate = useSceneStore((s) => s.setClipFrameRate)
   const insertKeyframe = useSceneStore((s) => s.insertKeyframe)
   const removeKeyframe = useSceneStore((s) => s.removeKeyframe)
+  const removeTransformTrack = useSceneStore((s) => s.removeTransformTrack)
   const setKeyframeTime = useSceneStore((s) => s.setKeyframeTime)
   const setKeyframesTimeLive = useSceneStore((s) => s.setKeyframesTimeLive)
   const beginChange = useSceneStore((s) => s.beginChange)
   const setKeyframeEasing = useSceneStore((s) => s.setKeyframeEasing)
   const duplicateKeyframe = useSceneStore((s) => s.duplicateKeyframe)
   const removeShapeKeyKeyframe = useSceneStore((s) => s.removeShapeKeyKeyframe)
+  const removeShapeKeyTrack = useSceneStore((s) => s.removeShapeKeyTrack)
   const setShapeKeyKeyframeTime = useSceneStore((s) => s.setShapeKeyKeyframeTime)
   const setShapeKeyKeyframeEasing = useSceneStore((s) => s.setShapeKeyKeyframeEasing)
   const duplicateShapeKeyKeyframe = useSceneStore((s) => s.duplicateShapeKeyKeyframe)
   const removePathOffsetKeyframe = useSceneStore((s) => s.removePathOffsetKeyframe)
+  const removePathOffsetTrack = useSceneStore((s) => s.removePathOffsetTrack)
   const setPathOffsetKeyframeTime = useSceneStore((s) => s.setPathOffsetKeyframeTime)
   const setPathOffsetKeyframeEasing = useSceneStore((s) => s.setPathOffsetKeyframeEasing)
   const duplicatePathOffsetKeyframe = useSceneStore((s) => s.duplicatePathOffsetKeyframe)
   const removeFollowPathProgressKeyframe = useSceneStore((s) => s.removeFollowPathProgressKeyframe)
+  const removeFollowPathProgressTrack = useSceneStore((s) => s.removeFollowPathProgressTrack)
   const setFollowPathProgressKeyframeTime = useSceneStore((s) => s.setFollowPathProgressKeyframeTime)
   const setFollowPathProgressKeyframeEasing = useSceneStore((s) => s.setFollowPathProgressKeyframeEasing)
   const duplicateFollowPathProgressKeyframe = useSceneStore((s) => s.duplicateFollowPathProgressKeyframe)
@@ -620,7 +624,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   title={obj?.name ?? '(deleted object)'}
                   onClick={() => selectObject(row.objectId)}
                 >
-                  {obj?.name ?? '(deleted object)'}
+                  <span className="timeline-channel-label">{obj?.name ?? '(deleted object)'}</span>
+                  <button
+                    className="timeline-channel-delete"
+                    title="Delete this Transform track (every keyframe on it)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      clearKeySelection()
+                      removeTransformTrack(row.objectId)
+                    }}
+                  >
+                    <TrashIcon size={12} />
+                  </button>
                 </div>
               )
             }
@@ -632,7 +647,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   title={row.keyName}
                   onClick={() => selectObject(row.objectId)}
                 >
-                  ↳ {row.keyName}
+                  <span className="timeline-channel-label">↳ {row.keyName}</span>
+                  <button
+                    className="timeline-channel-delete"
+                    title="Delete this shape key's weight track (every keyframe on it)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      clearKeySelection()
+                      removeShapeKeyTrack(row.objectId, row.shapeKeyId)
+                    }}
+                  >
+                    <TrashIcon size={12} />
+                  </button>
                 </div>
               )
             }
@@ -674,7 +700,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   title="Path Deform — Path Offset"
                   onClick={() => selectObject(row.objectId)}
                 >
-                  ↳ Path Offset
+                  <span className="timeline-channel-label">↳ Path Offset</span>
+                  <button
+                    className="timeline-channel-delete"
+                    title="Delete the Path Offset track (every keyframe on it)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      clearKeySelection()
+                      removePathOffsetTrack(row.objectId)
+                    }}
+                  >
+                    <TrashIcon size={12} />
+                  </button>
                 </div>
               )
             }
@@ -686,7 +723,18 @@ export default function Timeline({ style }: { style?: CSSProperties }) {
                   title="Follow Path — Progress"
                   onClick={() => selectObject(row.objectId)}
                 >
-                  ↳ Progress
+                  <span className="timeline-channel-label">↳ Progress</span>
+                  <button
+                    className="timeline-channel-delete"
+                    title="Delete the Follow Path progress track (every keyframe on it)"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      clearKeySelection()
+                      removeFollowPathProgressTrack(row.objectId)
+                    }}
+                  >
+                    <TrashIcon size={12} />
+                  </button>
                 </div>
               )
             }

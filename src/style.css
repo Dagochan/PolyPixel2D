@@ -998,14 +998,42 @@ input[type='range']:disabled {
   height: 28px;
   display: flex;
   align-items: center;
+  gap: 4px;
   padding: 0 8px;
   font-size: 11px;
   color: #aaa;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   border-bottom: 1px solid #2a2b2e;
   cursor: pointer;
+}
+
+.timeline-channel-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* per-row track delete — hidden until the row is hovered/selected so the channel list doesn't
+   read as cluttered with trash icons at rest */
+.timeline-channel-delete {
+  flex: none;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  color: #888;
+  background: transparent;
+  border: none;
+}
+
+.timeline-channel-name:hover .timeline-channel-delete,
+.timeline-channel-name.selected .timeline-channel-delete {
+  display: flex;
+}
+
+.timeline-channel-delete:hover {
+  color: #e5484d;
 }
 
 .timeline-channel-name:hover {

@@ -484,6 +484,9 @@ interface SceneState {
    *  time. No-op if there's no active clip. */
   insertKeyframe: (objectId: string, time: number, easing?: EasingType) => void
   removeKeyframe: (objectId: string, keyframeId: string) => void
+  /** Removes this object's entire Transform track (every keyframe on it) from the active clip —
+   *  the Timeline channel list's per-row delete button, one step up from deleting keys one by one. */
+  removeTransformTrack: (objectId: string) => void
   setKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
   /** Live-writes new times for a batch of keyframes in one pass, across whichever tracks they
@@ -501,6 +504,8 @@ interface SceneState {
    *  `time` — mirrors `insertKeyframe` capturing the live transform. Creates the track if absent. */
   insertShapeKeyKeyframe: (objectId: string, shapeKeyId: string, time: number, easing?: EasingType) => void
   removeShapeKeyKeyframe: (objectId: string, shapeKeyId: string, keyframeId: string) => void
+  /** Same idea as `removeTransformTrack`, for one shape key's whole weight track. */
+  removeShapeKeyTrack: (objectId: string, shapeKeyId: string) => void
   setShapeKeyKeyframeTime: (objectId: string, shapeKeyId: string, keyframeId: string, time: number) => void
   setShapeKeyKeyframeEasing: (objectId: string, shapeKeyId: string, keyframeId: string, easing: EasingType) => void
   /** Same idea as `duplicateKeyframe`, for a `ShapeKeyTrack`'s weight keyframes. */
@@ -511,6 +516,8 @@ interface SceneState {
    *  there's no active clip. */
   insertPathOffsetKeyframe: (objectId: string, time: number, easing?: EasingType) => void
   removePathOffsetKeyframe: (objectId: string, keyframeId: string) => void
+  /** Same idea as `removeTransformTrack`, for the Path Offset track. */
+  removePathOffsetTrack: (objectId: string) => void
   setPathOffsetKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setPathOffsetKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
   /** Same idea as `duplicateKeyframe`, for a `PathOffsetTrack`. */
@@ -548,6 +555,8 @@ interface SceneState {
    *  no-op if the object has no `followPath` modifier or there's no active clip. */
   insertFollowPathProgressKeyframe: (objectId: string, time: number, easing?: EasingType) => void
   removeFollowPathProgressKeyframe: (objectId: string, keyframeId: string) => void
+  /** Same idea as `removeTransformTrack`, for the Follow Path progress track. */
+  removeFollowPathProgressTrack: (objectId: string) => void
   setFollowPathProgressKeyframeTime: (objectId: string, keyframeId: string, time: number) => void
   setFollowPathProgressKeyframeEasing: (objectId: string, keyframeId: string, easing: EasingType) => void
   /** Same idea as `duplicateKeyframe`, for a `FollowPathProgressTrack`. */
@@ -2450,6 +2459,13 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  removeTransformTrack: (objectId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id !== s.activeClipId ? c : { ...c, tracks: c.tracks.filter((t) => t.objectId !== objectId) })),
+    }))
+  },
+
   setKeyframeTime: (objectId, keyframeId, time) =>
     set((s) => ({
       clips: s.clips.map((c) => {
@@ -2574,6 +2590,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
       }),
     })),
 
+  removeShapeKeyTrack: (objectId, shapeKeyId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId
+          ? c
+          : { ...c, shapeKeyTracks: (c.shapeKeyTracks ?? []).filter((t) => !(t.objectId === objectId && t.shapeKeyId === shapeKeyId)) },
+      ),
+    }))
+  },
+
   setShapeKeyKeyframeTime: (objectId, shapeKeyId, keyframeId, time) =>
     set((s) => ({
       clips: s.clips.map((c) => {
@@ -2671,6 +2698,15 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }))
   },
 
+  removePathOffsetTrack: (objectId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId ? c : { ...c, pathOffsetTracks: (c.pathOffsetTracks ?? []).filter((t) => t.objectId !== objectId) },
+      ),
+    }))
+  },
+
   setPathOffsetKeyframeTime: (objectId, keyframeId, time) => {
     get().beginChange()
     set((s) => ({
@@ -2760,6 +2796,17 @@ export const useSceneStore = create<SceneState>((set, get) => ({
             .filter((t) => t.objectId !== objectId || t.keyframes.length > 0),
         }
       }),
+    }))
+  },
+
+  removeFollowPathProgressTrack: (objectId) => {
+    get().beginChange()
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id !== s.activeClipId
+          ? c
+          : { ...c, followPathProgressTracks: (c.followPathProgressTracks ?? []).filter((t) => t.objectId !== objectId) },
+      ),
     }))
   },
 
