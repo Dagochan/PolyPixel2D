@@ -21,7 +21,11 @@ function dropZoneAt(e: { clientY: number }, rect: DOMRect): DropZone {
 export default function Outliner() {
   const objects = useSceneStore((s) => s.objects)
   const selectedObjectId = useSceneStore((s) => s.selectedObjectId)
+  const selectedObjectIds = useSceneStore((s) => s.selectedObjectIds)
   const selectObject = useSceneStore((s) => s.selectObject)
+  const toggleObjectSelection = useSceneStore((s) => s.toggleObjectSelection)
+  const rangeSelectObjects = useSceneStore((s) => s.rangeSelectObjects)
+  const joinSelection = useSceneStore((s) => s.joinSelection)
   const toggleVisibility = useSceneStore((s) => s.toggleVisibility)
   const removeObject = useSceneStore((s) => s.removeObject)
   const renameObject = useSceneStore((s) => s.renameObject)
@@ -48,6 +52,49 @@ export default function Outliner() {
 
   const childrenOf = (parentId: string | null) =>
     objects.filter((o) => o.parentId === parentId).sort((a, b) => b.zOrder - a.zOrder)
+
+  // every object in the exact order the tree currently renders it (respecting collapsed nodes) —
+  // used only to resolve a Shift+click range between the active object and the clicked one.
+  const flattenVisible = (parentId: string | null): SceneObject[] => {
+    const kids = childrenOf(parentId)
+    const out: SceneObject[] = []
+    for (const k of kids) {
+      out.push(k)
+      if (!collapsed.has(k.id)) out.push(...flattenVisible(k.id))
+    }
+    return out
+  }
+
+  const handleRowClick = (e: React.MouseEvent, obj: SceneObject) => {
+    if (e.ctrlKey || e.metaKey) {
+      toggleObjectSelection(obj.id)
+      return
+    }
+    if (e.shiftKey && selectedObjectId) {
+      const flat = flattenVisible(null)
+      const i1 = flat.findIndex((o) => o.id === selectedObjectId)
+      const i2 = flat.findIndex((o) => o.id === obj.id)
+      if (i1 === -1 || i2 === -1) {
+        selectObject(obj.id)
+        return
+      }
+      const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1]
+      rangeSelectObjects(flat.slice(lo, hi + 1).map((o) => o.id))
+      return
+    }
+    selectObject(obj.id)
+  }
+
+  // mirrors `joinSelection`'s own eligibility guard (see its doc) — only used to decide whether
+  // the Join button is enabled, the store re-checks this itself regardless.
+  const childIds = new Set(objects.filter((o) => o.parentId !== null).map((o) => o.id))
+  const parentIds = new Set(objects.map((o) => o.parentId).filter((id): id is string => id !== null))
+  const canJoin =
+    selectedObjectIds.size >= 2 &&
+    [...selectedObjectIds].every((id) => {
+      const o = objects.find((oo) => oo.id === id)
+      return o && (o.kind === undefined || o.kind === 'mesh') && !childIds.has(o.id) && !parentIds.has(o.id)
+    })
 
   const dropOnRow = (e: React.DragEvent, obj: SceneObject) => {
     e.preventDefault()
@@ -78,7 +125,7 @@ export default function Outliner() {
       <div
         className={
           'layer-item' +
-          (obj.id === selectedObjectId ? ' selected' : '') +
+          (obj.id === selectedObjectId ? ' selected' : selectedObjectIds.has(obj.id) ? ' multi-selected' : '') +
           (dragOver?.id === obj.id ? ` drop-${dragOver.zone}` : '')
         }
         style={{ paddingLeft: depth * 16 }}
@@ -91,7 +138,7 @@ export default function Outliner() {
         onDragLeave={() => setDragOver((d) => (d?.id === obj.id ? null : d))}
         onDrop={(e) => dropOnRow(e, obj)}
         onDragEnd={() => setDragOver(null)}
-        onClick={() => selectObject(obj.id)}
+        onClick={(e) => handleRowClick(e, obj)}
       >
         <span className="drag-handle" title="Drag to reorder/reparent">
           ⠿
@@ -180,7 +227,22 @@ export default function Outliner() {
 
   return (
     <div className="panel outliner">
-      <div className="panel-title">Outliner</div>
+      <div className="panel-title with-actions">
+        <span>Outliner</span>
+        {selectedObjectIds.size >= 2 && (
+          <button
+            disabled={!canJoin}
+            title={
+              canJoin
+                ? 'Join the selected objects into one (the active object survives; the rest are merged into it and removed)'
+                : "Can't join: every selected object must be a plain mesh with no parent and no children of its own"
+            }
+            onClick={() => joinSelection()}
+          >
+            Join
+          </button>
+        )}
+      </div>
       <ul
         className="layer-list"
         onDragOver={(e) => e.preventDefault()}

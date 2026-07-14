@@ -56,6 +56,7 @@ import { dissolveVertices, dissolveEdges } from './dissolve'
 import { mergeVertices as mergeVerticesInMesh, type MergeMode } from './mergeVertices'
 import { applyKnifeCut as applyKnifeCutToMesh, type KnifeCutPoint } from './knifeCut'
 import { edgeKey, getEdges, parseEdgeKey, pruneOrphanVertices, pruneOrphanVerticesTracked, mergeMeshAsIsland, clampToMesh } from './meshUtils'
+import { joinObjects } from './join'
 import { findIslands, type Island } from './uv'
 import { remapObjectVertexData } from './remapVertexData'
 import { getWorldTransform, getParentWorldTransform, worldPositionToLocalOffset, worldBounds } from './transformUtils'
@@ -126,6 +127,14 @@ function islandSelectionState(
 interface SceneState {
   objects: SceneObject[]
   selectedObjectId: string | null
+  /** The Outliner's multi-selection (Blender's "selected objects", plural) — `selectedObjectId`
+   *  remains the single "active" object every existing edit-mode/Properties/Timeline/Viewport
+   *  code path already targets (unchanged meaning), while this tracks which rows additionally
+   *  show the lighter multi-select highlight in the Outliner. Kept in sync by `selectObject`
+   *  itself (a plain click collapses this to just the clicked object, matching every existing
+   *  call site's "select only this" intent) — `toggleObjectSelection`/`rangeSelectObjects` are
+   *  the only ways this ever holds more than one id. Powers `joinSelection`. */
+  selectedObjectIds: Set<string>
   mode: AppMode
   editElementType: EditElementType
   selectedVertices: Set<number>
@@ -345,6 +354,13 @@ interface SceneState {
     pixelFrame?: PixelFrame | null
   }) => void
   selectObject: (id: string | null) => void
+  /** Ctrl/Cmd+click a row in the Outliner: toggles `id` in/out of `selectedObjectIds`, becoming
+   *  the active object when added. */
+  toggleObjectSelection: (id: string) => void
+  /** Shift+click a row in the Outliner: adds every id in `ids` (the visual range between the
+   *  last-active row and the clicked one, computed by the Outliner itself) to `selectedObjectIds`,
+   *  making the last one active. */
+  rangeSelectObjects: (ids: string[]) => void
   removeObject: (id: string) => void
   toggleVisibility: (id: string) => void
   renameObject: (id: string, name: string) => void
@@ -457,6 +473,15 @@ interface SceneState {
    *  (nothing would be left behind), or the object isn't a plain mesh (`kind !== 'mesh'`, i.e. not
    *  a lattice/path/empty — those have no meaningful "separate"). */
   separateSelection: () => void
+  /** Blender's Ctrl+J (Join) — the inverse of `separateSelection`, run from the Outliner's
+   *  multi-selection instead: merges every selected object's geometry into one (see
+   *  `joinObjects`'s doc for exactly what survives/gets baked/gets dropped). The active object
+   *  (`selectedObjectId`, or `selectedObjectIds`' first member if the active one isn't part of the
+   *  selection) is the merge target and keeps its id/transform/tail/parent/material; the rest are
+   *  deleted. No-op with fewer than 2 selected, or if any selected object is parented, has
+   *  children of its own, or isn't a plain mesh — joining those would mean silently reparenting or
+   *  orphaning other objects, which this doesn't attempt. */
+  joinSelection: () => void
   /** Select all vertices/edges/faces (whichever editElementType is active) of the selected object. */
   selectAll: () => void
   /** Invert the selection within the active editElementType — selected become unselected and
@@ -1018,6 +1043,7 @@ const MAX_HISTORY = 50
 export const useSceneStore = create<SceneState>((set, get) => ({
   objects: [],
   selectedObjectId: null,
+  selectedObjectIds: new Set(),
   mode: 'object',
   editElementType: 'vertex',
   selectedVertices: new Set(),
@@ -1525,13 +1551,47 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     })
   },
 
-  selectObject: (id) => set({ selectedObjectId: id, selectedVertices: new Set(), editPivot: null }),
+  selectObject: (id) =>
+    set({
+      selectedObjectId: id,
+      selectedObjectIds: id ? new Set([id]) : new Set(),
+      selectedVertices: new Set(),
+      editPivot: null,
+    }),
+
+  toggleObjectSelection: (id) =>
+    set((s) => {
+      const next = new Set(s.selectedObjectIds)
+      if (next.has(id)) {
+        next.delete(id)
+        // dropping the active object hands "active" to another still-selected member (arbitrary
+        // but deterministic — Set iteration order — rather than clearing it outright), matching
+        // Blender's "some object stays active as long as any are selected" behavior
+        const activeId = s.selectedObjectId === id ? ([...next][0] ?? null) : s.selectedObjectId
+        return { selectedObjectIds: next, selectedObjectId: activeId }
+      }
+      next.add(id)
+      return { selectedObjectIds: next, selectedObjectId: id }
+    }),
+
+  rangeSelectObjects: (ids) =>
+    set((s) => {
+      const next = new Set(s.selectedObjectIds)
+      for (const id of ids) next.add(id)
+      return { selectedObjectIds: next, selectedObjectId: ids[ids.length - 1] ?? s.selectedObjectId }
+    }),
 
   removeObject: (id) => {
     get().beginChange()
     set((s) => ({
       objects: s.objects.filter((o) => o.id !== id),
       selectedObjectId: s.selectedObjectId === id ? null : s.selectedObjectId,
+      selectedObjectIds: (() => {
+        if (!s.selectedObjectIds.has(id)) return s.selectedObjectIds
+        const next = new Set(s.selectedObjectIds)
+        next.delete(id)
+        return next
+      })(),
       // drop every clip's keyframe data for this object too — otherwise a deleted object's
       // tracks linger forever across every clip, showing as an un-clickable "(deleted object)"
       // row in the Timeline with no way to clear it.
@@ -1551,6 +1611,49 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     get().beginChange()
     set((s) => ({
       objects: s.objects.map((o) => (o.id === id ? { ...o, visible: !o.visible } : o)),
+    }))
+  },
+
+  joinSelection: () => {
+    const s = get()
+    const ids = Array.from(s.selectedObjectIds)
+    if (ids.length < 2) return
+    const selected = ids.map((id) => s.objects.find((o) => o.id === id)).filter((o): o is SceneObject => !!o)
+    if (selected.length < 2) return
+    // v1 scope: only plain, hierarchy-free meshes — reparenting a donor's children (or figuring
+    // out what "join" even means for a lattice/path/empty) is a can of worms this doesn't open.
+    // Silently no-op rather than partially joining, same as every other guarded mesh op here.
+    const childIds = new Set(s.objects.filter((o) => o.parentId !== null).map((o) => o.id))
+    const parentIds = new Set(s.objects.map((o) => o.parentId).filter((id): id is string => id !== null))
+    const isJoinable = (o: SceneObject) =>
+      (o.kind === undefined || o.kind === 'mesh') && !childIds.has(o.id) && !parentIds.has(o.id)
+    if (!selected.every(isJoinable)) return
+
+    const targetId = s.selectedObjectId && ids.includes(s.selectedObjectId) ? s.selectedObjectId : ids[0]
+    const target = selected.find((o) => o.id === targetId)!
+    const donors = selected.filter((o) => o.id !== targetId)
+    const merged = joinObjects(target, donors)
+    const donorIds = new Set(donors.map((o) => o.id))
+
+    get().beginChange()
+    set((st) => ({
+      objects: st.objects.filter((o) => !donorIds.has(o.id)).map((o) => (o.id === targetId ? merged : o)),
+      selectedObjectId: targetId,
+      selectedObjectIds: new Set([targetId]),
+      // a donor's own shape-key *weight animation* survives (rekeyed onto the target, since the
+      // merged shape keys themselves kept the donor's original ids) — everything else donor-keyed
+      // (Transform tracks, baked physics, Path Offset, Follow Path progress) doesn't carry over
+      // any meaning once the donor stops existing as its own Transform, so it's dropped, same as
+      // `removeObject`'s cleanup.
+      clips: st.clips.map((c) => ({
+        ...c,
+        tracks: c.tracks.filter((t) => !donorIds.has(t.objectId)),
+        shapeKeyTracks: c.shapeKeyTracks?.map((t) => (donorIds.has(t.objectId) ? { ...t, objectId: targetId } : t)),
+        fakePhysicsTracks: c.fakePhysicsTracks?.filter((t) => !donorIds.has(t.objectId)),
+        fakePhysicsMeshTracks: c.fakePhysicsMeshTracks?.filter((t) => !donorIds.has(t.objectId)),
+        pathOffsetTracks: c.pathOffsetTracks?.filter((t) => !donorIds.has(t.objectId)),
+        followPathProgressTracks: c.followPathProgressTracks?.filter((t) => !donorIds.has(t.objectId)),
+      })),
     }))
   },
 

@@ -474,6 +474,19 @@ input[type='range']:disabled {
   border-bottom: 1px solid #111;
 }
 
+.panel-title.with-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-title.with-actions button {
+  font-size: 11px;
+  font-weight: 400;
+  padding: 2px 8px;
+}
+
 .layer-list {
   list-style: none;
   margin: 0;
@@ -491,6 +504,10 @@ input[type='range']:disabled {
 }
 
 .layer-item:hover { background: #2f3034; }
+/* the multi-selection (Ctrl/Shift+click) gets a lighter tint than the single active object, so
+   the active row (the one every edit-mode/Properties/Timeline action actually targets) still
+   reads as visually distinct within a multi-select */
+.layer-item.multi-selected { background: #3a5a8055; }
 .layer-item.selected { background: #3a5a80; }
 
 /* drag-and-drop feedback: dropping near the top/bottom edge of a row reorders as a sibling at
